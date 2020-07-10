@@ -1,5 +1,7 @@
 package types
 
+import "github.com/ethereum/go-ethereum/common"
+
 type VoteChoice int
 
 const (
@@ -22,4 +24,9 @@ func (v VoteChoice) String() string {
 
 func (v VoteChoice) IsValid() bool {
 	return v == Yes || v == No
+}
+
+type TranscoderPoolHints struct {
+	PosNext common.Address
+	PosPrev common.Address
 }
