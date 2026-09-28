@@ -7,7 +7,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/j0sh/boa/pkg/boa"
-	"github.com/livepeer/node/internal/version"
+	"github.com/livepeer/node/version"
 	"github.com/spf13/cobra"
 )
 

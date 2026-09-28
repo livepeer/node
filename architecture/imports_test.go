@@ -18,13 +18,13 @@ const module = "github.com/livepeer/node/"
 func TestImportLattice(t *testing.T) {
 	_, here, _, ok := runtime.Caller(0)
 	require.True(t, ok)
-	root := filepath.Clean(filepath.Join(filepath.Dir(here), "../.."))
+	root := filepath.Clean(filepath.Join(filepath.Dir(here), ".."))
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
 		if entry.IsDir() {
-			if entry.Name() == "vendor" || entry.Name() == ".git" || entry.Name() == "bin" {
+			if entry.Name() == "vendor" || entry.Name() == ".git" || entry.Name() == "bin" || entry.Name() == ".tools" || entry.Name() == ".gocache" {
 				return filepath.SkipDir
 			}
 			return nil
@@ -59,26 +59,29 @@ func forbiddenImport(file, dep string) string {
 			return "legacy, media or gRPC dependency"
 		}
 	}
-	if strings.HasPrefix(dep, "google.golang.org/protobuf") && !strings.HasPrefix(file, "internal/signercompat/") {
+	if strings.HasPrefix(dep, "google.golang.org/protobuf") && !strings.HasPrefix(file, "signercompat/") {
 		return "Protobuf runtime outside signercompat"
 	}
 	if !strings.HasPrefix(dep, module) {
 		return ""
 	}
 	local := strings.TrimPrefix(dep, module)
-	if strings.HasPrefix(file, "cmd/livepeer/") && local != "internal/version" {
+	if strings.HasPrefix(file, "cmd/livepeer/") && local != "version" {
 		return "dispatcher imports component implementation"
 	}
 	for _, component := range []string{"orchestrator", "signer", "chain"} {
-		if strings.HasPrefix(local, "internal/"+component) {
-			if strings.HasPrefix(file, "cmd/livepeer-"+component+"/") || strings.HasPrefix(file, "internal/"+component+"/") {
+		if local == component || strings.HasPrefix(local, component+"/") {
+			if strings.HasPrefix(file, "cmd/livepeer-"+component+"/") || strings.HasPrefix(file, component+"/") {
 				continue
 			}
 			return "cross-component or shared-to-component import"
 		}
 	}
-	if strings.HasPrefix(local, "internal/signercompat") && !strings.HasPrefix(file, "internal/signer/") {
+	if strings.HasPrefix(local, "signercompat") && !strings.HasPrefix(file, "signer/") && !strings.HasPrefix(file, "pm/") {
 		return "signer compatibility import outside signer"
+	}
+	if (local == "pm" || strings.HasPrefix(local, "pm/")) && (strings.HasPrefix(file, "chain/") || strings.HasPrefix(file, "eth/")) {
+		return "chain or Ethereum package imports payment implementation"
 	}
 	return ""
 }

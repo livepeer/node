@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/livepeer/node/internal/signer"
+	"github.com/livepeer/node/signer"
 )
 
 func main() {

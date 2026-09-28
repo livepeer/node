@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/livepeer/node/internal/destination"
+	"github.com/livepeer/node/destination"
 	"github.com/stretchr/testify/require"
 )
 

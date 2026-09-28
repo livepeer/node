@@ -1,7 +1,7 @@
 GO ?= go
 VERSION ?= dev
 COMMIT ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
-LDFLAGS = -X github.com/livepeer/node/internal/version.Name=$(VERSION) -X github.com/livepeer/node/internal/version.Commit=$(COMMIT)
+LDFLAGS = -X github.com/livepeer/node/version.Name=$(VERSION) -X github.com/livepeer/node/version.Commit=$(COMMIT)
 
 .PHONY: build test
 build:

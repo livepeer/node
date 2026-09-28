@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/livepeer/node/internal/orchestrator"
+	"github.com/livepeer/node/orchestrator"
 )
 
 func main() {

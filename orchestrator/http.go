@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/livepeer/node/internal/destination"
+	"github.com/livepeer/node/destination"
 )
 
 const (

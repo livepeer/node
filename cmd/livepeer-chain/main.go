@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/livepeer/node/internal/chain"
+	"github.com/livepeer/node/chain"
 )
 
 func main() {
