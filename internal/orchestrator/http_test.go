@@ -1,0 +1,218 @@
+package orchestrator
+
+import (
+	"bytes"
+	"encoding/json"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/livepeer/node/internal/destination"
+	"github.com/stretchr/testify/require"
+)
+
+func TestDynamicRunnerSessionProxyAndCapacity(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/api/hello", r.URL.Path)
+		require.Equal(t, "value", r.URL.Query().Get("q"))
+		require.NotEmpty(t, r.Header.Get("Livepeer-Session-Id"))
+		require.NotEmpty(t, r.Header.Get("Livepeer-Session-Token"))
+		_, _ = io.WriteString(w, "proxied")
+	}))
+	defer upstream.Close()
+	grant := strings.TrimPrefix(upstream.URL, "http://")
+	policy, err := destination.New("runner", []string{grant})
+	require.NoError(t, err)
+	registry := NewRegistry("bootstrap", "http://orchestrator.example", 10*time.Millisecond, 50*time.Millisecond)
+	srv := httptest.NewServer(NewServer(registry, policy, policy, slog.New(slog.NewTextHandler(io.Discard, nil))))
+	defer srv.Close()
+
+	body := `{"runner_url":"` + upstream.URL + `/api","app":"test","mode":"persistent","capacity":1,"price_info":{"price":0,"currency":"usd","unit":"hour"}}`
+	request, err := http.NewRequest(http.MethodPost, srv.URL+"/runners/heartbeat", bytes.NewBufferString(body))
+	require.NoError(t, err)
+	request.Header.Set("Authorization", "bootstrap")
+	response, err := http.DefaultClient.Do(request)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	var heartbeat heartbeatResponse
+	require.NoError(t, json.NewDecoder(response.Body).Decode(&heartbeat))
+	require.NoError(t, response.Body.Close())
+	require.NotEmpty(t, heartbeat.HeartbeatSecret)
+	require.NotNil(t, heartbeat.O2R)
+	request, err = http.NewRequest(http.MethodPost, srv.URL+"/runners/heartbeat", bytes.NewBufferString(strings.Replace(body, `{"runner_url"`, `{"runner_id":"`+heartbeat.RunnerID+`","runner_url"`, 1)))
+	require.NoError(t, err)
+	request.Header.Set("Authorization", heartbeat.HeartbeatSecret)
+	response, err = http.DefaultClient.Do(request)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	require.NoError(t, response.Body.Close())
+	response, err = http.Post(srv.URL+"/apps/"+heartbeat.RunnerID+"/session", "application/json", nil)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	var reserved struct {
+		SessionID string `json:"session_id"`
+	}
+	require.NoError(t, json.NewDecoder(response.Body).Decode(&reserved))
+	require.NoError(t, response.Body.Close())
+	response, err = http.Get(srv.URL + "/ai/trickle/" + heartbeat.O2R.ChannelName + "/0")
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	var event map[string]string
+	require.NoError(t, json.NewDecoder(response.Body).Decode(&event))
+	require.Equal(t, "reserved", event["event"])
+	require.Equal(t, reserved.SessionID, event["session"])
+	require.NoError(t, response.Body.Close())
+	response, err = http.Post(srv.URL+"/apps/"+heartbeat.RunnerID+"/session", "application/json", nil)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusConflict, response.StatusCode)
+	require.NoError(t, response.Body.Close())
+	response, err = http.Get(srv.URL + "/apps/" + heartbeat.RunnerID + "/session/" + reserved.SessionID + "/app/hello?q=value")
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	data, err := io.ReadAll(response.Body)
+	require.NoError(t, err)
+	require.Equal(t, "proxied", string(data))
+	require.NoError(t, response.Body.Close())
+	response, err = http.Post(srv.URL+"/apps/"+heartbeat.RunnerID+"/session/"+reserved.SessionID+"/stop", "application/json", nil)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	require.NoError(t, response.Body.Close())
+}
+
+func TestRunnerDestinationDeniedWithoutGrant(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+	defer upstream.Close()
+	policy, err := destination.New("runner", nil)
+	require.NoError(t, err)
+	registry := NewRegistry("bootstrap", "http://orchestrator.example", time.Second, time.Minute)
+	server := httptest.NewServer(NewServer(registry, policy, policy, slog.New(slog.NewTextHandler(io.Discard, nil))))
+	defer server.Close()
+	body := `{"runner_url":"` + upstream.URL + `","app":"test","mode":"single-shot","capacity":1,"price_info":{"price":0}}`
+	request, err := http.NewRequest(http.MethodPost, server.URL+"/runners/heartbeat", bytes.NewBufferString(body))
+	require.NoError(t, err)
+	request.Header.Set("Authorization", "bootstrap")
+	response, err := http.DefaultClient.Do(request)
+	require.NoError(t, err)
+	var heartbeat heartbeatResponse
+	require.NoError(t, json.NewDecoder(response.Body).Decode(&heartbeat))
+	require.NoError(t, response.Body.Close())
+	response, err = http.Get(server.URL + "/apps/" + heartbeat.RunnerID + "/app")
+	require.NoError(t, err)
+	require.Equal(t, http.StatusBadGateway, response.StatusCode)
+	require.NoError(t, response.Body.Close())
+}
+
+func TestGeneratedProxyHasSeparateDestinationGrant(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "ok") }))
+	defer upstream.Close()
+	grant := strings.TrimPrefix(upstream.URL, "http://")
+	runnerPolicy, err := destination.New("runner", []string{grant})
+	require.NoError(t, err)
+	proxyPolicy, err := destination.New("session-proxy", nil)
+	require.NoError(t, err)
+	registry := NewRegistry("bootstrap", "http://orchestrator.example", time.Second, time.Minute)
+	registered, status, err := registry.Heartbeat(heartbeatRequest{RunnerURL: upstream.URL, App: "test", Mode: "persistent", Capacity: 1}, "bootstrap")
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, status)
+	sid, _, _, status, err := registry.Reserve(registered.RunnerID)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, status)
+	_, token, status, err := registry.sessionTarget(registered.RunnerID, sid)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, status)
+	srv := NewServer(registry, runnerPolicy, proxyPolicy, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	path := "/runner/" + registered.RunnerID + "/session/" + sid + "/proxy"
+	create := httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(`{"target_url":"`+upstream.URL+`"}`))
+	create.Header.Set("Livepeer-Session-Token", "bad")
+	record := httptest.NewRecorder()
+	srv.ServeHTTP(record, create)
+	require.Equal(t, http.StatusForbidden, record.Code)
+	create = httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(`{"target_url":"`+upstream.URL+`"}`))
+	create.Header.Set("Livepeer-Session-Token", token)
+	record = httptest.NewRecorder()
+	srv.ServeHTTP(record, create)
+	require.Equal(t, http.StatusOK, record.Code)
+	var created struct {
+		ProxyID string `json:"proxy_id"`
+	}
+	require.NoError(t, json.Unmarshal(record.Body.Bytes(), &created))
+	require.NotEmpty(t, created.ProxyID)
+	record = httptest.NewRecorder()
+	srv.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/proxy/"+created.ProxyID, nil))
+	require.Equal(t, http.StatusBadGateway, record.Code)
+	granted, err := destination.New("session-proxy", []string{grant})
+	require.NoError(t, err)
+	srv = NewServer(registry, runnerPolicy, granted, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	record = httptest.NewRecorder()
+	srv.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/proxy/"+created.ProxyID, nil))
+	require.Equal(t, http.StatusOK, record.Code)
+}
+
+func TestRunnerExpires(t *testing.T) {
+	registry := NewRegistry("bootstrap", "http://orchestrator.example", time.Millisecond, 2*time.Millisecond)
+	registered, _, err := registry.Heartbeat(heartbeatRequest{RunnerURL: "https://runner.example", App: "test", Mode: "persistent", Capacity: 1}, "bootstrap")
+	require.NoError(t, err)
+	require.NotEmpty(t, registered.RunnerID)
+	time.Sleep(3 * time.Millisecond)
+	registry.Expire()
+	count, _ := registry.Counts()
+	require.Zero(t, count)
+}
+
+func TestTrickleChannelsScopedToSession(t *testing.T) {
+	policy, err := destination.New("runner", nil)
+	require.NoError(t, err)
+	registry := NewRegistry("bootstrap", "http://orchestrator.example", time.Second, time.Minute)
+	registered, _, err := registry.Heartbeat(heartbeatRequest{RunnerURL: "https://runner.example", App: "test", Mode: "persistent", Capacity: 2}, "bootstrap")
+	require.NoError(t, err)
+	srv := NewServer(registry, policy, policy, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	sid1, _, _, _, err := registry.Reserve(registered.RunnerID)
+	require.NoError(t, err)
+	sid2, _, _, _, err := registry.Reserve(registered.RunnerID)
+	require.NoError(t, err)
+	_, token1, _, err := registry.sessionTarget(registered.RunnerID, sid1)
+	require.NoError(t, err)
+	_, token2, _, err := registry.sessionTarget(registered.RunnerID, sid2)
+	require.NoError(t, err)
+	path1 := "/runner/" + registered.RunnerID + "/session/" + sid1 + "/channels"
+	create := httptest.NewRequest(http.MethodPost, path1, bytes.NewBufferString(`{"channels":[{"name":"events","mime_type":"application/json"}]}`))
+	create.Header.Set("Livepeer-Session-Token", token1)
+	record := httptest.NewRecorder()
+	srv.ServeHTTP(record, create)
+	require.Equal(t, http.StatusOK, record.Code)
+	var created struct {
+		Channels []struct {
+			ChannelName string `json:"channel_name"`
+		} `json:"channels"`
+	}
+	require.NoError(t, json.Unmarshal(record.Body.Bytes(), &created))
+	require.Len(t, created.Channels, 1)
+	channelID := created.Channels[0].ChannelName
+	path2 := "/runner/" + registered.RunnerID + "/session/" + sid2 + "/channels"
+	deletion := httptest.NewRequest(http.MethodDelete, path2, bytes.NewBufferString(`{"channels":["`+channelID+`"]}`))
+	deletion.Header.Set("Livepeer-Session-Token", token2)
+	record = httptest.NewRecorder()
+	srv.ServeHTTP(record, deletion)
+	require.Equal(t, http.StatusOK, record.Code)
+	require.JSONEq(t, `{"deleted":[]}`, record.Body.String())
+	segment := "/ai/trickle/" + channelID + "/0"
+	record = httptest.NewRecorder()
+	srv.ServeHTTP(record, httptest.NewRequest(http.MethodPost, segment, bytes.NewBufferString(`{"x":1}`)))
+	require.Equal(t, http.StatusOK, record.Code)
+	record = httptest.NewRecorder()
+	srv.ServeHTTP(record, httptest.NewRequest(http.MethodGet, segment, nil))
+	require.Equal(t, http.StatusOK, record.Code)
+	require.JSONEq(t, `{"x":1}`, record.Body.String())
+	deletion = httptest.NewRequest(http.MethodDelete, path1, bytes.NewBufferString(`{"channels":["`+channelID+`"]}`))
+	deletion.Header.Set("Livepeer-Session-Token", token1)
+	record = httptest.NewRecorder()
+	srv.ServeHTTP(record, deletion)
+	require.Equal(t, http.StatusOK, record.Code)
+	record = httptest.NewRecorder()
+	srv.ServeHTTP(record, httptest.NewRequest(http.MethodGet, segment, nil))
+	require.Equal(t, http.StatusNotFound, record.Code)
+}

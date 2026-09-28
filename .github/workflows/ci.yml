@@ -1,0 +1,35 @@
+name: Go
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      GO_RUNNER_SDK_DIR: ${{ runner.temp }}/golang-runner
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+          cache: true
+      - name: Pin Go Live Runner SDK fixture
+        run: |
+          git clone https://github.com/livepeer/golang-runner.git "$GO_RUNNER_SDK_DIR"
+          git -C "$GO_RUNNER_SDK_DIR" checkout --detach c3be5a14a91f8a3437133419becaced324d804fe
+      - name: Race and real-process tests
+        run: go test -race ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Staticcheck
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@v0.7.0
+          staticcheck ./...
+      - name: Vulnerability scan
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
+          govulncheck ./...
+      - name: Static release build
+        run: CGO_ENABLED=0 go build ./...

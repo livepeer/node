@@ -1,0 +1,4 @@
+rpc_url_file = "/run/secrets/livepeer-chain-rpc-url"
+rpc_grants = []
+chain_id = "1"
+output = "json"

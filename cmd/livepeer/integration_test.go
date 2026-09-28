@@ -1,0 +1,153 @@
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"syscall"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+)
+
+func freePort(t *testing.T) int {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	port := listener.Addr().(*net.TCPAddr).Port
+	require.NoError(t, listener.Close())
+	return port
+}
+
+func TestRealBinaryOffchainFlow(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real binary integration test")
+	}
+	_, file, _, ok := runtime.Caller(0)
+	require.True(t, ok)
+	root := filepath.Clean(filepath.Join(filepath.Dir(file), "../.."))
+	install := t.TempDir()
+	for _, name := range []string{"livepeer", "livepeer-orchestrator"} {
+		build := exec.Command("go", "build", "-o", filepath.Join(install, name), "./cmd/"+name)
+		build.Dir = root
+		output, err := build.CombinedOutput()
+		require.NoError(t, err, string(output))
+	}
+	dispatcher := filepath.Join(install, "livepeer")
+	version, err := exec.Command(dispatcher, "version").CombinedOutput()
+	require.NoError(t, err, string(version))
+	require.Contains(t, string(version), "livepeer dev")
+	help, err := exec.Command(dispatcher, "orchestrator", "--help").CombinedOutput()
+	require.NoError(t, err, string(help))
+	require.Contains(t, string(help), "bootstrap-secret-file")
+	completion, err := exec.Command(dispatcher, "completion", "orchestrator", "bash").CombinedOutput()
+	require.NoError(t, err, string(completion))
+	require.Contains(t, string(completion), "bash completion")
+
+	runner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/hello", r.URL.Path)
+		require.NotEmpty(t, r.Header.Get("Livepeer-Session-Token"))
+		_, _ = io.WriteString(w, "from-runner")
+	}))
+	defer runner.Close()
+	mainPort, metricsPort := freePort(t), freePort(t)
+	serviceURL := fmt.Sprintf("http://127.0.0.1:%d", mainPort)
+	metricsURL := fmt.Sprintf("http://127.0.0.1:%d", metricsPort)
+	secretPath := filepath.Join(t.TempDir(), "bootstrap")
+	require.NoError(t, os.WriteFile(secretPath, []byte("exact-bootstrap"), 0600))
+	cmd := exec.Command(dispatcher, "orchestrator", "--listen", fmt.Sprintf("127.0.0.1:%d", mainPort), "--metrics-listen", fmt.Sprintf("127.0.0.1:%d", metricsPort), "--service-url", serviceURL, "--bootstrap-secret-file", secretPath, "--runner-grants", strings.TrimPrefix(runner.URL, "http://"))
+	var log bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &log, &log
+	require.NoError(t, cmd.Start())
+	t.Cleanup(func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Signal(syscall.SIGTERM)
+			_, _ = cmd.Process.Wait()
+		}
+	})
+	require.Eventually(t, func() bool {
+		response, err := http.Get(metricsURL + "/readyz")
+		if err != nil {
+			return false
+		}
+		defer response.Body.Close()
+		return response.StatusCode == http.StatusOK
+	}, 5*time.Second, 20*time.Millisecond)
+	request, err := http.NewRequest(http.MethodPost, serviceURL+"/runners/heartbeat", bytes.NewBufferString(`{"runner_url":"`+runner.URL+`","app":"e2e","mode":"persistent","capacity":1,"price_info":{"price":0}}`))
+	require.NoError(t, err)
+	request.Header.Set("Authorization", "exact-bootstrap")
+	response, err := http.DefaultClient.Do(request)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	var registered struct {
+		RunnerID        string `json:"runner_id"`
+		HeartbeatSecret string `json:"heartbeat_secret"`
+	}
+	require.NoError(t, json.NewDecoder(response.Body).Decode(&registered))
+	require.NoError(t, response.Body.Close())
+	require.NotEmpty(t, registered.HeartbeatSecret)
+	response, err = http.Post(serviceURL+"/apps/"+registered.RunnerID+"/session", "application/json", nil)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	var reserved struct {
+		SessionID string `json:"session_id"`
+	}
+	require.NoError(t, json.NewDecoder(response.Body).Decode(&reserved))
+	require.NoError(t, response.Body.Close())
+	response, err = http.Get(serviceURL + "/apps/" + registered.RunnerID + "/session/" + reserved.SessionID + "/app/hello")
+	require.NoError(t, err)
+	data, err := io.ReadAll(response.Body)
+	require.NoError(t, err)
+	require.Equal(t, "from-runner", string(data))
+	require.NoError(t, response.Body.Close())
+	checkGoSDK(t, root, serviceURL, runner.URL)
+	require.NoError(t, cmd.Process.Signal(syscall.SIGTERM))
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		require.NoError(t, err, log.String())
+	case <-time.After(5 * time.Second):
+		t.Fatal("orchestrator did not shut down")
+	}
+	cmd.Process = nil
+}
+
+func checkGoSDK(t *testing.T, root, serviceURL, runnerURL string) {
+	t.Helper()
+	sdkDir := os.Getenv("GO_RUNNER_SDK_DIR")
+	if sdkDir == "" {
+		sdkDir = filepath.Join(root, "..", "golang-runner")
+	}
+	if _, err := os.Stat(filepath.Join(sdkDir, "go.mod")); err != nil {
+		t.Log("Go runner SDK checkout unavailable; skipped SDK fixture")
+		return
+	}
+	revision, err := exec.Command("git", "-C", sdkDir, "rev-parse", "HEAD").Output()
+	require.NoError(t, err)
+	require.Equal(t, "c3be5a14a91f8a3437133419becaced324d804fe", strings.TrimSpace(string(revision)))
+	status, err := exec.Command("git", "-C", sdkDir, "status", "--porcelain").Output()
+	require.NoError(t, err)
+	require.Empty(t, status, "SDK checkout must be clean for compatibility result")
+	dir := t.TempDir()
+	goMod := "module sdkcompat\n\ngo 1.27.1\n\nrequire github.com/livepeer/golang-runner v0.0.0\n\nreplace github.com/livepeer/golang-runner => " + sdkDir + "\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte(goMod), 0600))
+	source, err := os.ReadFile(filepath.Join(root, "cmd", "livepeer", "testdata", "go_sdk_compat.go"))
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.go"), source, 0600))
+	run := exec.Command("go", "run", "main.go", serviceURL, runnerURL, "exact-bootstrap")
+	run.Dir = dir
+	output, err := run.CombinedOutput()
+	require.NoError(t, err, string(output))
+	require.Contains(t, string(output), "Go SDK registration")
+}

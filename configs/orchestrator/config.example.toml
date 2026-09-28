@@ -1,0 +1,11 @@
+listen = "127.0.0.1:8935"
+metrics_listen = "127.0.0.1:8936"
+service_url = "http://127.0.0.1:8935"
+bootstrap_secret_file = "/run/secrets/livepeer-runner-bootstrap"
+runner_config = "/etc/livepeer/runners.toml"
+heartbeat_interval = "5s"
+heartbeat_ttl = "30s"
+runner_grants = []
+session_proxy_grants = []
+health_grants = []
+behind_tls = false

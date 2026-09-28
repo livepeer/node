@@ -1,0 +1,5 @@
+/bin/
+/.gocache/
+/.gomodcache/
+/.tools/
+*.log

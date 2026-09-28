@@ -1,0 +1,11 @@
+[[runners]]
+id = "local-runner"
+runner_url = "http://127.0.0.1:9000"
+app = "example"
+mode = "persistent"
+status = "ready"
+capacity = 2
+health_url = "http://127.0.0.1:9000/healthz"
+healthy_status_code = 200
+
+# Grant 127.0.0.1:9000 separately in runner_grants and health_grants.

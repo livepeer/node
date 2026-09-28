@@ -1,0 +1,5 @@
+listen = "127.0.0.1:8937"
+metrics_listen = "127.0.0.1:8938"
+rpc_url_file = "/run/secrets/livepeer-signer-rpc-url"
+auth_token_file = "/run/secrets/livepeer-signer-auth-token"
+behind_tls = false
