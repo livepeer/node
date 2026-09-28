@@ -1,5 +1,15 @@
 listen = "127.0.0.1:8937"
 metrics_listen = "127.0.0.1:8938"
-rpc_url_file = "/run/secrets/livepeer-signer-rpc-url"
 auth_token_file = "/run/secrets/livepeer-signer-auth-token"
+private_key_file = "/run/secrets/livepeer-signer-key"
+state_db = "/var/lib/livepeer/signer.sqlite"
+orchestrators = []
+discovery_grants = []
 behind_tls = false
+
+# Enable on-chain sender deposit and reserve validation together.
+# rpc_url_file = "/run/secrets/livepeer-signer-rpc-url"
+# rpc_grants = []
+# rpc_ca_file = "/etc/livepeer/signer-rpc-ca.pem"
+# chain_id = "42161"
+# controller_address = "0x0123456789abcdef0123456789abcdef01234567"

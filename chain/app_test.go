@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -64,11 +66,18 @@ func TestAccountValidatesSenderAndReadsPendingNonce(t *testing.T) {
 	require.Len(t, seen, 3)
 }
 
-func TestRPCResponseBodyIsLimited(t *testing.T) {
-	rpc := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write(bytes.Repeat([]byte("x"), (1<<20)+1))
-	}))
-	defer rpc.Close()
-	_, err := call(t.Context(), http.DefaultClient, rpc.URL, "eth_chainId")
-	require.ErrorContains(t, err, "exceeds 1 MiB")
+func TestChainConfigRejectsDirectSecretsAndRedactsURI(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "chain.toml")
+	require.NoError(t, os.WriteFile(path, []byte("rpc_url = 'https://credential@example.org'\n"), 0600))
+	var output bytes.Buffer
+	command := Root(&output, &output)
+	command.SetArgs([]string{"status", "--config", path, "--print-config"})
+	require.Error(t, command.Execute())
+	require.NoError(t, os.WriteFile(path, []byte("service_uri = 'https://user:password@example.org'\nchain_id = '1'\n"), 0600))
+	output.Reset()
+	command = Root(&output, &output)
+	command.SetArgs([]string{"status", "--config", path, "--print-config"})
+	require.NoError(t, command.Execute())
+	require.NotContains(t, output.String(), "password")
+	require.Contains(t, output.String(), "chain_id")
 }

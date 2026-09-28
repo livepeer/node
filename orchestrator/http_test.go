@@ -313,3 +313,16 @@ func TestTrickleChannelsScopedToSession(t *testing.T) {
 	srv.ServeHTTP(record, httptest.NewRequest(http.MethodGet, segment, nil))
 	require.Equal(t, http.StatusNotFound, record.Code)
 }
+
+func TestRunnerGPUIsPreservedForPythonDiscovery(t *testing.T) {
+	var request heartbeatRequest
+	require.NoError(t, json.Unmarshal([]byte(`{"runner_id":"gpu-runner","runner_url":"https://runner.example","app":"retained","mode":"single-shot","status":"ready","capacity":1,"gpu":{"id":"0","name":"H100","vram_mb":80000}}`), &request))
+	registry := NewRegistry("bootstrap", "https://orchestrator.example", time.Second, 30*time.Second)
+	_, status, err := registry.Heartbeat(request, "bootstrap")
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, status)
+	entries := registry.Discovery()
+	require.Len(t, entries, 1)
+	require.Len(t, entries[0].Runners, 1)
+	require.Equal(t, "H100", entries[0].Runners[0].GPU.Name)
+}

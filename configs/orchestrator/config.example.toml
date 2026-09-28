@@ -15,3 +15,17 @@ behind_tls = false
 # For direct HTTPS, set both files and change service_url to https://... .
 # tls_cert_file = "/etc/livepeer/tls/fullchain.pem"
 # tls_key_file = "/run/secrets/livepeer-tls-key.pem"
+
+# To enable paid runners, configure every field in this block. Prices sent by
+# runners are USD per hour or per fixed request; wei_per_usd is an operator
+# supplied exchange rate used at registration time.
+# payment_db = "/var/lib/livepeer/orchestrator-payment.sqlite"
+# payment_key_file = "/run/secrets/livepeer-orchestrator-key"
+# payment_rpc_url_file = "/run/secrets/livepeer-payment-rpc-url"
+# payment_rpc_grants = []
+# payment_rpc_ca_file = "/etc/livepeer/payment-rpc-ca.pem"
+# payment_chain_id = "42161"
+# payment_controller_address = "0x0123456789abcdef0123456789abcdef01234567"
+# wei_per_usd = "1000000000000000"
+# ticket_face_value = "10000000000000000"
+# ticket_win_prob = "57896044618658097711785492504343953926634992332820282019728792003956564819968"

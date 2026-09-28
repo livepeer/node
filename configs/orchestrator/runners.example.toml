@@ -8,4 +8,9 @@ capacity = 2
 health_url = "http://127.0.0.1:9000/healthz"
 healthy_status_code = 200
 
+# [runners.gpu]
+# id = "0"
+# name = "H100"
+# vram_mb = 80000
+
 # Grant 127.0.0.1:9000 separately in runner_grants and health_grants.

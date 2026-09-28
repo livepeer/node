@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/livepeer/node/destination"
+	"github.com/livepeer/node/pm"
 )
 
 const (
@@ -42,6 +43,7 @@ type Server struct {
 	runnerPolicy destination.Policy
 	proxyPolicy  destination.Policy
 	logger       *slog.Logger
+	payment      *pm.Engine
 	mux          *http.ServeMux
 	mu           sync.Mutex
 	channels     map[string]*channel
@@ -57,6 +59,8 @@ func NewServer(registry *Registry, runnerPolicy, proxyPolicy destination.Policy,
 	s.mux.HandleFunc("GET /discovery", s.discovery)
 	s.mux.HandleFunc("POST /apps/{runner_id}/session", s.reserve)
 	s.mux.HandleFunc("POST /apps/{runner_id}/session/{session_id}/stop", s.clientStop)
+	s.mux.HandleFunc("POST /apps/{runner_id}/session/{session_id}/payment", s.sessionPayment)
+	s.mux.HandleFunc("POST /refresh-payment", s.refreshPayment)
 	s.mux.HandleFunc("POST /runner/{runner_id}/session/{session_id}/stop", s.runnerStop)
 	s.mux.HandleFunc("POST /runner/{runner_id}/session/{session_id}/proxy", s.createProxy)
 	s.mux.HandleFunc("POST /runner/{runner_id}/session/{session_id}/channels", s.createChannels)
@@ -73,6 +77,8 @@ func NewServer(registry *Registry, runnerPolicy, proxyPolicy destination.Policy,
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.mux.ServeHTTP(w, r) }
+
+func (s *Server) SetPayment(engine *pm.Engine) { s.payment = engine }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -213,6 +219,9 @@ func (s *Server) discovery(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) reserve(w http.ResponseWriter, r *http.Request) {
+	if s.reservePaid(w, r) {
+		return
+	}
 	id, appURL, controlURL, status, err := s.registry.Reserve(r.PathValue("runner_id"))
 	if err != nil {
 		fail(w, status, err.Error())
@@ -255,7 +264,13 @@ func (s *Server) createProxy(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "invalid proxy JSON")
 		return
 	}
-	target, err := destination.ValidateURL(body.TargetURL)
+	var target *url.URL
+	var err error
+	if body.TargetURL == "" {
+		target, _, _, err = s.registry.sessionTarget(r.PathValue("runner_id"), r.PathValue("session_id"))
+	} else {
+		target, err = destination.ValidateURL(body.TargetURL)
+	}
 	if err != nil {
 		fail(w, http.StatusBadRequest, err.Error())
 		return
@@ -279,6 +294,9 @@ func (s *Server) proxySession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) proxySingleShot(w http.ResponseWriter, r *http.Request) {
+	if s.proxyPaidSingleShot(w, r) {
+		return
+	}
 	target, status, err := s.registry.singleShotTarget(r.PathValue("runner_id"))
 	if err != nil {
 		fail(w, status, err.Error())

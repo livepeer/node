@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"net/http"
 	"net/url"
 	"strings"
@@ -14,27 +15,57 @@ import (
 	"time"
 
 	"github.com/livepeer/node/destination"
+	"github.com/livepeer/node/pm"
 )
 
 type priceInfo struct {
 	Price    json.Number `json:"price" toml:"price"`
+	PriceUSD json.Number `json:"price_usd,omitempty" toml:"-"`
 	Currency string      `json:"currency" toml:"currency"`
 	Unit     string      `json:"unit" toml:"unit"`
 }
 
+type runnerGPU struct {
+	ID     string `json:"id,omitempty" toml:"id"`
+	Name   string `json:"name,omitempty" toml:"name"`
+	VRAMMB int    `json:"vram_mb,omitempty" toml:"vram_mb"`
+}
+
+func (g *runnerGPU) UnmarshalJSON(data []byte) error {
+	var index int
+	if err := json.Unmarshal(data, &index); err == nil {
+		if index < 0 {
+			return errors.New("GPU index must be nonnegative")
+		}
+		*g = runnerGPU{ID: fmt.Sprintf("%d", index)}
+		return nil
+	}
+	type plain runnerGPU
+	var value plain
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	if value.VRAMMB < 0 {
+		return errors.New("GPU VRAM must be nonnegative")
+	}
+	*g = runnerGPU(value)
+	return nil
+}
+
 type heartbeatRequest struct {
-	RunnerID   string    `json:"runner_id"`
-	Label      string    `json:"label"`
-	RunnerURL  string    `json:"runner_url"`
-	Version    string    `json:"version"`
-	Metadata   string    `json:"metadata"`
-	Status     string    `json:"status"`
-	Mode       string    `json:"mode"`
-	Proxy      bool      `json:"proxy"`
-	App        string    `json:"app"`
-	Capacity   int       `json:"capacity"`
-	PriceInfo  priceInfo `json:"price_info"`
-	SessionIDs []string  `json:"session_ids"`
+	RunnerID   string     `json:"runner_id"`
+	Label      string     `json:"label"`
+	RunnerURL  string     `json:"runner_url"`
+	Version    string     `json:"version"`
+	Metadata   string     `json:"metadata"`
+	GPU        *runnerGPU `json:"gpu,omitempty"`
+	Status     string     `json:"status"`
+	Mode       string     `json:"mode"`
+	Proxy      bool       `json:"proxy"`
+	App        string     `json:"app"`
+	Capacity   int        `json:"capacity"`
+	PriceInfo  priceInfo  `json:"price_info"`
+	SessionIDs []string   `json:"session_ids"`
 }
 
 type heartbeatResponse struct {
@@ -74,19 +105,46 @@ type session struct {
 }
 
 type Registry struct {
-	mu       sync.Mutex
-	runners  map[string]*runner
-	secret   string
-	service  string
-	interval time.Duration
-	ttl      time.Duration
-	onEvent  func(runnerID, event, sessionID string)
+	mu        sync.Mutex
+	runners   map[string]*runner
+	secret    string
+	service   string
+	interval  time.Duration
+	ttl       time.Duration
+	onEvent   func(runnerID, event, sessionID string)
+	weiPerUSD *big.Rat
 }
 
 const maxRunners = 256
 
 func NewRegistry(secret, service string, interval, ttl time.Duration) *Registry {
 	return &Registry{runners: make(map[string]*runner), secret: secret, service: strings.TrimRight(service, "/"), interval: interval, ttl: ttl}
+}
+
+func (r *Registry) SetWeiPerUSD(rate *big.Rat) {
+	if rate != nil {
+		r.weiPerUSD = new(big.Rat).Set(rate)
+	}
+}
+
+func (r *Registry) normalizePrice(price *priceInfo) error {
+	value := strings.TrimSpace(price.Price.String())
+	if value == "" || value == "0" {
+		*price = priceInfo{}
+		return nil
+	}
+	if r.weiPerUSD == nil {
+		return errors.New("paid runners require on-chain payment support")
+	}
+	if price.Currency != "" && !strings.EqualFold(price.Currency, "usd") {
+		return errors.New("runner price currency must be USD")
+	}
+	wei, unit, err := pm.ConvertRunnerPrice(value, price.Unit, r.weiPerUSD)
+	if err != nil {
+		return err
+	}
+	*price = priceInfo{Price: json.Number(wei.String()), PriceUSD: json.Number(value), Currency: "wei", Unit: unit}
+	return nil
 }
 
 func randomID() (string, error) {
@@ -120,10 +178,6 @@ func validateHeartbeat(req heartbeatRequest) error {
 	if req.PriceInfo.Unit != "" && req.PriceInfo.Unit != "hour" && req.PriceInfo.Unit != "fixed" {
 		return errors.New("price_info.unit must be hour or fixed")
 	}
-	price := req.PriceInfo.Price.String()
-	if price != "" && price != "0" {
-		return errors.New("paid runners require on-chain payment support")
-	}
 	return nil
 }
 
@@ -143,6 +197,9 @@ func validRouteID(id string) bool {
 
 func (r *Registry) Heartbeat(req heartbeatRequest, auth string) (heartbeatResponse, int, error) {
 	if err := validateHeartbeat(req); err != nil {
+		return heartbeatResponse{}, http.StatusBadRequest, err
+	}
+	if err := r.normalizePrice(&req.PriceInfo); err != nil {
 		return heartbeatResponse{}, http.StatusBadRequest, err
 	}
 	r.mu.Lock()
@@ -217,15 +274,16 @@ func (r *Registry) Unregister(id, auth string) (int, error) {
 }
 
 type discoveryRunner struct {
-	URL               string    `json:"url"`
-	App               string    `json:"app"`
-	Version           string    `json:"version,omitempty"`
-	Metadata          string    `json:"metadata,omitempty"`
-	Mode              string    `json:"mode"`
-	Capacity          int       `json:"capacity"`
-	CapacityUsed      int       `json:"capacity_used"`
-	CapacityAvailable int       `json:"capacity_available"`
-	PriceInfo         priceInfo `json:"price_info"`
+	URL               string     `json:"url"`
+	App               string     `json:"app"`
+	Version           string     `json:"version,omitempty"`
+	Metadata          string     `json:"metadata,omitempty"`
+	GPU               *runnerGPU `json:"gpu,omitempty"`
+	Mode              string     `json:"mode"`
+	Capacity          int        `json:"capacity"`
+	CapacityUsed      int        `json:"capacity_used"`
+	CapacityAvailable int        `json:"capacity_available"`
+	PriceInfo         priceInfo  `json:"price_info"`
 }
 
 type discoveryEntry struct {
@@ -245,7 +303,7 @@ func (r *Registry) Discovery() []discoveryEntry {
 		if available <= 0 {
 			continue
 		}
-		result = append(result, discoveryRunner{URL: r.appURL(id, item.Mode, ""), App: item.App, Version: item.Version, Metadata: item.Metadata, Mode: item.Mode, Capacity: item.Capacity, CapacityUsed: len(item.Sessions), CapacityAvailable: available, PriceInfo: item.PriceInfo})
+		result = append(result, discoveryRunner{URL: r.appURL(id, item.Mode, ""), App: item.App, Version: item.Version, Metadata: item.Metadata, GPU: item.GPU, Mode: item.Mode, Capacity: item.Capacity, CapacityUsed: len(item.Sessions), CapacityAvailable: available, PriceInfo: item.PriceInfo})
 	}
 	return []discoveryEntry{{Address: r.service, Runners: result}}
 }
@@ -265,21 +323,32 @@ func (r *Registry) appURL(id, mode, sessionID string) string {
 }
 
 func (r *Registry) Reserve(id string) (string, string, string, int, error) {
+	return r.ReserveWithID(id, "")
+}
+
+func (r *Registry) ReserveWithID(id, requestedID string) (string, string, string, int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	item := r.runners[id]
 	if item == nil || !r.usable(item) {
 		return "", "", "", http.StatusNotFound, errors.New("runner unavailable")
 	}
-	if item.Mode != "persistent" {
+	if item.Mode != "persistent" && !(item.Mode == "single-shot" && requestedID != "") {
 		return "", "", "", http.StatusBadRequest, errors.New("only persistent runners have sessions")
 	}
 	if len(item.Sessions) >= item.Capacity {
 		return "", "", "", http.StatusConflict, errors.New("runner at capacity")
 	}
-	sessionID, err := randomID()
-	if err != nil {
-		return "", "", "", http.StatusInternalServerError, err
+	sessionID := requestedID
+	if sessionID == "" {
+		var err error
+		sessionID, err = randomID()
+		if err != nil {
+			return "", "", "", http.StatusInternalServerError, err
+		}
+	}
+	if !validRouteID(sessionID) || item.Sessions[sessionID] != nil {
+		return "", "", "", http.StatusConflict, errors.New("session already exists or invalid")
 	}
 	token, err := randomID()
 	if err != nil {
@@ -290,6 +359,64 @@ func (r *Registry) Reserve(id string) (string, string, string, int, error) {
 		r.onEvent(id, "reserved", sessionID)
 	}
 	return sessionID, r.appURL(id, item.Mode, sessionID), r.service + "/apps/" + url.PathEscape(id) + "/session/" + url.PathEscape(sessionID), http.StatusOK, nil
+}
+
+func (r *Registry) PriceForRunner(id string) (priceInfo, int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	item := r.runners[id]
+	if item == nil || !r.usable(item) {
+		return priceInfo{}, http.StatusNotFound, errors.New("runner unavailable")
+	}
+	return item.PriceInfo, http.StatusOK, nil
+}
+
+func (r *Registry) ModeForRunner(id string) (string, int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	item := r.runners[id]
+	if item == nil || !r.usable(item) {
+		return "", http.StatusNotFound, errors.New("runner unavailable")
+	}
+	return item.Mode, http.StatusOK, nil
+}
+
+func (r *Registry) PriceForSession(id, sid string) (priceInfo, int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	item := r.runners[id]
+	if item == nil || item.Sessions[sid] == nil {
+		return priceInfo{}, http.StatusNotFound, errors.New("session not found")
+	}
+	return item.PriceInfo, http.StatusOK, nil
+}
+
+func (r *Registry) PaidSessions() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var ids []string
+	for _, item := range r.runners {
+		if item.PriceInfo.Price != "" {
+			for id := range item.Sessions {
+				ids = append(ids, id)
+			}
+		}
+	}
+	return ids
+}
+
+func (r *Registry) ReleaseBySession(sid string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for id, item := range r.runners {
+		if item.Sessions[sid] != nil {
+			delete(item.Sessions, sid)
+			if r.onEvent != nil {
+				r.onEvent(id, "released", sid)
+			}
+			return
+		}
+	}
 }
 
 func (r *Registry) release(id, sid, token string, callback bool) (int, error) {
@@ -392,22 +519,31 @@ func (r *Registry) Expire() {
 }
 
 type StaticRunner struct {
-	ID         string `toml:"id"`
-	RunnerURL  string `toml:"runner_url"`
-	App        string `toml:"app"`
-	Mode       string `toml:"mode"`
-	Status     string `toml:"status"`
-	Capacity   int    `toml:"capacity"`
-	HealthURL  string `toml:"health_url"`
-	HealthCode int    `toml:"healthy_status_code"`
+	ID         string     `toml:"id"`
+	Label      string     `toml:"label"`
+	Proxy      bool       `toml:"proxy"`
+	RunnerURL  string     `toml:"runner_url"`
+	Version    string     `toml:"version"`
+	Metadata   string     `toml:"metadata"`
+	GPU        *runnerGPU `toml:"gpu"`
+	App        string     `toml:"app"`
+	Mode       string     `toml:"mode"`
+	Status     string     `toml:"status"`
+	Capacity   int        `toml:"capacity"`
+	HealthURL  string     `toml:"health_url"`
+	HealthCode int        `toml:"healthy_status_code"`
+	PriceInfo  priceInfo  `toml:"price_info"`
 }
 
 func (r *Registry) AddStatic(config StaticRunner) error {
 	if !validRouteID(config.ID) {
 		return errors.New("static runner id must be a route-safe identifier")
 	}
-	req := heartbeatRequest{RunnerID: config.ID, RunnerURL: config.RunnerURL, App: config.App, Mode: config.Mode, Status: config.Status, Capacity: config.Capacity}
+	req := heartbeatRequest{RunnerID: config.ID, Label: config.Label, Proxy: config.Proxy, RunnerURL: config.RunnerURL, Version: config.Version, Metadata: config.Metadata, GPU: config.GPU, App: config.App, Mode: config.Mode, Status: config.Status, Capacity: config.Capacity, PriceInfo: config.PriceInfo}
 	if err := validateHeartbeat(req); err != nil {
+		return fmt.Errorf("static runner %s: %w", config.ID, err)
+	}
+	if err := r.normalizePrice(&req.PriceInfo); err != nil {
 		return fmt.Errorf("static runner %s: %w", config.ID, err)
 	}
 	if config.HealthURL != "" {

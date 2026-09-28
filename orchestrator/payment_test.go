@@ -1,0 +1,232 @@
+package orchestrator
+
+import (
+	"bytes"
+	"context"
+	"encoding/hex"
+	"encoding/json"
+	"io"
+	"log/slog"
+	"math/big"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+	"time"
+
+	ethcommon "github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/livepeer/node/destination"
+	"github.com/livepeer/node/eth"
+	"github.com/livepeer/node/pm"
+	"github.com/livepeer/node/signer"
+	"github.com/stretchr/testify/require"
+)
+
+type paymentTestChain struct{}
+
+func (paymentTestChain) Snapshot(context.Context) (pm.ChainSnapshot, error) {
+	return pm.ChainSnapshot{Block: big.NewInt(50), Round: big.NewInt(5), RoundHash: ethcommon.HexToHash("0x1234")}, nil
+}
+func (paymentTestChain) ValidateSender(context.Context, ethcommon.Address, *big.Int) error {
+	return nil
+}
+func (paymentTestChain) IsActive(context.Context, ethcommon.Address) (bool, error) { return true, nil }
+
+func paymentTestKey(t *testing.T) *eth.Key {
+	t.Helper()
+	private, err := crypto.GenerateKey()
+	require.NoError(t, err)
+	path := filepath.Join(t.TempDir(), "key")
+	require.NoError(t, os.WriteFile(path, []byte(hex.EncodeToString(crypto.FromECDSA(private))), 0600))
+	key, err := eth.OpenKeyFile(path)
+	require.NoError(t, err)
+	return key
+}
+
+// Adapted from go-livepeer/server/ai_http_test.go's paid reservation,
+// fixed-price accounting, and follow-up payment rejection cases.
+func TestPaidFixedSessionWithRemoteSigner(t *testing.T) {
+	recipient := paymentTestKey(t)
+	payer := paymentTestKey(t)
+	store, err := pm.OpenSQLite(filepath.Join(t.TempDir(), "recipient.sqlite"))
+	require.NoError(t, err)
+	defer store.Close()
+	max := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
+	engine, err := pm.NewEngine(store, paymentTestChain{}, recipient.Address(), big.NewInt(10), max)
+	require.NoError(t, err)
+	registry := NewRegistry("bootstrap", "http://127.0.0.1:8935", time.Second, 30*time.Second)
+	registry.SetWeiPerUSD(big.NewRat(10, 1))
+	resp, status, err := registry.Heartbeat(heartbeatRequest{RunnerID: "runner1", RunnerURL: "http://127.0.0.1:9000", App: "demo", Mode: "persistent", Capacity: 1, PriceInfo: priceInfo{Price: "1", Currency: "usd", Unit: "fixed"}}, "bootstrap")
+	require.NoError(t, err)
+	require.Equal(t, 200, status)
+	require.Equal(t, "runner1", resp.RunnerID)
+	policy, err := destination.New("runner", []string{"127.0.0.1:9000"})
+	require.NoError(t, err)
+	server := NewServer(registry, policy, policy, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	server.SetPayment(engine)
+	signerService, err := signer.OpenService(payer, filepath.Join(t.TempDir(), "signer.sqlite"), "")
+	require.NoError(t, err)
+	defer signerService.Close()
+	reserveURL := "/apps/runner1/session"
+	first := httptest.NewRequest(http.MethodPost, reserveURL, nil)
+	first.Header.Set("Livepeer-Payer-Address", payer.Address().Hex())
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, first)
+	require.Equal(t, 402, w.Code, w.Body.String())
+	var challenge pm.Challenge
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &challenge))
+	require.NotEmpty(t, challenge.PaymentParams)
+	signerBody, err := json.Marshal(map[string]any{"orchestrator": challenge.PaymentParams, "type": "fixed", "ManifestID": challenge.ManifestID})
+	require.NoError(t, err)
+	signReq := httptest.NewRequest(http.MethodPost, "/generate-live-payment", bytes.NewReader(signerBody))
+	signed := httptest.NewRecorder()
+	signerService.ServeHTTP(signed, signReq)
+	require.Equal(t, 200, signed.Code, signed.Body.String())
+	var payment struct {
+		Payment  string `json:"payment"`
+		SegCreds string `json:"segCreds"`
+	}
+	require.NoError(t, json.Unmarshal(signed.Body.Bytes(), &payment))
+	paid := httptest.NewRequest(http.MethodPost, reserveURL, nil)
+	paid.Header.Set("Livepeer-Payment", payment.Payment)
+	paid.Header.Set("Livepeer-Segment", payment.SegCreds)
+	w = httptest.NewRecorder()
+	server.ServeHTTP(w, paid)
+	require.Equal(t, 200, w.Code, w.Body.String())
+	var reservation map[string]string
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &reservation))
+	require.Equal(t, challenge.ManifestID, reservation["session_id"])
+	balance, err := engine.Balance(challenge.ManifestID)
+	require.NoError(t, err)
+	require.Zero(t, balance.Sign())
+	count, err := store.WinningTicketCount(payer.Address(), 0)
+	require.NoError(t, err)
+	require.Equal(t, 1, count)
+	w = httptest.NewRecorder()
+	followup := httptest.NewRequest(http.MethodPost, challenge.PaymentURL, nil)
+	server.ServeHTTP(w, followup)
+	require.Equal(t, 409, w.Code)
+}
+
+func TestPinnedPythonPaidSingleShot(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Python SDK integration test")
+	}
+	python, export, root := pinnedPythonSDK(t)
+
+	runner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Livepeer-Session-Token") == "" {
+			http.Error(w, "missing session", http.StatusForbidden)
+			return
+		}
+		var request map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, "invalid JSON", 400)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"paid": true, "prompt": request["prompt"]})
+	}))
+	defer runner.Close()
+	payer := paymentTestKey(t)
+	recipient := paymentTestKey(t)
+	store, err := pm.OpenSQLite(filepath.Join(t.TempDir(), "recipient.sqlite"))
+	require.NoError(t, err)
+	defer store.Close()
+	max := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
+	engine, err := pm.NewEngine(store, paymentTestChain{}, recipient.Address(), big.NewInt(10), max)
+	require.NoError(t, err)
+	registry := NewRegistry("", "http://127.0.0.1:0", time.Second, 30*time.Second)
+	registry.SetWeiPerUSD(big.NewRat(10, 1))
+	require.NoError(t, registry.AddStatic(StaticRunner{ID: "paid-python", RunnerURL: runner.URL, App: "paid-python-app", Mode: "single-shot", Status: "ready", Capacity: 1, PriceInfo: priceInfo{Price: "1", Currency: "usd", Unit: "fixed"}}))
+	require.NoError(t, registry.AddStatic(StaticRunner{ID: "paid-python-live", RunnerURL: runner.URL, App: "paid-python-app", Mode: "single-shot", Status: "ready", Capacity: 1, PriceInfo: priceInfo{Price: "3600", Currency: "usd", Unit: "hour"}}))
+	policy, err := destination.New("runner", []string{strings.TrimPrefix(runner.URL, "http://")})
+	require.NoError(t, err)
+	server := NewServer(registry, policy, policy, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	server.SetPayment(engine)
+	orch := httptest.NewUnstartedServer(server)
+	defer orch.Close()
+	registry.service = "http://" + orch.Listener.Addr().String()
+	orch.Start()
+	signerService, err := signer.OpenService(payer, filepath.Join(t.TempDir(), "signer.sqlite"), "")
+	require.NoError(t, err)
+	defer signerService.Close()
+	signerHTTP := httptest.NewServer(signerService)
+	defer signerHTTP.Close()
+	fixture := filepath.Join(root, "cmd", "livepeer", "testdata", "python_paid_compat.py")
+	command := exec.Command(python, fixture, orch.URL, signerHTTP.URL)
+	command.Env = append(os.Environ(), "PYTHONPATH="+filepath.Join(export, "src"))
+	output, err := command.CombinedOutput()
+	require.NoError(t, err, string(output))
+	require.Contains(t, string(output), "Pinned Python runner paid fixed and live calls passed")
+	count, err := store.WinningTicketCount(payer.Address(), 0)
+	require.NoError(t, err)
+	require.Equal(t, 11, count)
+}
+
+func TestPinnedPythonSignerDiscovery(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Python SDK integration test")
+	}
+	python, export, root := pinnedPythonSDK(t)
+	registry := NewRegistry("", "http://127.0.0.1:0", time.Second, 30*time.Second)
+	require.NoError(t, registry.AddStatic(StaticRunner{ID: "discovery-runner", RunnerURL: "https://runner.example", App: "discovery-app", Mode: "single-shot", Status: "ready", Capacity: 1, GPU: &runnerGPU{ID: "0", Name: "H100", VRAMMB: 80000}}))
+	policy, err := destination.New("runner", nil)
+	require.NoError(t, err)
+	server := NewServer(registry, policy, policy, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	orch := httptest.NewUnstartedServer(server)
+	defer orch.Close()
+	registry.service = "http://" + orch.Listener.Addr().String()
+	orch.Start()
+	signerService, err := signer.OpenService(paymentTestKey(t), filepath.Join(t.TempDir(), "signer.sqlite"), "")
+	require.NoError(t, err)
+	defer signerService.Close()
+	require.NoError(t, signerService.SetDiscovery([]string{orch.URL}, []string{strings.TrimPrefix(orch.URL, "http://")}, ""))
+	signerHTTP := httptest.NewServer(signerService)
+	defer signerHTTP.Close()
+	fixture := filepath.Join(root, "cmd", "livepeer", "testdata", "python_signer_discovery.py")
+	command := exec.Command(python, fixture, signerHTTP.URL)
+	command.Env = append(os.Environ(), "PYTHONPATH="+filepath.Join(export, "src"))
+	output, err := command.CombinedOutput()
+	require.NoError(t, err, string(output))
+	require.Contains(t, string(output), "Pinned Python signer discovery passed")
+}
+
+func pinnedPythonSDK(t *testing.T) (python, export, root string) {
+	t.Helper()
+	_, testFile, _, ok := runtime.Caller(0)
+	require.True(t, ok)
+	root = filepath.Clean(filepath.Join(filepath.Dir(testFile), ".."))
+	sdkDir := filepath.Join(root, "..", "python-runner")
+	if configured := os.Getenv("PYTHON_RUNNER_SDK_DIR"); configured != "" {
+		sdkDir = configured
+	}
+	python = os.Getenv("PYTHON_RUNNER_PYTHON")
+	if python == "" {
+		python = filepath.Join(sdkDir, ".venv", "bin", "python")
+	}
+	if _, err := os.Stat(python); err != nil {
+		if os.Getenv("PYTHON_RUNNER_PYTHON") != "" || os.Getenv("PYTHON_RUNNER_SDK_DIR") != "" {
+			t.Fatalf("configured pinned Python runner interpreter unavailable: %v", err)
+		}
+		t.Skip("pinned Python runner interpreter unavailable")
+	}
+	revision, err := exec.Command("git", "-C", sdkDir, "rev-parse", "HEAD").Output()
+	require.NoError(t, err)
+	require.Equal(t, "44df06157fcdb864e37d971e8caba86b2a7dc92e", strings.TrimSpace(string(revision)))
+	export = t.TempDir()
+	archive := exec.Command("git", "-C", sdkDir, "archive", "HEAD")
+	tar := exec.Command("tar", "-xf", "-", "-C", export)
+	pipe, err := archive.StdoutPipe()
+	require.NoError(t, err)
+	tar.Stdin = pipe
+	require.NoError(t, tar.Start())
+	require.NoError(t, archive.Run())
+	require.NoError(t, tar.Wait())
+	return
+}

@@ -37,7 +37,7 @@ func TestRealBinaryOffchainFlow(t *testing.T) {
 	require.True(t, ok)
 	root := filepath.Clean(filepath.Join(filepath.Dir(file), "../.."))
 	install := t.TempDir()
-	for _, name := range []string{"livepeer", "livepeer-orchestrator"} {
+	for _, name := range []string{"livepeer", "livepeer-orchestrator", "livepeer-signer", "livepeer-chain"} {
 		build := exec.Command("go", "build", "-o", filepath.Join(install, name), "./cmd/"+name)
 		build.Dir = root
 		output, err := build.CombinedOutput()
@@ -53,6 +53,20 @@ func TestRealBinaryOffchainFlow(t *testing.T) {
 	completion, err := exec.Command(dispatcher, "completion", "orchestrator", "bash").CombinedOutput()
 	require.NoError(t, err, string(completion))
 	require.Contains(t, string(completion), "bash completion")
+	for _, component := range []string{"orchestrator", "signer", "chain"} {
+		direct := filepath.Join(install, "livepeer-"+component)
+		for _, arguments := range [][]string{{"--help"}, {"completion", "bash"}, {"completion", "zsh"}, {"completion", "fish"}, {"completion", "powershell"}} {
+			actual, err := exec.Command(direct, arguments...).CombinedOutput()
+			require.NoError(t, err, string(actual))
+			dispatched := append([]string{component}, arguments...)
+			if arguments[0] == "completion" {
+				dispatched = append([]string{"completion", component}, arguments[1:]...)
+			}
+			forwarded, err := exec.Command(dispatcher, dispatched...).CombinedOutput()
+			require.NoError(t, err, string(forwarded))
+			require.Equal(t, string(actual), string(forwarded), "component=%s args=%v", component, arguments)
+		}
+	}
 
 	runner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.NotEmpty(t, r.Header.Get("Livepeer-Session-Token"))

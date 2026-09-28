@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/big"
 	"net"
 	"net/http"
 	"os/signal"
@@ -16,6 +17,8 @@ import (
 	"github.com/BurntSushi/toml"
 	"github.com/j0sh/boa/pkg/boa"
 	"github.com/livepeer/node/destination"
+	"github.com/livepeer/node/eth"
+	"github.com/livepeer/node/pm"
 	"github.com/livepeer/node/version"
 	"github.com/spf13/cobra"
 )
@@ -33,6 +36,17 @@ type Params struct {
 	BootstrapSecret     string        `name:"bootstrap-secret" secret:"true" optional:"true" toml:"bootstrap_secret" descr:"Dynamic runner bootstrap credential"`
 	BootstrapSecretFile string        `name:"bootstrap-secret-file" secretfor:"BootstrapSecret" toml:"bootstrap_secret_file" descr:"File containing runner bootstrap credential"`
 	RunnerConfig        string        `name:"runner-config" optional:"true" file:"true" toml:"runner_config" descr:"Static runner TOML path"`
+	PaymentDB           string        `name:"payment-db" optional:"true" toml:"payment_db"`
+	PaymentKeyFile      string        `name:"payment-key-file" optional:"true" file:"true" toml:"payment_key_file"`
+	PaymentRPCURL       string        `name:"payment-rpc-url" secret:"true" optional:"true" toml:"payment_rpc_url"`
+	PaymentRPCURLFile   string        `name:"payment-rpc-url-file" secretfor:"PaymentRPCURL" toml:"payment_rpc_url_file"`
+	PaymentRPCGrants    []string      `name:"payment-rpc-grants" optional:"true" toml:"payment_rpc_grants"`
+	PaymentRPCCAFile    string        `name:"payment-rpc-ca-file" optional:"true" file:"true" toml:"payment_rpc_ca_file"`
+	PaymentChainID      string        `name:"payment-chain-id" optional:"true" toml:"payment_chain_id"`
+	PaymentController   string        `name:"payment-controller-address" optional:"true" toml:"payment_controller_address"`
+	WeiPerUSD           string        `name:"wei-per-usd" optional:"true" toml:"wei_per_usd"`
+	TicketFaceValue     string        `name:"ticket-face-value" optional:"true" toml:"ticket_face_value"`
+	TicketWinProb       string        `name:"ticket-win-prob" optional:"true" toml:"ticket_win_prob"`
 	RunnerGrants        []string      `name:"runner-grants" optional:"true" toml:"runner_grants" descr:"Exact private runner host:port grants"`
 	RunnerCAFile        string        `name:"runner-ca-file" optional:"true" file:"true" toml:"runner_ca_file" descr:"Custom runner CA bundle"`
 	SessionProxyGrants  []string      `name:"session-proxy-grants" optional:"true" toml:"session_proxy_grants" descr:"Exact private generated proxy target grants"`
@@ -53,6 +67,28 @@ func (p Params) Validate() error {
 	}
 	if p.BootstrapSecret == "" && p.RunnerConfig == "" {
 		return errors.New("bootstrap secret or static runner config is required")
+	}
+	paymentRequested := p.PaymentKeyFile != "" || p.PaymentDB != "" || p.PaymentRPCURL != "" || p.PaymentChainID != "" || p.PaymentController != "" || p.WeiPerUSD != "" || p.TicketFaceValue != "" || p.TicketWinProb != "" || len(p.PaymentRPCGrants) > 0 || p.PaymentRPCCAFile != ""
+	if paymentRequested {
+		if p.PaymentDB == "" || p.PaymentRPCURL == "" || p.PaymentChainID == "" || p.PaymentController == "" || p.WeiPerUSD == "" || p.TicketFaceValue == "" || p.TicketWinProb == "" {
+			return errors.New("on-chain payment requires payment-db, key, RPC, chain-id, controller, wei-per-usd, face-value and win-prob")
+		}
+		if !eth.ValidAddress(p.PaymentController) {
+			return errors.New("invalid payment controller address")
+		}
+		for _, value := range []string{p.PaymentChainID, p.TicketFaceValue, p.TicketWinProb} {
+			n, ok := new(big.Int).SetString(value, 10)
+			if !ok || n.Sign() <= 0 {
+				return errors.New("payment chain ID and ticket values must be positive decimal integers")
+			}
+		}
+		rate, ok := new(big.Rat).SetString(p.WeiPerUSD)
+		if !ok || rate.Sign() <= 0 {
+			return errors.New("wei-per-usd must be positive")
+		}
+		if _, err := destination.ValidateURL(p.PaymentRPCURL); err != nil {
+			return errors.New("invalid payment RPC URL")
+		}
 	}
 	listenHost, _, err := net.SplitHostPort(p.Listen)
 	if err != nil {
@@ -153,7 +189,7 @@ func printConfig(ctx *boa.HookContext, out io.Writer) error {
 	}
 	// File paths and any future free-form strings are excluded by this allowlist.
 	allowed := map[string]any{}
-	for _, key := range []string{"listen", "metrics_listen", "service_url", "runner_grants", "session_proxy_grants", "health_grants", "heartbeat_interval", "heartbeat_ttl", "behind_tls"} {
+	for _, key := range []string{"listen", "metrics_listen", "runner_grants", "session_proxy_grants", "health_grants", "heartbeat_interval", "heartbeat_ttl", "behind_tls", "payment_db", "payment_chain_id", "payment_controller_address", "wei_per_usd", "ticket_face_value", "ticket_win_prob"} {
 		if value, exists := values[key]; exists {
 			allowed[key] = value
 		}
@@ -214,11 +250,49 @@ func Serve(parent context.Context, p Params, logOut io.Writer) error {
 		return err
 	}
 	registry := NewRegistry(p.BootstrapSecret, p.ServiceURL, p.HeartbeatInterval, p.HeartbeatTTL)
+	var engine *pm.Engine
+	var paymentStore *pm.SQLiteStore
+	var paymentChain eth.PaymentChain
+	var paymentKey *eth.Key
+	var paymentChainID *big.Int
+	if p.PaymentKeyFile != "" {
+		rate, _ := new(big.Rat).SetString(p.WeiPerUSD)
+		registry.SetWeiPerUSD(rate)
+		paymentKey, err = eth.OpenKeyFile(p.PaymentKeyFile)
+		if err != nil {
+			return err
+		}
+		paymentStore, err = pm.OpenSQLite(p.PaymentDB)
+		if err != nil {
+			return err
+		}
+		defer paymentStore.Close()
+		rpc, err := eth.OpenRPC(p.PaymentRPCURL, p.PaymentRPCGrants, p.PaymentRPCCAFile)
+		if err != nil {
+			return err
+		}
+		paymentChainID, _ = new(big.Int).SetString(p.PaymentChainID, 10)
+		if err := rpc.CheckChainID(parent, paymentChainID); err != nil {
+			return err
+		}
+		contracts, err := eth.OpenContracts(rpc, p.PaymentController)
+		if err != nil {
+			return err
+		}
+		paymentChain = eth.PaymentChain{Contracts: contracts}
+		face, _ := new(big.Int).SetString(p.TicketFaceValue, 10)
+		prob, _ := new(big.Int).SetString(p.TicketWinProb, 10)
+		engine, err = pm.NewEngine(paymentStore, pm.EthereumChain{Client: paymentChain}, paymentKey.Address(), face, prob)
+		if err != nil {
+			return err
+		}
+	}
 	if err := loadStatic(p.RunnerConfig, registry); err != nil {
 		return err
 	}
 	logger := slog.New(slog.NewTextHandler(logOut, nil))
 	app := NewServer(registry, runnerPolicy, proxyPolicy, logger)
+	app.SetPayment(engine)
 	sem := make(chan struct{}, 256)
 	limited := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {
@@ -286,6 +360,10 @@ func Serve(parent context.Context, p Params, logOut io.Writer) error {
 			}
 		case <-ticker.C:
 			registry.Expire()
+			if engine != nil {
+				app.ChargePaidSessions(ctx)
+				app.RedeemWinningTickets(ctx, paymentStore, paymentChain, paymentKey, paymentChainID)
+			}
 			if p.RunnerConfig != "" {
 				client := healthPolicy.Client()
 				client.Timeout = 5 * time.Second
