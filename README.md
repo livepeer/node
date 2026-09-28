@@ -81,8 +81,8 @@ remains enabled.
 | `livepeer chain status` and `account` | Implemented read-only JSON-RPC commands |
 | Other approved `livepeer chain ...` commands | Pending |
 
-The 16 chain operations from the extraction plan are approved for the initial
-surface. Payment, ticket, signer and chain-watcher state will use SQLite in
+The 17 listed chain operations from the extraction plan are approved for the
+initial surface. Payment, ticket, signer and chain-watcher state will use SQLite in
 each component. The on-chain schema and migration model are still design work.
 
 ## Test
