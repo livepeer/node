@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/livepeer/node/internal/destination"
 	"github.com/stretchr/testify/require"
 )
@@ -81,6 +83,64 @@ func TestDynamicRunnerSessionProxyAndCapacity(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, response.StatusCode)
 	require.NoError(t, response.Body.Close())
+}
+
+func TestSessionProxyStreamsSSEAndWebSocket(t *testing.T) {
+	upgrader := websocket.Upgrader{}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/events":
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, "data: hello\n\n")
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
+		case "/ws":
+			conn, err := upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				return
+			}
+			defer conn.Close()
+			kind, message, err := conn.ReadMessage()
+			if err == nil {
+				_ = conn.WriteMessage(kind, message)
+			}
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer upstream.Close()
+	grant := strings.TrimPrefix(upstream.URL, "http://")
+	policy, err := destination.New("runner", []string{grant})
+	require.NoError(t, err)
+	registry := NewRegistry("bootstrap", "http://orchestrator.example", time.Second, time.Minute)
+	registered, _, err := registry.Heartbeat(heartbeatRequest{RunnerURL: upstream.URL, App: "stream", Mode: "persistent", Capacity: 1}, "bootstrap")
+	require.NoError(t, err)
+	server := httptest.NewServer(NewServer(registry, policy, policy, slog.New(slog.NewTextHandler(io.Discard, nil))))
+	defer server.Close()
+	sid, _, _, _, err := registry.Reserve(registered.RunnerID)
+	require.NoError(t, err)
+	base := server.URL + "/apps/" + registered.RunnerID + "/session/" + sid + "/app"
+	response, err := http.Get(base + "/events")
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	require.Equal(t, "text/event-stream", response.Header.Get("Content-Type"))
+	line, err := bufio.NewReader(response.Body).ReadString('\n')
+	require.NoError(t, err)
+	require.Equal(t, "data: hello\n", line)
+	require.NoError(t, response.Body.Close())
+	wsURL := "ws" + strings.TrimPrefix(base, "http") + "/ws"
+	conn, handshake, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	require.NoError(t, err)
+	if handshake != nil {
+		require.NoError(t, handshake.Body.Close())
+	}
+	defer conn.Close()
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(3*time.Second)))
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte("echo")))
+	kind, message, err := conn.ReadMessage()
+	require.NoError(t, err)
+	require.Equal(t, websocket.TextMessage, kind)
+	require.Equal(t, "echo", string(message))
 }
 
 func TestRunnerDestinationDeniedWithoutGrant(t *testing.T) {

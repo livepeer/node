@@ -2,10 +2,20 @@ package orchestrator
 
 import (
 	"bytes"
+	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/j0sh/boa/pkg/boa"
 	"github.com/spf13/cobra"
@@ -19,6 +29,56 @@ func execute(t *testing.T, args ...string) (string, error) {
 	cmd.SetArgs(args)
 	err := cmd.Execute()
 	return output.String(), err
+}
+
+func freeTCPPort(t *testing.T) int {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	port := listener.Addr().(*net.TCPAddr).Port
+	require.NoError(t, listener.Close())
+	return port
+}
+
+func TestDirectTLSServesWithOperatorCertificate(t *testing.T) {
+	fixture := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	certificate := fixture.TLS.Certificates[0]
+	fixture.Close()
+	keyDER, err := x509.MarshalPKCS8PrivateKey(certificate.PrivateKey)
+	require.NoError(t, err)
+	dir := t.TempDir()
+	certPath, keyPath := filepath.Join(dir, "cert.pem"), filepath.Join(dir, "key.pem")
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificate.Certificate[0]})
+	require.NoError(t, os.WriteFile(certPath, certPEM, 0600))
+	require.NoError(t, os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}), 0600))
+	mainPort, metricsPort := freeTCPPort(t), freeTCPPort(t)
+	address := fmt.Sprintf("https://127.0.0.1:%d", mainPort)
+	p := Params{
+		Listen: fmt.Sprintf("127.0.0.1:%d", mainPort), MetricsListen: fmt.Sprintf("127.0.0.1:%d", metricsPort),
+		ServiceURL: address, BootstrapSecret: "bootstrap", HeartbeatInterval: time.Second,
+		HeartbeatTTL: time.Minute, TLSCertFile: certPath, TLSKeyFile: keyPath,
+	}
+	require.NoError(t, p.Validate())
+	trust := x509.NewCertPool()
+	require.True(t, trust.AppendCertsFromPEM(certPEM))
+	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: trust}}}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- Serve(ctx, p, io.Discard) }()
+	t.Cleanup(func() {
+		cancel()
+		require.NoError(t, <-done)
+	})
+	require.Eventually(t, func() bool {
+		response, err := client.Get(address + "/discovery")
+		if err != nil {
+			return false
+		}
+		defer response.Body.Close()
+		return response.StatusCode == http.StatusOK
+	}, 5*time.Second, 20*time.Millisecond)
+	p.TLSKeyFile = ""
+	require.ErrorContains(t, p.Validate(), "configured together")
 }
 
 func TestConfigPrecedenceAndRedaction(t *testing.T) {

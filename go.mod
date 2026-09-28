@@ -4,6 +4,7 @@ go 1.27.1
 
 require (
 	github.com/BurntSushi/toml v1.6.0
+	github.com/gorilla/websocket v1.5.3
 	github.com/j0sh/boa v0.0.3-0.20260926065355-ae47ed4e0e35
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.11.1

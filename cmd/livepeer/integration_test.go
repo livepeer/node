@@ -55,8 +55,14 @@ func TestRealBinaryOffchainFlow(t *testing.T) {
 	require.Contains(t, string(completion), "bash completion")
 
 	runner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, "/hello", r.URL.Path)
 		require.NotEmpty(t, r.Header.Get("Livepeer-Session-Token"))
+		if r.URL.Path == "/credentials" {
+			write := map[string]string{"token": r.Header.Get("Livepeer-Session-Token")}
+			w.Header().Set("Content-Type", "application/json")
+			require.NoError(t, json.NewEncoder(w).Encode(write))
+			return
+		}
+		require.Equal(t, "/hello", r.URL.Path)
 		_, _ = io.WriteString(w, "from-runner")
 	}))
 	defer runner.Close()
@@ -65,7 +71,7 @@ func TestRealBinaryOffchainFlow(t *testing.T) {
 	metricsURL := fmt.Sprintf("http://127.0.0.1:%d", metricsPort)
 	secretPath := filepath.Join(t.TempDir(), "bootstrap")
 	require.NoError(t, os.WriteFile(secretPath, []byte("exact-bootstrap"), 0600))
-	cmd := exec.Command(dispatcher, "orchestrator", "--listen", fmt.Sprintf("127.0.0.1:%d", mainPort), "--metrics-listen", fmt.Sprintf("127.0.0.1:%d", metricsPort), "--service-url", serviceURL, "--bootstrap-secret-file", secretPath, "--runner-grants", strings.TrimPrefix(runner.URL, "http://"))
+	cmd := exec.Command(dispatcher, "orchestrator", "--listen", fmt.Sprintf("127.0.0.1:%d", mainPort), "--metrics-listen", fmt.Sprintf("127.0.0.1:%d", metricsPort), "--service-url", serviceURL, "--bootstrap-secret-file", secretPath, "--runner-grants", strings.TrimPrefix(runner.URL, "http://"), "--session-proxy-grants", strings.TrimPrefix(runner.URL, "http://"))
 	var log bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &log, &log
 	require.NoError(t, cmd.Start())
@@ -111,6 +117,7 @@ func TestRealBinaryOffchainFlow(t *testing.T) {
 	require.Equal(t, "from-runner", string(data))
 	require.NoError(t, response.Body.Close())
 	checkGoSDK(t, root, serviceURL, runner.URL)
+	checkPythonSDK(t, root, serviceURL, runner.URL)
 	require.NoError(t, cmd.Process.Signal(syscall.SIGTERM))
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
@@ -121,6 +128,52 @@ func TestRealBinaryOffchainFlow(t *testing.T) {
 		t.Fatal("orchestrator did not shut down")
 	}
 	cmd.Process = nil
+}
+
+func checkPythonSDK(t *testing.T, root, serviceURL, runnerURL string) {
+	t.Helper()
+	sdkDir := os.Getenv("PYTHON_RUNNER_SDK_DIR")
+	if sdkDir == "" {
+		sdkDir = filepath.Join(root, "..", "python-runner")
+	}
+	if _, err := os.Stat(filepath.Join(sdkDir, "pyproject.toml")); err != nil {
+		if os.Getenv("PYTHON_RUNNER_SDK_DIR") != "" {
+			t.Fatalf("configured Python SDK checkout unavailable: %v", err)
+		}
+		t.Log("Python runner SDK checkout unavailable; skipped SDK fixture")
+		return
+	}
+	python := os.Getenv("PYTHON_RUNNER_PYTHON")
+	if python == "" {
+		python = filepath.Join(sdkDir, ".venv", "bin", "python")
+	}
+	if _, err := os.Stat(python); err != nil {
+		if os.Getenv("PYTHON_RUNNER_PYTHON") != "" {
+			t.Fatalf("configured Python SDK interpreter unavailable: %v", err)
+		}
+		t.Log("Python runner SDK interpreter unavailable; skipped SDK fixture")
+		return
+	}
+	revision, err := exec.Command("git", "-C", sdkDir, "rev-parse", "HEAD").Output()
+	require.NoError(t, err)
+	require.Equal(t, "44df06157fcdb864e37d971e8caba86b2a7dc92e", strings.TrimSpace(string(revision)))
+	// Always export the committed tree: a developer checkout can have local
+	// experiments without changing the compatibility fixture under test.
+	export := t.TempDir()
+	archive := exec.Command("git", "-C", sdkDir, "archive", "HEAD")
+	tar := exec.Command("tar", "-xf", "-", "-C", export)
+	pipe, err := archive.StdoutPipe()
+	require.NoError(t, err)
+	tar.Stdin = pipe
+	require.NoError(t, tar.Start())
+	require.NoError(t, archive.Run())
+	require.NoError(t, tar.Wait())
+	fixture := filepath.Join(root, "cmd", "livepeer", "testdata", "python_sdk_compat.py")
+	run := exec.Command(python, fixture, serviceURL, runnerURL, "exact-bootstrap")
+	run.Env = append(os.Environ(), "PYTHONPATH="+filepath.Join(export, "src"))
+	output, err := run.CombinedOutput()
+	require.NoError(t, err, string(output))
+	require.Contains(t, string(output), "Python SDK registration")
 }
 
 func checkGoSDK(t *testing.T, root, serviceURL, runnerURL string) {

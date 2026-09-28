@@ -6,6 +6,12 @@ runner_config = "/etc/livepeer/runners.toml"
 heartbeat_interval = "5s"
 heartbeat_ttl = "30s"
 runner_grants = []
+# runner_ca_file = "/etc/livepeer/runner-ca.pem"
 session_proxy_grants = []
+# session_proxy_ca_file = "/etc/livepeer/proxy-ca.pem"
 health_grants = []
+# health_ca_file = "/etc/livepeer/health-ca.pem"
 behind_tls = false
+# For direct HTTPS, set both files and change service_url to https://... .
+# tls_cert_file = "/etc/livepeer/tls/fullchain.pem"
+# tls_key_file = "/run/secrets/livepeer-tls-key.pem"

@@ -2,8 +2,14 @@ package destination
 
 import (
 	"context"
+	"encoding/pem"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"net/netip"
+	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -17,6 +23,62 @@ func TestPublic(t *testing.T) {
 	for _, raw := range []string{"8.8.8.8", "2606:4700:4700::1111"} {
 		require.True(t, Public(netip.MustParseAddr(raw)), raw)
 	}
+}
+
+func TestRedirectChecksDestinationAndDropsAuthorization(t *testing.T) {
+	var receivedAuthorization string
+	final := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedAuthorization = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer final.Close()
+	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, final.URL, http.StatusFound)
+	}))
+	defer redirect.Close()
+	first, err := url.Parse(redirect.URL)
+	require.NoError(t, err)
+	second, err := url.Parse(final.URL)
+	require.NoError(t, err)
+	policy, err := New("runner", []string{first.Host})
+	require.NoError(t, err)
+	request, err := http.NewRequest(http.MethodGet, redirect.URL, nil)
+	require.NoError(t, err)
+	request.Header.Set("Authorization", "private-token")
+	_, err = policy.Client().Do(request)
+	require.ErrorContains(t, err, "denied address")
+	policy, err = New("runner", []string{first.Host, second.Host})
+	require.NoError(t, err)
+	response, err := policy.Client().Do(request)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	require.NoError(t, response.Body.Close())
+	require.Empty(t, receivedAuthorization)
+}
+
+func TestCustomCAIsScopedAndVerified(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	parsed, err := url.Parse(server.URL)
+	require.NoError(t, err)
+	policy, err := New("runner", []string{parsed.Host})
+	require.NoError(t, err)
+	_, err = policy.Client().Get(server.URL)
+	require.Error(t, err, "untrusted certificate must fail")
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
+	path := filepath.Join(t.TempDir(), "runner-ca.pem")
+	require.NoError(t, os.WriteFile(path, certPEM, 0600))
+	trusted, err := policy.WithCAFile(path)
+	require.NoError(t, err)
+	response, err := trusted.Client().Get(server.URL)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	require.NoError(t, response.Body.Close())
+	_, err = policy.WithCAFile(filepath.Join(t.TempDir(), "missing"))
+	require.ErrorContains(t, err, "cannot be read")
+	require.NotContains(t, err.Error(), "missing")
 }
 
 func TestGrantRequiresExactValidPort(t *testing.T) {

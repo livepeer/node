@@ -56,10 +56,17 @@ a static runner file. Grant a local runner with `runner_grants =
 ["127.0.0.1:PORT"]`; this does not grant a generated proxy target or a
 health-check destination.
 
-The listener defaults to loopback HTTP. To bind plain HTTP beyond loopback,
-place it behind an operator-managed TLS terminator and explicitly set
-`behind_tls = true`. The metrics listener remains loopback and serves only
-`/metrics`, `/healthz`, and `/readyz`.
+The listener defaults to loopback HTTP. For direct HTTPS, configure
+`tls_cert_file` and `tls_key_file` with operator-supplied PEM files and use an
+HTTPS `service_url`. To bind plain HTTP beyond loopback, place it behind an
+operator-managed TLS terminator and set `behind_tls = true`. The metrics
+listener remains loopback and serves only `/metrics`, `/healthz`, and
+`/readyz`.
+
+Custom CA bundles can be assigned independently to runner traffic, generated
+session proxies, static health checks, and chain RPC. Each bundle extends the
+system trust roots for only that destination purpose; certificate verification
+remains enabled.
 
 ## Current command surface
 
@@ -82,7 +89,7 @@ go vet ./...
 ```
 
 The included architecture test checks source-level import boundaries. The
-real-process integration test uses the pinned Go SDK when its checkout is
-available; CI checks out that revision explicitly. Python SDK, signer fixture,
-test-chain, fuzz, load and broader security suites remain in the migration
-plan.
+real-process integration test exercises pinned Go and Python SDK revisions
+when their checkouts and dependencies are available; CI checks out both
+revisions explicitly. Signer fixtures, a test chain, fuzz, load and broader
+security suites remain in the migration plan.

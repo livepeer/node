@@ -3,12 +3,15 @@ package destination
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -61,6 +64,7 @@ type Policy struct {
 	Purpose string
 	Grants  map[string]struct{}
 	Lookup  func(context.Context, string) ([]net.IPAddr, error)
+	caPool  *x509.CertPool
 }
 
 func New(purpose string, grants []string) (Policy, error) {
@@ -73,6 +77,27 @@ func New(purpose string, grants []string) (Policy, error) {
 		}
 		p.Grants[strings.ToLower(net.JoinHostPort(host, port))] = struct{}{}
 	}
+	return p, nil
+}
+
+// WithCAFile extends the system trust roots for this one destination purpose.
+// The configured file path is intentionally omitted from errors.
+func (p Policy) WithCAFile(path string) (Policy, error) {
+	if path == "" {
+		return p, nil
+	}
+	pemData, err := os.ReadFile(path)
+	if err != nil {
+		return Policy{}, fmt.Errorf("%s CA bundle cannot be read", p.Purpose)
+	}
+	roots, err := x509.SystemCertPool()
+	if err != nil {
+		return Policy{}, fmt.Errorf("%s system CA roots unavailable", p.Purpose)
+	}
+	if !roots.AppendCertsFromPEM(pemData) {
+		return Policy{}, fmt.Errorf("%s CA bundle contains no certificates", p.Purpose)
+	}
+	p.caPool = roots
 	return p, nil
 }
 
@@ -138,7 +163,7 @@ func (p Policy) DialContext(ctx context.Context, network, address string) (net.C
 }
 
 func (p Policy) Transport(headerTimeout time.Duration) *http.Transport {
-	return &http.Transport{
+	transport := &http.Transport{
 		Proxy:                 nil,
 		DialContext:           p.DialContext,
 		MaxIdleConns:          64,
@@ -146,6 +171,10 @@ func (p Policy) Transport(headerTimeout time.Duration) *http.Transport {
 		ResponseHeaderTimeout: headerTimeout,
 		IdleConnTimeout:       90 * time.Second,
 	}
+	if p.caPool != nil {
+		transport.TLSClientConfig = &tls.Config{RootCAs: p.caPool, MinVersion: tls.VersionTLS12}
+	}
+	return transport
 }
 
 func (p Policy) Client() *http.Client {

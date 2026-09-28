@@ -29,6 +29,7 @@ type Params struct {
 	RPCURL      string   `name:"rpc-url" secret:"true" optional:"true" toml:"rpc_url"`
 	RPCURLFile  string   `name:"rpc-url-file" secretfor:"RPCURL" toml:"rpc_url_file"`
 	RPCGrants   []string `name:"rpc-grants" optional:"true" toml:"rpc_grants"`
+	RPCCAFile   string   `name:"rpc-ca-file" optional:"true" file:"true" toml:"rpc_ca_file"`
 	ChainID     string   `name:"chain-id" optional:"true" toml:"chain_id"`
 	Output      string   `name:"output" default:"text" toml:"output"`
 	PrintConfig bool     `name:"print-config" optional:"true" boa:"noconfig" toml:"-"`
@@ -52,7 +53,11 @@ func (p Params) Validate() error {
 	if p.Output != "text" && p.Output != "json" {
 		return errors.New("output must be text or json")
 	}
-	_, err = destination.New("ethereum-rpc", p.RPCGrants)
+	policy, err := destination.New("ethereum-rpc", p.RPCGrants)
+	if err != nil {
+		return err
+	}
+	_, err = policy.WithCAFile(p.RPCCAFile)
 	return err
 }
 
@@ -107,6 +112,10 @@ func Status(ctx context.Context, p Params, out io.Writer) error {
 		return err
 	}
 	policy, err := destination.New("ethereum-rpc", p.RPCGrants)
+	if err != nil {
+		return err
+	}
+	policy, err = policy.WithCAFile(p.RPCCAFile)
 	if err != nil {
 		return err
 	}

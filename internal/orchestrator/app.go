@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -33,11 +34,16 @@ type Params struct {
 	BootstrapSecretFile string        `name:"bootstrap-secret-file" secretfor:"BootstrapSecret" toml:"bootstrap_secret_file" descr:"File containing runner bootstrap credential"`
 	RunnerConfig        string        `name:"runner-config" optional:"true" file:"true" toml:"runner_config" descr:"Static runner TOML path"`
 	RunnerGrants        []string      `name:"runner-grants" optional:"true" toml:"runner_grants" descr:"Exact private runner host:port grants"`
+	RunnerCAFile        string        `name:"runner-ca-file" optional:"true" file:"true" toml:"runner_ca_file" descr:"Custom runner CA bundle"`
 	SessionProxyGrants  []string      `name:"session-proxy-grants" optional:"true" toml:"session_proxy_grants" descr:"Exact private generated proxy target grants"`
+	SessionProxyCAFile  string        `name:"session-proxy-ca-file" optional:"true" file:"true" toml:"session_proxy_ca_file" descr:"Custom session proxy CA bundle"`
 	HealthGrants        []string      `name:"health-grants" optional:"true" toml:"health_grants" descr:"Exact private static runner health grants"`
+	HealthCAFile        string        `name:"health-ca-file" optional:"true" file:"true" toml:"health_ca_file" descr:"Custom static runner health CA bundle"`
 	HeartbeatInterval   time.Duration `name:"heartbeat-interval" default:"5s" toml:"heartbeat_interval" descr:"Runner heartbeat interval"`
 	HeartbeatTTL        time.Duration `name:"heartbeat-ttl" default:"30s" toml:"heartbeat_ttl" descr:"Runner heartbeat expiry"`
 	BehindTLS           bool          `name:"behind-tls" optional:"true" toml:"behind_tls" descr:"Listener is behind an operator TLS terminator"`
+	TLSCertFile         string        `name:"tls-cert-file" optional:"true" file:"true" toml:"tls_cert_file" descr:"Operator-supplied TLS certificate PEM"`
+	TLSKeyFile          string        `name:"tls-key-file" optional:"true" file:"true" toml:"tls_key_file" descr:"Operator-supplied TLS private key PEM"`
 	PrintConfig         bool          `name:"print-config" optional:"true" boa:"noconfig" toml:"-" descr:"Print audited redacted TOML configuration"`
 }
 
@@ -59,23 +65,49 @@ func (p Params) Validate() error {
 	if !isLoopbackHost(metricsHost) {
 		return errors.New("metrics listener must bind loopback")
 	}
-	if !isLoopbackHost(listenHost) && !p.BehindTLS {
-		return errors.New("non-loopback HTTP listener requires behind-tls")
+	if (p.TLSCertFile == "") != (p.TLSKeyFile == "") {
+		return errors.New("tls-cert-file and tls-key-file must be configured together")
+	}
+	if p.TLSCertFile != "" && p.BehindTLS {
+		return errors.New("direct TLS and behind-tls cannot be combined")
+	}
+	if p.TLSCertFile != "" {
+		if _, err := tls.LoadX509KeyPair(p.TLSCertFile, p.TLSKeyFile); err != nil {
+			return errors.New("invalid direct TLS certificate or private key")
+		}
+	}
+	if !isLoopbackHost(listenHost) && !p.BehindTLS && p.TLSCertFile == "" {
+		return errors.New("non-loopback listener requires direct TLS or behind-tls")
 	}
 	base, err := destination.ValidateURL(p.ServiceURL)
 	if err != nil || base.User != nil || base.RawQuery != "" || base.Fragment != "" {
 		return errors.New("service-url must be an absolute HTTP or HTTPS URL without credentials, query or fragment")
 	}
+	if p.TLSCertFile != "" && base.Scheme != "https" {
+		return errors.New("service-url must use https with direct TLS")
+	}
 	if p.HeartbeatInterval <= 0 || p.HeartbeatTTL <= p.HeartbeatInterval {
 		return errors.New("heartbeat-ttl must exceed positive heartbeat-interval")
 	}
-	if _, err := destination.New("runner", p.RunnerGrants); err != nil {
+	runnerPolicy, err := destination.New("runner", p.RunnerGrants)
+	if err != nil {
 		return err
 	}
-	if _, err := destination.New("session-proxy", p.SessionProxyGrants); err != nil {
+	if _, err := runnerPolicy.WithCAFile(p.RunnerCAFile); err != nil {
 		return err
 	}
-	if _, err := destination.New("static-runner-health", p.HealthGrants); err != nil {
+	proxyPolicy, err := destination.New("session-proxy", p.SessionProxyGrants)
+	if err != nil {
+		return err
+	}
+	if _, err := proxyPolicy.WithCAFile(p.SessionProxyCAFile); err != nil {
+		return err
+	}
+	healthPolicy, err := destination.New("static-runner-health", p.HealthGrants)
+	if err != nil {
+		return err
+	}
+	if _, err := healthPolicy.WithCAFile(p.HealthCAFile); err != nil {
 		return err
 	}
 	return nil
@@ -161,11 +193,23 @@ func Serve(parent context.Context, p Params, logOut io.Writer) error {
 	if err != nil {
 		return err
 	}
+	runnerPolicy, err = runnerPolicy.WithCAFile(p.RunnerCAFile)
+	if err != nil {
+		return err
+	}
 	proxyPolicy, err := destination.New("session-proxy", p.SessionProxyGrants)
 	if err != nil {
 		return err
 	}
+	proxyPolicy, err = proxyPolicy.WithCAFile(p.SessionProxyCAFile)
+	if err != nil {
+		return err
+	}
 	healthPolicy, err := destination.New("static-runner-health", p.HealthGrants)
+	if err != nil {
+		return err
+	}
+	healthPolicy, err = healthPolicy.WithCAFile(p.HealthCAFile)
 	if err != nil {
 		return err
 	}
@@ -217,7 +261,13 @@ func Serve(parent context.Context, p Params, logOut io.Writer) error {
 	ctx, cancel := signal.NotifyContext(parent, syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 	errs := make(chan error, 2)
-	go func() { errs <- mainServer.Serve(mainListener) }()
+	go func() {
+		if p.TLSCertFile != "" {
+			errs <- mainServer.ServeTLS(mainListener, p.TLSCertFile, p.TLSKeyFile)
+		} else {
+			errs <- mainServer.Serve(mainListener)
+		}
+	}()
 	go func() { errs <- metricsServer.Serve(metricsListener) }()
 	logger.Info("orchestrator started", "listen", p.Listen, "metrics_listen", p.MetricsListen)
 	ticker := time.NewTicker(p.HeartbeatInterval)
