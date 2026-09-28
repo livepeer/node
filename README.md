@@ -18,7 +18,8 @@ This repository is the **in-progress** standalone Live Runner extraction from
   have separate exact host:port grants. Private and special-use addresses are
   denied by default at dial time.
 - `livepeer-chain status` reads and validates the configured chain ID and
-  block number through JSON-RPC.
+  block number through JSON-RPC. `livepeer-chain account` reads the configured
+  sender's ETH balance and pending nonce.
 - All executables expose version, help, and shell completion. Boa loads strict
   TOML, component-prefixed environment variables, and exact-byte secret files.
 
@@ -56,6 +57,9 @@ a static runner file. Grant a local runner with `runner_grants =
 ["127.0.0.1:PORT"]`; this does not grant a generated proxy target or a
 health-check destination.
 
+The registry accepts up to 256 runners. Trickle storage is bounded to 64
+segments per channel, 8 MiB per segment, and 64 MiB total buffered data.
+
 The listener defaults to loopback HTTP. For direct HTTPS, configure
 `tls_cert_file` and `tls_key_file` with operator-supplied PEM files and use an
 HTTPS `service_url`. To bind plain HTTP beyond loopback, place it behind an
@@ -74,7 +78,7 @@ remains enabled.
 | --- | --- |
 | `livepeer orchestrator` | Off-chain slice implemented; on-chain payments pending |
 | `livepeer signer` | CLI/configuration only; service pending |
-| `livepeer chain status` | Implemented read-only JSON-RPC command |
+| `livepeer chain status` and `account` | Implemented read-only JSON-RPC commands |
 | Other approved `livepeer chain ...` commands | Pending |
 
 The 16 chain operations from the extraction plan are approved for the initial

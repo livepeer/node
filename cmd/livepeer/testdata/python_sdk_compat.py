@@ -6,6 +6,8 @@ import sys
 import aiohttp
 
 from livepeer_gateway.live_runner import register_runner
+from livepeer_gateway.trickle_publisher import TricklePublisher
+from livepeer_gateway.trickle_subscriber import TrickleSubscriber
 
 
 async def main(orchestrator: str, runner_url: str, bootstrap: str) -> None:
@@ -68,6 +70,28 @@ async def main(orchestrator: str, runner_url: str, bootstrap: str) -> None:
                 session_id, [channel["channel_name"]], session_token=token
             )
             assert deleted == [channel["channel_name"]]
+            published = await registration.create_trickle_channels(
+                session_id,
+                [{"name": "publisher", "mime_type": "application/json"}],
+                session_token=token,
+            )
+            async with TricklePublisher(
+                published[0]["url"], "application/json"
+            ) as publisher:
+                await publisher.create()
+                async with await publisher.next() as segment:
+                    await segment.write(b'{"published":true}')
+                async with client.get(published[0]["url"] + "/0") as response:
+                    assert response.status == 200, await response.text()
+                    assert await response.json() == {"published": True}
+                async with TrickleSubscriber(
+                    published[0]["url"], start_seq=0
+                ) as subscriber:
+                    received = await asyncio.wait_for(subscriber.next(), 5)
+                    assert received is not None
+                    cursor = received.make_reader()
+                    assert await cursor.read() == b'{"published":true}'
+                    await received.close()
             async with client.post(session["control_url"] + "/stop") as response:
                 assert response.status == 200, await response.text()
             assert await asyncio.wait_for(released.get(), 5) == session_id

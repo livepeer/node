@@ -160,18 +160,23 @@ func (s *Server) storePart(ch *channel, seq int, data []byte) bool {
 	if existing, exists := ch.parts[seq]; exists {
 		return bytes.Equal(existing, data)
 	}
+	oldest, oldSize := 0, 0
 	if len(ch.parts) >= maxTrickleParts {
-		oldest := seq
+		first := true
 		for index := range ch.parts {
-			if index < oldest {
+			if first || index < oldest {
 				oldest = index
+				first = false
 			}
 		}
-		s.bytesUsed -= len(ch.parts[oldest])
-		delete(ch.parts, oldest)
+		oldSize = len(ch.parts[oldest])
 	}
-	if s.bytesUsed+len(data) > maxTrickleBytes {
+	if s.bytesUsed-oldSize+len(data) > maxTrickleBytes {
 		return false
+	}
+	if len(ch.parts) >= maxTrickleParts {
+		s.bytesUsed -= oldSize
+		delete(ch.parts, oldest)
 	}
 	ch.parts[seq] = data
 	s.bytesUsed += len(data)
@@ -349,7 +354,8 @@ func (s *Server) createChannels(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(s.channels)+len(body.Channels) > maxTrickleChannels {
+	// Reserve space for one O2R channel per possible runner.
+	if len(s.channels)+len(body.Channels) > maxTrickleChannels-maxRunners {
 		fail(w, http.StatusServiceUnavailable, "too many channels")
 		return
 	}
@@ -402,10 +408,48 @@ func (s *Server) trickle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodDelete {
+		if r.PathValue("seq") != "" {
+			seq, err := strconv.Atoi(r.PathValue("seq"))
+			if err != nil || seq < 0 {
+				fail(w, http.StatusBadRequest, "invalid sequence")
+				return
+			}
+			s.mu.Lock()
+			_, exists := ch.parts[seq]
+			s.mu.Unlock()
+			if !exists {
+				fail(w, http.StatusBadRequest, "segment not found")
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			return
+		}
 		s.mu.Lock()
 		s.closeChannel(id, ch)
 		s.mu.Unlock()
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		return
+	}
+	if r.PathValue("seq") == "" {
+		if r.Method == http.MethodPost {
+			// Channels are created only through the authenticated session
+			// callback. The public publisher create call is idempotent.
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if r.PathValue("seq") == "next" && r.Method == http.MethodGet {
+		s.mu.Lock()
+		next := ch.latest + 1
+		closed := ch.closed
+		s.mu.Unlock()
+		w.Header().Set("Lp-Trickle-Latest", strconv.Itoa(next))
+		if closed {
+			w.Header().Set("Lp-Trickle-Closed", "terminated")
+		}
+		_, _ = io.WriteString(w, strconv.Itoa(next))
 		return
 	}
 	seq, err := strconv.Atoi(r.PathValue("seq"))

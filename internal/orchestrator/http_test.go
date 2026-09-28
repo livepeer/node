@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -83,6 +84,42 @@ func TestDynamicRunnerSessionProxyAndCapacity(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, response.StatusCode)
 	require.NoError(t, response.Body.Close())
+}
+
+func TestRunnerRegistryHasBoundedCapacity(t *testing.T) {
+	registry := NewRegistry("bootstrap", "https://orchestrator.example", time.Second, time.Minute)
+	for i := range maxRunners {
+		_, status, err := registry.Heartbeat(heartbeatRequest{
+			RunnerID: fmt.Sprintf("runner%d", i), RunnerURL: "https://runner.example",
+			App: "test", Mode: "persistent", Capacity: 1,
+		}, "bootstrap")
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, status)
+	}
+	_, status, err := registry.Heartbeat(heartbeatRequest{
+		RunnerID: "overflow", RunnerURL: "https://runner.example",
+		App: "test", Mode: "persistent", Capacity: 1,
+	}, "bootstrap")
+	require.ErrorContains(t, err, "capacity")
+	require.Equal(t, http.StatusServiceUnavailable, status)
+}
+
+func TestTrickleBufferBoundsOutOfOrderSequences(t *testing.T) {
+	policy, err := destination.New("runner", nil)
+	require.NoError(t, err)
+	server := NewServer(NewRegistry("bootstrap", "https://orchestrator.example", time.Second, time.Minute), policy, policy, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ch := &channel{parts: map[int][]byte{}, latest: -1, wakeup: make(chan struct{})}
+	for i := 100; i < 100+maxTrickleParts; i++ {
+		require.True(t, server.storePart(ch, i, []byte("a")))
+	}
+	require.True(t, server.storePart(ch, 0, []byte("b")))
+	require.Len(t, ch.parts, maxTrickleParts)
+	require.Equal(t, maxTrickleParts, server.bytesUsed)
+	require.NotContains(t, ch.parts, 100)
+	server.bytesUsed = maxTrickleBytes
+	require.False(t, server.storePart(ch, 1, []byte("bb")))
+	require.Len(t, ch.parts, maxTrickleParts)
+	require.Contains(t, ch.parts, 0)
 }
 
 func TestSessionProxyStreamsSSEAndWebSocket(t *testing.T) {

@@ -2,4 +2,5 @@ rpc_url_file = "/run/secrets/livepeer-chain-rpc-url"
 rpc_grants = []
 # rpc_ca_file = "/etc/livepeer/rpc-ca.pem"
 chain_id = "1"
+# sender = "0x0123456789abcdef0123456789abcdef01234567"
 output = "json"

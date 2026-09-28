@@ -83,6 +83,8 @@ type Registry struct {
 	onEvent  func(runnerID, event, sessionID string)
 }
 
+const maxRunners = 256
+
 func NewRegistry(secret, service string, interval, ttl time.Duration) *Registry {
 	return &Registry{runners: make(map[string]*runner), secret: secret, service: strings.TrimRight(service, "/"), interval: interval, ttl: ttl}
 }
@@ -153,6 +155,9 @@ func (r *Registry) Heartbeat(req heartbeatRequest, auth string) (heartbeatRespon
 	if initial {
 		if !equalSecret(auth, r.secret) {
 			return heartbeatResponse{}, http.StatusUnauthorized, errors.New("invalid runner credential")
+		}
+		if len(r.runners) >= maxRunners {
+			return heartbeatResponse{}, http.StatusServiceUnavailable, errors.New("runner capacity reached")
 		}
 		id := req.RunnerID
 		if id == "" {
@@ -423,6 +428,9 @@ func (r *Registry) AddStatic(config StaticRunner) error {
 	defer r.mu.Unlock()
 	if r.runners[config.ID] != nil {
 		return fmt.Errorf("duplicate static runner id %s", config.ID)
+	}
+	if len(r.runners) >= maxRunners {
+		return errors.New("static runner capacity reached")
 	}
 	r.runners[config.ID] = &runner{heartbeatRequest: req, Static: true, Healthy: config.HealthURL == "", HealthURL: config.HealthURL, HealthCode: config.HealthCode, Sessions: map[string]*session{}}
 	return nil
