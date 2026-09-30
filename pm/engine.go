@@ -20,6 +20,11 @@ import (
 
 type ChainSnapshot = eth.ChainSnapshot
 
+// SenderChain contains the sender collateral observation used by both payment sides.
+type SenderChain interface {
+	SenderInfo(context.Context, ethcommon.Address, ethcommon.Address) (eth.SenderInfo, error)
+}
+
 // PaymentChain contains only the Ethereum reads needed by payment receipt.
 type PaymentChain interface {
 	Snapshot(context.Context) (ChainSnapshot, error)
@@ -59,8 +64,6 @@ func randomBytes(length int) ([]byte, error) {
 // MakeChallenge pins the runner, sender, price, auth token and ticket params in
 // SQLite before returning a Python/Go runner compatible 402 body.
 func (e *Engine) MakeChallenge(ctx context.Context, runner, manifest string, sender ethcommon.Address, price int64, unit, service string) (Challenge, error) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
 	if runner == "" || manifest == "" || sender == (ethcommon.Address{}) || price <= 0 || (unit != "seconds" && unit != "fixed") {
 		return Challenge{}, errors.New("invalid payment challenge scope")
 	}
@@ -95,11 +98,30 @@ func (e *Engine) MakeChallenge(ctx context.Context, runner, manifest string, sen
 		TicketParams: signercompat.TicketParams{Recipient: e.recipient.Bytes(), FaceValue: e.faceValue.Bytes(), WinProb: e.winProb.Bytes(), RecipientRandHash: randHash.Bytes(), Seed: seed, ExpirationBlock: new(big.Int).Add(snapshot.Block, big.NewInt(40)).Bytes(), Expiration: signercompat.ExpirationParams{CreationRound: snapshot.Round.Int64(), CreationRoundBlockHash: snapshot.RoundHash.Bytes()}},
 		Auth:         signercompat.AuthToken{Token: token, SessionID: manifest, Expiration: time.Now().Add(time.Hour).Unix()}}
 	encoded := signercompat.EncodeOrchestratorInfo(info)
-	_, err = e.store.db.Exec(`INSERT INTO payment_challenges(manifest,runner,sender,info,recipient_rand,unit,balance,created_at) VALUES(?,?,?,?,?,?,'0',?)
-		ON CONFLICT(manifest) DO UPDATE SET info=excluded.info,recipient_rand=excluded.recipient_rand`, manifest, runner, sender.Hex(), encoded, random, unit, time.Now().UTC().Format(time.RFC3339Nano))
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	tx, err := e.store.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Challenge{}, err
 	}
+	defer tx.Rollback()
+	result, err := tx.Exec(`INSERT INTO payment_challenges(manifest,runner,sender,info,recipient_rand,unit,balance,created_at)
+        SELECT ?,?,?,?,?,?,'0',? WHERE (SELECT COUNT(*) FROM payment_challenges)<100000 OR EXISTS(SELECT 1 FROM payment_challenges WHERE manifest=?)
+		ON CONFLICT(manifest) DO UPDATE SET info=excluded.info,recipient_rand=excluded.recipient_rand,created_at=excluded.created_at
+        WHERE payment_challenges.runner=excluded.runner AND payment_challenges.sender=excluded.sender AND payment_challenges.unit=excluded.unit`, manifest, runner, sender.Hex(), encoded, random, unit, time.Now().UTC().Format(time.RFC3339Nano), manifest)
+	if err != nil {
+		return Challenge{}, err
+	}
+	if n, err := result.RowsAffected(); err != nil || n != 1 {
+		return Challenge{}, errors.New("payment challenge capacity or scope conflict")
+	}
+	if _, err := tx.Exec("INSERT INTO payment_ticket_epochs(hash,expires_at) VALUES(?,?)", randHash.Hex(), info.Auth.Expiration); err != nil {
+		return Challenge{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Challenge{}, err
+	}
+
 	return Challenge{PaymentParams: base64.StdEncoding.EncodeToString(encoded), Orchestrator: service, ManifestID: manifest, PaymentURL: service + "/apps/" + runner + "/session/" + manifest + "/payment"}, nil
 }
 
@@ -257,6 +279,13 @@ func (e *Engine) Receive(ctx context.Context, runner, manifest, paymentHeader, s
 	if !ok {
 		return ethcommon.Address{}, nil, errors.New("corrupt payment balance")
 	}
+	var ticketCount int
+	if err := tx.QueryRow("SELECT COUNT(*) FROM used_payment_tickets").Scan(&ticketCount); err != nil {
+		return ethcommon.Address{}, nil, err
+	}
+	if ticketCount+len(payment.SenderParams) > 1000000 {
+		return ethcommon.Address{}, nil, errors.New("payment ticket capacity reached")
+	}
 	validator := NewValidator(DefaultSigVerifier{}, nil)
 	winningRand := new(big.Int).SetBytes(recipientRand)
 	for _, sp := range payment.SenderParams {
@@ -339,6 +368,15 @@ func (e *Engine) Charge(ctx context.Context, manifest string, now time.Time) err
 	units := int64(0)
 	if unit == "fixed" {
 		if lastCharge.Valid {
+			// A fixed-price session can remain live for days without another
+			// fee; keep its authorization/accounting record while it is active.
+			_, err := tx.Exec("UPDATE payment_challenges SET created_at=? WHERE manifest=? AND created_at<?", time.Now().UTC().Format(time.RFC3339Nano), manifest, time.Now().Add(-time.Hour).UTC().Format(time.RFC3339Nano))
+			if err != nil {
+				return err
+			}
+			if err := tx.Commit(); err != nil {
+				return err
+			}
 			return ErrFixedAlreadyCharged
 		}
 		units = 1
@@ -347,10 +385,7 @@ func (e *Engine) Charge(ctx context.Context, manifest string, now time.Time) err
 		if err != nil {
 			return err
 		}
-		units = int64(now.Sub(previous) / time.Second)
-		if units < 0 {
-			units = 0
-		}
+		units = max(int64(now.Sub(previous)/time.Second), 0)
 		if units > 3600 {
 			return ErrInsufficientBalance
 		}
@@ -366,7 +401,7 @@ func (e *Engine) Charge(ctx context.Context, manifest string, now time.Time) err
 		return ErrInsufficientBalance
 	}
 	balance.Sub(balance, fee)
-	_, err = tx.Exec("UPDATE payment_challenges SET balance=?,last_charge=? WHERE manifest=?", balance.RatString(), now.UTC().Format(time.RFC3339Nano), manifest)
+	_, err = tx.Exec("UPDATE payment_challenges SET balance=?,last_charge=?,created_at=? WHERE manifest=?", balance.RatString(), now.UTC().Format(time.RFC3339Nano), time.Now().UTC().Format(time.RFC3339Nano), manifest)
 	if err != nil {
 		return err
 	}
@@ -383,11 +418,6 @@ func (e *Engine) Balance(manifest string) (*big.Rat, error) {
 		return nil, fmt.Errorf("corrupt balance")
 	}
 	return result, nil
-}
-
-// SenderChain contains the sender collateral observation used by both payment sides.
-type SenderChain interface {
-	SenderInfo(context.Context, ethcommon.Address, ethcommon.Address) (eth.SenderInfo, error)
 }
 
 // ChallengePrice returns the agreed quote for a pending reservation, scoped to

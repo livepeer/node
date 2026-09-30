@@ -111,19 +111,24 @@ type session struct {
 	cancel    context.CancelFunc
 }
 
+type sessionProxy struct {
+	target *url.URL
+	runner bool
+}
+
 type Registry struct {
-	rateUntil     time.Time
-	runnerService string
-	proxyTemplate string
-	closed        bool
 	mu            sync.Mutex
 	runners       map[string]*runner
 	secret        string
 	service       string
+	runnerService string
 	interval      time.Duration
 	ttl           time.Duration
 	onEvent       func(runnerID, event, sessionID string)
 	weiPerUSD     *big.Rat
+	rateUntil     time.Time
+	proxyTemplate string
+	closed        bool
 }
 
 const maxRunners = 256
@@ -132,12 +137,79 @@ func NewRegistry(secret, service string, interval, ttl time.Duration) *Registry 
 	return &Registry{runners: make(map[string]*runner), secret: secret, service: strings.TrimRight(service, "/"), interval: interval, ttl: ttl}
 }
 
+func (r *Registry) runnerServiceURL() string {
+	if r.runnerService != "" {
+		return r.runnerService
+	}
+	return r.service
+}
+
 func (r *Registry) SetWeiPerUSD(rate *big.Rat) { r.setRate(rate, time.Time{}) }
+
+func (r *Registry) setRate(rate *big.Rat, until time.Time) {
+	if rate == nil || rate.Sign() <= 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.weiPerUSD = new(big.Rat).Set(rate)
+	r.rateUntil = until
+	for _, item := range r.runners {
+		quote := item.USDQuote
+		item.PriceError = normalizePriceAt(&quote, r.weiPerUSD) != nil
+		if !item.PriceError {
+			item.PriceInfo = quote
+		}
+	}
+}
+
+func (r *Registry) priceAvailable(item *runner) bool {
+	return !item.PriceError && (item.PriceInfo.Price == "" || r.rateUntil.IsZero() || time.Now().Before(r.rateUntil))
+}
 
 func (r *Registry) normalizePrice(price *priceInfo) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return normalizePriceAt(price, r.weiPerUSD)
+}
+
+func normalizePriceAt(price *priceInfo, rate *big.Rat) error {
+	value := strings.TrimSpace(price.Price.String())
+	if value == "" || value == "0" {
+		*price = priceInfo{}
+		return nil
+	}
+	numeric, ok := new(big.Rat).SetString(value)
+	if !ok || numeric.Sign() < 0 {
+		return errors.New("runner price must be nonnegative")
+	}
+	if numeric.Sign() == 0 {
+		*price = priceInfo{}
+		return nil
+	}
+	if price.Currency != "" && strings.ToLower(strings.TrimSpace(price.Currency)) != "usd" {
+		return errors.New("runner price currency must be USD")
+	}
+	if rate == nil {
+		// Off-chain registration accepts the runner's usual quote, but does
+		// not advertise or enforce payment requirements.
+		if v, ok := new(big.Rat).SetString(value); !ok || v.Sign() < 0 {
+			return errors.New("runner price must be nonnegative")
+		}
+		*price = priceInfo{}
+		return nil
+	}
+	wei, unit, err := pm.ConvertRunnerPrice(value, price.Unit, rate)
+	if err != nil {
+		return err
+	}
+	usd, _ := new(big.Rat).SetString(value)
+	if unit == "seconds" {
+		usd.Quo(usd, big.NewRat(3600, 1))
+	}
+	usdString := strings.TrimRight(strings.TrimRight(usd.FloatString(36), "0"), ".")
+	*price = priceInfo{Price: json.Number(wei.String()), PriceUSD: json.Number(usdString), Currency: "wei", Unit: unit}
+	return nil
 }
 
 func randomID() (string, error) {
@@ -150,6 +222,23 @@ func randomID() (string, error) {
 
 func equalSecret(a, b string) bool {
 	return a != "" && b != "" && subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
+
+func (r *Registry) acceptsHeartbeatCredential(auth string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return false
+	}
+	if equalSecret(auth, r.secret) {
+		return true
+	}
+	for _, item := range r.runners {
+		if !item.Static && equalSecret(auth, item.Credential) {
+			return true
+		}
+	}
+	return false
 }
 
 func validateHeartbeat(req *heartbeatRequest) error {
@@ -339,6 +428,68 @@ func (r *Registry) ReserveWithID(id, requestedID string) (string, string, string
 	return r.reserveWithPrice(id, requestedID, nil)
 }
 
+func (r *Registry) reserveWithPrice(id, requestedID string, agreed *priceInfo) (string, string, string, int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	item := r.runners[id]
+	if item == nil || !r.usable(item) {
+		return "", "", "", http.StatusNotFound, errors.New("runner unavailable")
+	}
+	if agreed == nil && !r.priceAvailable(item) {
+		return "", "", "", http.StatusServiceUnavailable, errors.New("runner price unavailable")
+	}
+	if item.Mode != "persistent" && !(item.Mode == "single-shot" && requestedID != "") {
+		return "", "", "", http.StatusBadRequest, errors.New("only persistent runners have sessions")
+	}
+	total := 0
+	for _, registered := range r.runners {
+		total += len(registered.Sessions)
+	}
+	if total >= 10000 {
+		return "", "", "", http.StatusServiceUnavailable, errors.New("session capacity reached")
+	}
+	if len(item.Sessions) >= item.Capacity {
+		return "", "", "", http.StatusConflict, errors.New("runner at capacity")
+	}
+	sessionID := requestedID
+	if sessionID == "" {
+		var err error
+		sessionID, err = randomID()
+		if err != nil {
+			return "", "", "", http.StatusInternalServerError, err
+		}
+	}
+	if !validRouteID(sessionID) || item.Sessions[sessionID] != nil {
+		return "", "", "", http.StatusConflict, errors.New("session already exists or invalid")
+	}
+	token, err := randomID()
+	if err != nil {
+		return "", "", "", http.StatusInternalServerError, err
+	}
+	price := item.PriceInfo
+	if agreed != nil {
+		price = *agreed
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	item.Sessions[sessionID] = &session{pending: agreed != nil, ID: sessionID, Token: token, Created: time.Now(), Proxies: map[string]sessionProxy{}, PriceInfo: price, ctx: ctx, cancel: cancel}
+	appURL := r.appURL(id, item.Mode, sessionID)
+	if item.Proxy && item.Mode == "persistent" {
+		target, _ := url.Parse(item.RunnerURL)
+		proxyID, err := randomID()
+		if err != nil {
+			cancel()
+			delete(item.Sessions, sessionID)
+			return "", "", "", http.StatusInternalServerError, err
+		}
+		item.Sessions[sessionID].Proxies[proxyID] = sessionProxy{target: target, runner: true}
+		appURL = r.proxyURL(proxyID)
+	}
+	if agreed == nil && r.onEvent != nil {
+		r.onEvent(id, "reserved", sessionID)
+	}
+	return sessionID, appURL, r.service + "/apps/" + url.PathEscape(id) + "/session/" + url.PathEscape(sessionID), http.StatusOK, nil
+}
+
 func (r *Registry) PriceForRunner(id string) (priceInfo, int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -411,6 +562,44 @@ func (r *Registry) release(id, sid, token string, callback bool) (int, error) {
 	return http.StatusOK, nil
 }
 
+// releaseLocked is the single teardown path for capacity and active requests.
+// The caller holds r.mu; cancellation never waits for the request to finish.
+func (r *Registry) releaseLocked(id, sid string) {
+	item := r.runners[id]
+	if item == nil || item.Sessions[sid] == nil {
+		return
+	}
+	item.Sessions[sid].cancel()
+	delete(item.Sessions, sid)
+	if r.onEvent != nil {
+		r.onEvent(id, "released", sid)
+	}
+}
+
+func (r *Registry) sessionContext(id, sid string) (context.Context, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	item := r.runners[id]
+	if item == nil || item.Sessions[sid] == nil {
+		return nil, false
+	}
+	return item.Sessions[sid].ctx, true
+}
+
+func (r *Registry) Close() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.closed = true
+	for id, item := range r.runners {
+		for sid := range item.Sessions {
+			r.releaseLocked(id, sid)
+		}
+		if r.onEvent != nil {
+			r.onEvent(id, "unregistered", "")
+		}
+	}
+}
+
 func (r *Registry) sessionTarget(id, sid string) (*url.URL, string, int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -458,6 +647,9 @@ func (r *Registry) proxyTarget(proxyID string) (sessionProxy, string, string, st
 			continue
 		}
 		for sid, sess := range item.Sessions {
+			if sess.pending {
+				continue
+			}
 			if target, ok := sess.Proxies[proxyID]; ok {
 				return target, runnerID, sid, sess.Token, true
 			}
@@ -540,7 +732,7 @@ func (r *Registry) AddStatic(config StaticRunner) error {
 	return nil
 }
 
-func (r *Registry) CheckStaticHealth(client *http.Client) {
+func (r *Registry) CheckStaticHealth(ctx context.Context, client *http.Client) {
 	r.mu.Lock()
 	checks := make(map[string]string)
 	for id, item := range r.runners {
@@ -549,31 +741,49 @@ func (r *Registry) CheckStaticHealth(client *http.Client) {
 		}
 	}
 	r.mu.Unlock()
-	for id, raw := range checks {
-		request, err := http.NewRequest(http.MethodGet, raw, nil)
-		if err != nil {
-			continue
-		}
-		response, err := client.Do(request)
-		healthy := false
-		if err == nil {
-			_ = response.Body.Close()
-			r.mu.Lock()
-			item := r.runners[id]
-			healthy = item != nil && response.StatusCode == item.HealthCode
-			r.mu.Unlock()
-		}
-		r.mu.Lock()
-		if item := r.runners[id]; item != nil && item.Static {
-			item.Healthy = healthy
-			if !healthy {
-				for sid := range item.Sessions {
-					r.releaseLocked(id, sid)
-				}
+	var workers sync.WaitGroup
+	jobs := make(chan string)
+	for range min(8, len(checks)) {
+		workers.Go(func() {
+			for id := range jobs {
+				r.checkStaticHealth(ctx, client, id, checks[id])
 			}
+		})
+	}
+	for id := range checks {
+		select {
+		case jobs <- id:
+		case <-ctx.Done():
 		}
+	}
+	close(jobs)
+	workers.Wait()
+}
+
+func (r *Registry) checkStaticHealth(ctx context.Context, client *http.Client, id, raw string) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, raw, nil)
+	if err != nil {
+		return
+	}
+	response, err := client.Do(request)
+	healthy := false
+	if err == nil {
+		_ = response.Body.Close()
+		r.mu.Lock()
+		item := r.runners[id]
+		healthy = item != nil && response.StatusCode == item.HealthCode
 		r.mu.Unlock()
 	}
+	r.mu.Lock()
+	if item := r.runners[id]; item != nil && item.Static {
+		item.Healthy = healthy
+		if !healthy {
+			for sid := range item.Sessions {
+				r.releaseLocked(id, sid)
+			}
+		}
+	}
+	r.mu.Unlock()
 }
 
 func (r *Registry) Counts() (runners, sessions int) {
@@ -589,171 +799,6 @@ func (r *Registry) Counts() (runners, sessions int) {
 func (r *Registry) String() string {
 	runners, sessions := r.Counts()
 	return fmt.Sprintf("runners=%d sessions=%d", runners, sessions)
-}
-
-// releaseLocked is the single teardown path for capacity and active requests.
-// The caller holds r.mu; cancellation never waits for the request to finish.
-func (r *Registry) releaseLocked(id, sid string) {
-	item := r.runners[id]
-	if item == nil || item.Sessions[sid] == nil {
-		return
-	}
-	item.Sessions[sid].cancel()
-	delete(item.Sessions, sid)
-	if r.onEvent != nil {
-		r.onEvent(id, "released", sid)
-	}
-}
-
-func (r *Registry) sessionContext(id, sid string) (context.Context, bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	item := r.runners[id]
-	if item == nil || item.Sessions[sid] == nil {
-		return nil, false
-	}
-	return item.Sessions[sid].ctx, true
-}
-
-func (r *Registry) Close() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.closed = true
-	for id, item := range r.runners {
-		for sid := range item.Sessions {
-			r.releaseLocked(id, sid)
-		}
-		if r.onEvent != nil {
-			r.onEvent(id, "unregistered", "")
-		}
-	}
-}
-
-type sessionProxy struct {
-	target *url.URL
-	runner bool
-}
-
-func (r *Registry) runnerServiceURL() string {
-	if r.runnerService != "" {
-		return r.runnerService
-	}
-	return r.service
-}
-
-func (r *Registry) setRate(rate *big.Rat, until time.Time) {
-	if rate == nil || rate.Sign() <= 0 {
-		return
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.weiPerUSD = new(big.Rat).Set(rate)
-	r.rateUntil = until
-	for _, item := range r.runners {
-		quote := item.USDQuote
-		item.PriceError = normalizePriceAt(&quote, r.weiPerUSD) != nil
-		if !item.PriceError {
-			item.PriceInfo = quote
-		}
-	}
-}
-
-func (r *Registry) priceAvailable(item *runner) bool {
-	return !item.PriceError && (item.PriceInfo.Price == "" || r.rateUntil.IsZero() || time.Now().Before(r.rateUntil))
-}
-
-func normalizePriceAt(price *priceInfo, rate *big.Rat) error {
-	value := strings.TrimSpace(price.Price.String())
-	if value == "" || value == "0" {
-		*price = priceInfo{}
-		return nil
-	}
-	numeric, ok := new(big.Rat).SetString(value)
-	if !ok || numeric.Sign() < 0 {
-		return errors.New("runner price must be nonnegative")
-	}
-	if numeric.Sign() == 0 {
-		*price = priceInfo{}
-		return nil
-	}
-	if price.Currency != "" && strings.ToLower(strings.TrimSpace(price.Currency)) != "usd" {
-		return errors.New("runner price currency must be USD")
-	}
-	if rate == nil {
-		// Off-chain registration accepts the runner's usual quote, but does
-		// not advertise or enforce payment requirements.
-		if v, ok := new(big.Rat).SetString(value); !ok || v.Sign() < 0 {
-			return errors.New("runner price must be nonnegative")
-		}
-		*price = priceInfo{}
-		return nil
-	}
-	wei, unit, err := pm.ConvertRunnerPrice(value, price.Unit, rate)
-	if err != nil {
-		return err
-	}
-	usd, _ := new(big.Rat).SetString(value)
-	if unit == "seconds" {
-		usd.Quo(usd, big.NewRat(3600, 1))
-	}
-	usdString := strings.TrimRight(strings.TrimRight(usd.FloatString(36), "0"), ".")
-	*price = priceInfo{Price: json.Number(wei.String()), PriceUSD: json.Number(usdString), Currency: "wei", Unit: unit}
-	return nil
-}
-
-func (r *Registry) reserveWithPrice(id, requestedID string, agreed *priceInfo) (string, string, string, int, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	item := r.runners[id]
-	if item == nil || !r.usable(item) {
-		return "", "", "", http.StatusNotFound, errors.New("runner unavailable")
-	}
-	if agreed == nil && !r.priceAvailable(item) {
-		return "", "", "", http.StatusServiceUnavailable, errors.New("runner price unavailable")
-	}
-	if item.Mode != "persistent" && !(item.Mode == "single-shot" && requestedID != "") {
-		return "", "", "", http.StatusBadRequest, errors.New("only persistent runners have sessions")
-	}
-	if len(item.Sessions) >= item.Capacity {
-		return "", "", "", http.StatusConflict, errors.New("runner at capacity")
-	}
-	sessionID := requestedID
-	if sessionID == "" {
-		var err error
-		sessionID, err = randomID()
-		if err != nil {
-			return "", "", "", http.StatusInternalServerError, err
-		}
-	}
-	if !validRouteID(sessionID) || item.Sessions[sessionID] != nil {
-		return "", "", "", http.StatusConflict, errors.New("session already exists or invalid")
-	}
-	token, err := randomID()
-	if err != nil {
-		return "", "", "", http.StatusInternalServerError, err
-	}
-	price := item.PriceInfo
-	if agreed != nil {
-		price = *agreed
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	item.Sessions[sessionID] = &session{pending: agreed != nil, ID: sessionID, Token: token, Created: time.Now(), Proxies: map[string]sessionProxy{}, PriceInfo: price, ctx: ctx, cancel: cancel}
-	appURL := r.appURL(id, item.Mode, sessionID)
-	if item.Proxy && item.Mode == "persistent" {
-		target, _ := url.Parse(item.RunnerURL)
-		proxyID, err := randomID()
-		if err != nil {
-			cancel()
-			delete(item.Sessions, sessionID)
-			return "", "", "", http.StatusInternalServerError, err
-		}
-		item.Sessions[sessionID].Proxies[proxyID] = sessionProxy{target: target, runner: true}
-		appURL = r.proxyURL(proxyID)
-	}
-	if agreed == nil && r.onEvent != nil {
-		r.onEvent(id, "reserved", sessionID)
-	}
-	return sessionID, appURL, r.service + "/apps/" + url.PathEscape(id) + "/session/" + url.PathEscape(sessionID), http.StatusOK, nil
 }
 
 func (r *Registry) activateSession(id, sid string) bool {

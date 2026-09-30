@@ -11,10 +11,13 @@ import (
 	"net"
 	"net/http"
 	"os/signal"
+	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/BurntSushi/toml"
+	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/j0sh/boa/pkg/boa"
 	"github.com/livepeer/node/destination"
 	"github.com/livepeer/node/eth"
@@ -29,11 +32,14 @@ func init() {
 }
 
 type Params struct {
-	ProxyURLTemplate    string        `name:"proxy-url-template" optional:"true" toml:"proxy_url_template" descr:"Generated proxy URL with {proxy} in a hostname label or final path segment"`
+	ETHUSDFeed          string        `name:"eth-usd-feed" optional:"true" toml:"eth_usd_feed" descr:"ETH/USD oracle address, alternative to a fixed wei-per-usd rate"`
+	PriceMaxAge         time.Duration `name:"price-max-age" default:"2h" toml:"price_max_age" descr:"Maximum age of the oracle observation"`
 	ConfigFile          string        `name:"config" configfile:"true" file:"true" optional:"true" toml:"-" descr:"TOML configuration path"`
 	Listen              string        `name:"listen" default:"127.0.0.1:8935" toml:"listen" descr:"Public HTTP listener"`
 	MetricsListen       string        `name:"metrics-listen" default:"127.0.0.1:8936" toml:"metrics_listen" descr:"Loopback metrics listener"`
 	ServiceURL          string        `name:"service-url" default:"http://127.0.0.1:8935" toml:"service_url" descr:"Public orchestrator base URL"`
+	RunnerServiceURL    string        `name:"runner-service-url" optional:"true" toml:"runner_service_url" descr:"Runner-facing base URL for callbacks and trickle; defaults to service-url"`
+	ProxyURLTemplate    string        `name:"proxy-url-template" optional:"true" toml:"proxy_url_template" descr:"Generated proxy URL with {proxy} in a hostname label or final path segment"`
 	BootstrapSecret     string        `name:"bootstrap-secret" secret:"true" optional:"true" toml:"bootstrap_secret" descr:"Dynamic runner bootstrap credential"`
 	BootstrapSecretFile string        `name:"bootstrap-secret-file" secretfor:"BootstrapSecret" toml:"bootstrap_secret_file" descr:"File containing runner bootstrap credential"`
 	RunnerConfig        string        `name:"runner-config" optional:"true" file:"true" toml:"runner_config" descr:"Static runner TOML path"`
@@ -69,10 +75,10 @@ func (p Params) Validate() error {
 	if p.BootstrapSecret == "" && p.RunnerConfig == "" {
 		return errors.New("bootstrap secret or static runner config is required")
 	}
-	paymentRequested := p.PaymentKeyFile != "" || p.PaymentDB != "" || p.PaymentRPCURL != "" || p.PaymentChainID != "" || p.PaymentController != "" || p.WeiPerUSD != "" || p.TicketFaceValue != "" || p.TicketWinProb != "" || len(p.PaymentRPCGrants) > 0 || p.PaymentRPCCAFile != ""
+	paymentRequested := p.PaymentKeyFile != "" || p.PaymentDB != "" || p.PaymentRPCURL != "" || p.PaymentChainID != "" || p.PaymentController != "" || p.WeiPerUSD != "" || p.ETHUSDFeed != "" || p.TicketFaceValue != "" || p.TicketWinProb != "" || len(p.PaymentRPCGrants) > 0 || p.PaymentRPCCAFile != ""
 	if paymentRequested {
-		if p.PaymentKeyFile == "" || p.PaymentDB == "" || p.PaymentRPCURL == "" || p.PaymentChainID == "" || p.PaymentController == "" || p.WeiPerUSD == "" || p.TicketFaceValue == "" || p.TicketWinProb == "" {
-			return errors.New("on-chain payment requires payment-db, key, RPC, chain-id, controller, wei-per-usd, face-value and win-prob")
+		if p.PaymentKeyFile == "" || p.PaymentDB == "" || p.PaymentRPCURL == "" || p.PaymentChainID == "" || p.PaymentController == "" || (p.WeiPerUSD == "" && p.ETHUSDFeed == "") || p.TicketFaceValue == "" || p.TicketWinProb == "" {
+			return errors.New("on-chain payment requires payment-db, key, RPC, chain-id, controller, a fixed rate or ETH/USD feed, face-value and win-prob")
 		}
 		if !eth.ValidAddress(p.PaymentController) {
 			return errors.New("invalid payment controller address")
@@ -83,8 +89,11 @@ func (p Params) Validate() error {
 				return errors.New("payment chain ID and ticket values must be positive decimal integers")
 			}
 		}
-		rate, ok := new(big.Rat).SetString(p.WeiPerUSD)
-		if !ok || rate.Sign() <= 0 {
+		if p.ETHUSDFeed != "" {
+			if p.WeiPerUSD != "" || !eth.ValidAddress(p.ETHUSDFeed) || p.PriceMaxAge < 0 {
+				return errors.New("eth-usd-feed requires a valid address, positive price-max-age and no fixed wei-per-usd")
+			}
+		} else if rate, ok := new(big.Rat).SetString(p.WeiPerUSD); !ok || rate.Sign() <= 0 {
 			return errors.New("wei-per-usd must be positive")
 		}
 		if _, err := destination.ValidateURL(p.PaymentRPCURL); err != nil {
@@ -125,6 +134,12 @@ func (p Params) Validate() error {
 	}
 	if p.TLSCertFile != "" && base.Scheme != "https" {
 		return errors.New("service-url must use https with direct TLS")
+	}
+	if p.RunnerServiceURL != "" {
+		runnerBase, err := destination.ValidateURL(p.RunnerServiceURL)
+		if err != nil || runnerBase.User != nil || runnerBase.RawQuery != "" || runnerBase.Fragment != "" {
+			return errors.New("runner-service-url must be an absolute HTTP or HTTPS URL without credentials, query or fragment")
+		}
 	}
 	if p.HeartbeatInterval <= 0 || p.HeartbeatTTL <= p.HeartbeatInterval {
 		return errors.New("heartbeat-ttl must exceed positive heartbeat-interval")
@@ -194,7 +209,7 @@ func printConfig(ctx *boa.HookContext, out io.Writer) error {
 	}
 	// File paths and any future free-form strings are excluded by this allowlist.
 	allowed := map[string]any{}
-	for _, key := range []string{"listen", "metrics_listen", "runner_grants", "session_proxy_grants", "health_grants", "heartbeat_interval", "heartbeat_ttl", "behind_tls", "payment_db", "payment_chain_id", "payment_controller_address", "wei_per_usd", "ticket_face_value", "ticket_win_prob"} {
+	for _, key := range []string{"listen", "metrics_listen", "runner_grants", "session_proxy_grants", "health_grants", "heartbeat_interval", "heartbeat_ttl", "behind_tls", "payment_db", "payment_chain_id", "payment_controller_address", "wei_per_usd", "eth_usd_feed", "price_max_age", "ticket_face_value", "ticket_win_prob"} {
 		if value, exists := values[key]; exists {
 			allowed[key] = value
 		}
@@ -229,7 +244,7 @@ func loadStatic(path string, registry *Registry) error {
 	return nil
 }
 
-func Serve(parent context.Context, p Params, logOut io.Writer) error {
+func Serve(parent context.Context, p Params, logOut io.Writer) (result error) {
 	runnerPolicy, err := destination.New("runner", p.RunnerGrants)
 	if err != nil {
 		return err
@@ -255,7 +270,7 @@ func Serve(parent context.Context, p Params, logOut io.Writer) error {
 		return err
 	}
 	registry := NewRegistry(p.BootstrapSecret, p.ServiceURL, p.HeartbeatInterval, p.HeartbeatTTL)
-	registry.proxyTemplate = p.ProxyURLTemplate
+	registry.runnerService = strings.TrimRight(p.RunnerServiceURL, "/")
 	var engine *pm.Engine
 	var paymentStore *pm.SQLiteStore
 	var paymentChain eth.PaymentChain
@@ -286,6 +301,16 @@ func Serve(parent context.Context, p Params, logOut io.Writer) error {
 			return err
 		}
 		paymentChain = eth.PaymentChain{Contracts: contracts}
+		if p.ETHUSDFeed != "" {
+			if p.PriceMaxAge == 0 {
+				p.PriceMaxAge = 2 * time.Hour
+			}
+			rate, until, err := contracts.WeiPerUSD(parent, ethcommon.HexToAddress(p.ETHUSDFeed), p.PriceMaxAge)
+			if err != nil {
+				return err
+			}
+			registry.setRate(rate, until)
+		}
 		face, _ := new(big.Int).SetString(p.TicketFaceValue, 10)
 		prob, _ := new(big.Int).SetString(p.TicketWinProb, 10)
 		engine, err = pm.NewEngine(paymentStore, pm.EthereumChain{Client: paymentChain}, paymentKey.Address(), face, prob)
@@ -293,6 +318,7 @@ func Serve(parent context.Context, p Params, logOut io.Writer) error {
 			return err
 		}
 	}
+	registry.proxyTemplate = p.ProxyURLTemplate
 	if err := loadStatic(p.RunnerConfig, registry); err != nil {
 		return err
 	}
@@ -300,19 +326,6 @@ func Serve(parent context.Context, p Params, logOut io.Writer) error {
 	app := NewServer(registry, runnerPolicy, proxyPolicy, logger)
 	defer app.Close()
 	app.SetPayment(engine)
-	sem := make(chan struct{}, 256)
-	limited := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		select {
-		case sem <- struct{}{}:
-			defer func() { <-sem }()
-		case <-r.Context().Done():
-			return
-		default:
-			fail(w, http.StatusServiceUnavailable, "server busy")
-			return
-		}
-		app.ServeHTTP(w, r)
-	})
 	mainListener, err := net.Listen("tcp", p.Listen)
 	if err != nil {
 		return err
@@ -337,46 +350,89 @@ func Serve(parent context.Context, p Params, logOut io.Writer) error {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 		_, _ = fmt.Fprintf(w, "livepeer_runners %d\nlivepeer_sessions %d\n", runners, sessions)
 	})
-	mainServer := &http.Server{Handler: limited, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 90 * time.Second, MaxHeaderBytes: 1 << 20}
-	metricsServer := &http.Server{Handler: metricsMux, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 1 << 16}
 	ctx, cancel := signal.NotifyContext(parent, syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+	mainServer := &http.Server{BaseContext: func(net.Listener) context.Context { return ctx }, Handler: app, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 90 * time.Second, MaxHeaderBytes: 1 << 20, MaxHeaderValueCount: 128}
+	metricsServer := &http.Server{Handler: metricsMux, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 1 << 16, MaxHeaderValueCount: 128}
 	errs := make(chan error, 2)
-	go func() {
+	var workers sync.WaitGroup
+	workers.Go(func() {
 		if p.TLSCertFile != "" {
 			errs <- mainServer.ServeTLS(mainListener, p.TLSCertFile, p.TLSKeyFile)
 		} else {
 			errs <- mainServer.Serve(mainListener)
 		}
-	}()
-	go func() { errs <- metricsServer.Serve(metricsListener) }()
+	})
+	workers.Go(func() { errs <- metricsServer.Serve(metricsListener) })
 	logger.Info("orchestrator started", "listen", p.Listen, "metrics_listen", p.MetricsListen)
-	ticker := time.NewTicker(p.HeartbeatInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			app.Close()
-			shutdownCtx, done := context.WithTimeout(context.Background(), 15*time.Second)
-			defer done()
-			_ = mainServer.Shutdown(shutdownCtx)
-			_ = metricsServer.Shutdown(shutdownCtx)
-			return nil
-		case err := <-errs:
-			if err != nil && !errors.Is(err, http.ErrServerClosed) {
-				return err
+	// Independent bounded workers keep slow RPC/health calls off the billing
+	// and expiry paths. Every worker uses the shutdown context and is joined.
+	startWorker := func(period, timeout time.Duration, work func(context.Context)) {
+		workers.Go(func() {
+			ticker := time.NewTicker(period)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					tickCtx, done := context.WithTimeout(ctx, timeout)
+					work(tickCtx)
+					done()
+				}
 			}
-		case <-ticker.C:
-			registry.Expire()
-			if engine != nil {
-				app.ChargePaidSessions(ctx)
-				app.RedeemWinningTickets(ctx, paymentStore, paymentChain, paymentKey, paymentChainID)
+		})
+	}
+	startWorker(p.HeartbeatInterval, time.Second, func(context.Context) { registry.Expire() })
+	workers.Go(func() { app.runO2RKeepalives(ctx, 10*time.Second) })
+	if engine != nil {
+		if p.ETHUSDFeed != "" {
+			startWorker(30*time.Second, 30*time.Second, func(ctx context.Context) {
+				rate, until, err := paymentChain.Contracts.WeiPerUSD(ctx, ethcommon.HexToAddress(p.ETHUSDFeed), p.PriceMaxAge)
+				if err != nil {
+					logger.Error("price feed unavailable", "error", err)
+					return
+				}
+				registry.setRate(rate, until)
+			})
+		}
+		startWorker(time.Second, 5*time.Second, app.ChargePaidSessions)
+		startWorker(time.Minute, 5*time.Second, func(ctx context.Context) {
+			if err := paymentStore.PruneControlState(ctx); err != nil {
+				logger.Error("payment retention", "error", err)
 			}
-			if p.RunnerConfig != "" {
-				client := healthPolicy.Client()
-				client.Timeout = 5 * time.Second
-				registry.CheckStaticHealth(client)
+		})
+		startWorker(p.HeartbeatInterval, 30*time.Second, func(ctx context.Context) {
+			for _, err := range pm.ProcessRedemptions(ctx, paymentStore, paymentChain, paymentKey, paymentChainID) {
+				logger.Error("payment redemption", "error", err)
 			}
+		})
+	}
+	client := healthPolicy.Client()
+	client.Timeout = 5 * time.Second
+	defer client.CloseIdleConnections()
+	if p.RunnerConfig != "" {
+		startWorker(p.HeartbeatInterval, 30*time.Second, func(ctx context.Context) { registry.CheckStaticHealth(ctx, client) })
+	}
+	select {
+	case <-ctx.Done():
+	case err := <-errs:
+		if !errors.Is(err, http.ErrServerClosed) {
+			result = err
 		}
 	}
+	cancel()
+	app.Close()
+	shutdownCtx, done := context.WithTimeout(context.Background(), 15*time.Second)
+	defer done()
+	if err := mainServer.Shutdown(shutdownCtx); err != nil {
+		result = errors.Join(result, err)
+		_ = mainServer.Close()
+	}
+	if err := metricsServer.Shutdown(shutdownCtx); err != nil {
+		result = errors.Join(result, err)
+		_ = metricsServer.Close()
+	}
+	workers.Wait()
+	return result
 }

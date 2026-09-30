@@ -25,21 +25,33 @@ const (
 )
 
 type Server struct {
-	trickleServer *trickle.Server
-	registry      *Registry
-	runnerPolicy  destination.Policy
-	proxyPolicy   destination.Policy
-	logger        *slog.Logger
-	payment       *pm.Engine
-	mux           *http.ServeMux
-	mu            sync.Mutex
-	channels      map[string]*channel
-	o2r           map[string]string
-	bytesUsed     int
+	basePath        string
+	runnerBasePath  string
+	registry        *Registry
+	runnerTransport *http.Transport
+	proxyTransport  *http.Transport
+	logger          *slog.Logger
+	payment         *pm.Engine
+	mux             *http.ServeMux
+	mu              sync.Mutex
+	channels        map[string]*channel
+	o2r             map[string]string
+	trickleServer   *trickle.Server
+	controlSlots    chan struct{}
+	streamSlots     chan struct{}
 }
 
 func NewServer(registry *Registry, runnerPolicy, proxyPolicy destination.Policy, logger *slog.Logger) *Server {
-	s := &Server{registry: registry, runnerPolicy: runnerPolicy, proxyPolicy: proxyPolicy, logger: logger, mux: http.NewServeMux(), channels: map[string]*channel{}, o2r: map[string]string{}}
+	s := &Server{registry: registry, logger: logger, mux: http.NewServeMux(), channels: map[string]*channel{}, o2r: map[string]string{}}
+	serviceURL, _ := url.Parse(registry.service)
+	s.basePath = strings.TrimRight(serviceURL.Path, "/")
+	runnerURL, _ := url.Parse(registry.runnerServiceURL())
+	s.runnerBasePath = strings.TrimRight(runnerURL.Path, "/")
+	s.runnerTransport = runnerPolicy.Transport(time.Minute)
+	s.proxyTransport = proxyPolicy.Transport(time.Minute)
+	// A stalled stream must not take the slot needed to stop or fund it.
+	s.controlSlots = make(chan struct{}, 64)
+	s.streamSlots = make(chan struct{}, 256)
 	registry.onEvent = s.emitSessionEvent
 	s.mux.HandleFunc("POST /runners/heartbeat", s.heartbeat)
 	s.mux.HandleFunc("POST /runners/{runner_id}/unregister", s.unregister)
@@ -56,18 +68,52 @@ func NewServer(registry *Registry, runnerPolicy, proxyPolicy destination.Policy,
 	s.mux.HandleFunc("/apps/{runner_id}/session/{session_id}/app/{app_path...}", s.proxySession)
 	s.mux.HandleFunc("/apps/{runner_id}/app", s.proxySingleShot)
 	s.mux.HandleFunc("/apps/{runner_id}/app/{app_path...}", s.proxySingleShot)
-	s.mux.HandleFunc("/run/{proxy_id}", s.proxyGenerated)
-	s.mux.HandleFunc("/run/{proxy_id}/{app_path...}", s.proxyGenerated)
 	s.mux.HandleFunc("/proxy/{proxy_id}", s.proxyGenerated)
 	s.mux.HandleFunc("/proxy/{proxy_id}/{app_path...}", s.proxyGenerated)
-	s.trickleServer = trickle.ConfigureServer(trickle.TrickleServerConfig{BasePath: "/ai/trickle/", Mux: s.mux, BeforeDelete: s.beforeDeleteChannel})
+	s.mux.HandleFunc("/run/{proxy_id}", s.proxyGenerated)
+	s.mux.HandleFunc("/run/{proxy_id}/{app_path...}", s.proxyGenerated)
+	s.trickleServer = trickle.ConfigureServer(trickle.TrickleServerConfig{
+		BasePath: "/ai/trickle/", Mux: s.mux, BeforeDelete: s.beforeDeleteChannel,
+	})
 	return s
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if id, path := s.registry.matchProxy(r); id != "" {
-		r.SetPathValue("proxy_id", id)
-		r.SetPathValue("app_path", path)
+	proxyID, appPath := s.registry.matchProxy(r)
+	if proxyID == "" {
+		basePath := ""
+		for _, candidate := range []string{s.basePath, s.runnerBasePath} {
+			if len(candidate) > len(basePath) && strings.HasPrefix(r.URL.Path, candidate+"/") {
+				basePath = candidate
+			}
+		}
+		if basePath == "" && s.basePath != "" && s.runnerBasePath != "" {
+			fail(w, 404, "route not found")
+			return
+		}
+		if basePath != "" {
+			r = r.Clone(r.Context())
+			r.URL.Path = strings.TrimPrefix(r.URL.Path, basePath)
+			r.URL.RawPath = ""
+		}
+	}
+	stream := proxyID != "" || strings.HasPrefix(r.URL.Path, "/ai/trickle/") || strings.HasPrefix(r.URL.Path, "/proxy/") || strings.HasPrefix(r.URL.Path, "/run/") || strings.HasSuffix(r.URL.Path, "/app") || strings.Contains(r.URL.Path, "/app/")
+	slots := s.controlSlots
+	if stream {
+		slots = s.streamSlots
+	} else {
+		_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(5 * time.Second))
+	}
+	select {
+	case slots <- struct{}{}:
+		defer func() { <-slots }()
+	default:
+		fail(w, http.StatusServiceUnavailable, "server busy")
+		return
+	}
+	if proxyID != "" {
+		r.SetPathValue("proxy_id", proxyID)
+		r.SetPathValue("app_path", appPath)
 		s.proxyGenerated(w, r)
 		return
 	}
@@ -75,6 +121,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) SetPayment(engine *pm.Engine) { s.payment = engine }
+
+func (s *Server) Close() {
+	s.registry.Close()
+	s.runnerTransport.CloseIdleConnections()
+	s.proxyTransport.CloseIdleConnections()
+}
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -99,6 +151,11 @@ func decode(r *http.Request, value any) error {
 }
 
 func (s *Server) heartbeat(w http.ResponseWriter, r *http.Request) {
+	if !s.registry.acceptsHeartbeatCredential(r.Header.Get("Authorization")) {
+		w.Header().Set("Connection", "close")
+		fail(w, http.StatusUnauthorized, "invalid runner credential")
+		return
+	}
 	var req heartbeatRequest
 	if err := decode(r, &req); err != nil {
 		fail(w, http.StatusBadRequest, "invalid heartbeat JSON")
@@ -127,7 +184,7 @@ func (s *Server) heartbeat(w http.ResponseWriter, r *http.Request) {
 		s.o2r[resp.RunnerID] = id
 		s.mu.Unlock()
 		s.registry.mu.Unlock()
-		address := s.registry.service + "/ai/trickle/" + id
+		address := s.registry.runnerServiceURL() + "/ai/trickle/" + id
 		resp.O2R = &trickleChannel{Name: "o2r", ChannelName: id, URL: address, MimeType: "application/json"}
 	}
 	writeJSON(w, status, resp)
@@ -236,7 +293,7 @@ func (s *Server) createProxy(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusForbidden, "invalid session token")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"proxy_id": id, "url": s.registry.service + "/proxy/" + id})
+	writeJSON(w, http.StatusOK, map[string]string{"proxy_id": id, "url": s.registry.proxyURL(id)})
 }
 
 func (s *Server) proxySession(w http.ResponseWriter, r *http.Request) {
@@ -245,8 +302,8 @@ func (s *Server) proxySession(w http.ResponseWriter, r *http.Request) {
 		fail(w, status, err.Error())
 		return
 	}
-	control := s.registry.service + "/runner/" + url.PathEscape(r.PathValue("runner_id")) + "/session/" + url.PathEscape(r.PathValue("session_id"))
-	s.proxy(w, r, s.runnerPolicy, target, r.PathValue("app_path"), r.PathValue("runner_id"), r.PathValue("session_id"), token, control)
+	control := s.registry.runnerServiceURL() + "/runner/" + url.PathEscape(r.PathValue("runner_id")) + "/session/" + url.PathEscape(r.PathValue("session_id"))
+	s.proxy(w, r, s.runnerTransport, target, r.PathValue("app_path"), r.PathValue("runner_id"), r.PathValue("session_id"), token, control)
 }
 
 func (s *Server) proxySingleShot(w http.ResponseWriter, r *http.Request) {
@@ -270,8 +327,8 @@ func (s *Server) proxySingleShot(w http.ResponseWriter, r *http.Request) {
 		fail(w, status, err.Error())
 		return
 	}
-	control := s.registry.service + "/runner/" + url.PathEscape(runnerID) + "/session/" + id
-	s.proxy(w, r, s.runnerPolicy, target, r.PathValue("app_path"), runnerID, id, token, control)
+	control := s.registry.runnerServiceURL() + "/runner/" + url.PathEscape(runnerID) + "/session/" + id
+	s.proxy(w, r, s.runnerTransport, target, r.PathValue("app_path"), runnerID, id, token, control)
 }
 
 func (s *Server) proxyGenerated(w http.ResponseWriter, r *http.Request) {
@@ -285,15 +342,15 @@ func (s *Server) proxyGenerated(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusNotFound, "proxy not found")
 		return
 	}
-	control := s.registry.service + "/runner/" + url.PathEscape(runnerID) + "/session/" + url.PathEscape(sid)
-	policy := s.proxyPolicy
+	control := s.registry.runnerServiceURL() + "/runner/" + url.PathEscape(runnerID) + "/session/" + url.PathEscape(sid)
+	transport := s.proxyTransport
 	if target.runner {
-		policy = s.runnerPolicy
+		transport = s.runnerTransport
 	}
-	s.proxy(w, r, policy, target.target, r.PathValue("app_path"), runnerID, sid, token, control)
+	s.proxy(w, r, transport, target.target, r.PathValue("app_path"), runnerID, sid, token, control)
 }
 
-func (s *Server) proxy(w http.ResponseWriter, r *http.Request, policy destination.Policy, target *url.URL, appPath, runnerID, sid, token, control string) {
+func (s *Server) proxy(w http.ResponseWriter, r *http.Request, transport http.RoundTripper, target *url.URL, appPath, runnerID, sid, token, control string) {
 	sessionCtx, ok := s.registry.sessionContext(runnerID, sid)
 	if !ok {
 		fail(w, http.StatusNotFound, "session not found")
@@ -307,7 +364,7 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, policy destinatio
 		cancel()
 	}
 	proxy := &httputil.ReverseProxy{
-		Transport:     policy.Transport(0),
+		Transport:     transport,
 		FlushInterval: -1,
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
 			s.logger.Warn("runner proxy failed", "runner_id", runnerID, "session_id", sid, "error_kind", "upstream_failure")
@@ -405,7 +462,7 @@ func (s *Server) createChannels(w http.ResponseWriter, r *http.Request) {
 		}
 		ch := s.channels[id]
 		address := s.registry.service + "/ai/trickle/" + id
-		result = append(result, map[string]string{"name": ch.name, "channel_name": id, "url": address, "internal_url": s.registry.service + "/ai/trickle/" + id, "mime_type": ch.mime})
+		result = append(result, map[string]string{"name": ch.name, "channel_name": id, "url": address, "internal_url": s.registry.runnerServiceURL() + "/ai/trickle/" + id, "mime_type": ch.mime})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"channels": result})
 }
@@ -437,5 +494,3 @@ func (s *Server) deleteChannels(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) String() string { return fmt.Sprint(s.registry) }
-
-func (s *Server) Close() { s.registry.Close() }

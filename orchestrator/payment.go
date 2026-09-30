@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"math/big"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -175,7 +174,7 @@ func (s *Server) proxyPaidSingleShot(w http.ResponseWriter, r *http.Request) boo
 		return true
 	}
 	control := s.registry.runnerServiceURL() + "/runner/" + url.PathEscape(runnerID) + "/session/" + url.PathEscape(id)
-	s.proxy(w, r, s.runnerPolicy, target, r.PathValue("app_path"), runnerID, id, token, control)
+	s.proxy(w, r, s.runnerTransport, target, r.PathValue("app_path"), runnerID, id, token, control)
 	return true
 }
 
@@ -251,10 +250,4 @@ func (s *Server) reservationPrice(r *http.Request, runnerID string) (priceInfo, 
 		return priceInfo{Price: json.Number(strconv.FormatInt(price, 10)), Currency: "wei", Unit: unit}, 200, nil
 	}
 	return s.registry.PriceForRunner(runnerID)
-}
-
-func (s *Server) RedeemWinningTickets(ctx context.Context, store *pm.SQLiteStore, chain eth.PaymentChain, key *eth.Key, chainID *big.Int) {
-	for _, err := range pm.ProcessRedemptions(ctx, store, chain, key, chainID) {
-		s.logger.Error("payment redemption", "error", err)
-	}
 }

@@ -221,13 +221,13 @@ func TestGeneratedProxyHasSeparateDestinationGrant(t *testing.T) {
 	require.NoError(t, json.Unmarshal(record.Body.Bytes(), &created))
 	require.NotEmpty(t, created.ProxyID)
 	record = httptest.NewRecorder()
-	srv.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/proxy/"+created.ProxyID, nil))
+	srv.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/run/"+created.ProxyID, nil))
 	require.Equal(t, http.StatusBadGateway, record.Code)
 	granted, err := destination.New("session-proxy", []string{grant})
 	require.NoError(t, err)
 	srv = NewServer(registry, runnerPolicy, granted, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	record = httptest.NewRecorder()
-	srv.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/proxy/"+created.ProxyID, nil))
+	srv.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/run/"+created.ProxyID, nil))
 	require.Equal(t, http.StatusOK, record.Code)
 }
 

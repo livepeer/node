@@ -170,6 +170,7 @@ func (p Policy) Transport(headerTimeout time.Duration) *http.Transport {
 		MaxIdleConnsPerHost:   16,
 		ResponseHeaderTimeout: headerTimeout,
 		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
 	}
 	if p.caPool != nil {
 		transport.TLSClientConfig = &tls.Config{RootCAs: p.caPool, MinVersion: tls.VersionTLS12}

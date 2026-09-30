@@ -1,10 +1,13 @@
 package orchestrator
 
 import (
+	"bufio"
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -16,9 +19,52 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestRegressionPaymentConfigurationRequiresKey(t *testing.T) {
-	p := Params{Listen: "127.0.0.1:8935", MetricsListen: "127.0.0.1:8936", ServiceURL: "http://127.0.0.1:8935", BootstrapSecret: "test", HeartbeatInterval: time.Second, HeartbeatTTL: time.Minute, PaymentDB: "payment.sqlite", PaymentRPCURL: "https://rpc.example", PaymentChainID: "1", PaymentController: "0x0000000000000000000000000000000000000001", WeiPerUSD: "1", TicketFaceValue: "1", TicketWinProb: "1"}
-	require.Error(t, p.Validate(), "without payment-key-file the complete payment configuration silently starts off-chain")
+func TestRegressionUnauthenticatedSlowBodiesCannotStarveDiscovery(t *testing.T) {
+	address := fmt.Sprintf("127.0.0.1:%d", freeTCPPort(t))
+	p := Params{Listen: address, MetricsListen: fmt.Sprintf("127.0.0.1:%d", freeTCPPort(t)), ServiceURL: "http://" + address, BootstrapSecret: "bootstrap", HeartbeatInterval: time.Second, HeartbeatTTL: time.Minute}
+	require.NoError(t, p.Validate())
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- Serve(ctx, p, io.Discard) }()
+	var connections []net.Conn
+	t.Cleanup(func() {
+		for _, c := range connections {
+			_ = c.Close()
+		}
+		cancel()
+		require.NoError(t, <-done)
+	})
+	client := &http.Client{Timeout: time.Second}
+	discoveryStatus := func() int {
+		r, e := client.Get(p.ServiceURL + "/discovery")
+		if e != nil {
+			return 0
+		}
+		defer r.Body.Close()
+		return r.StatusCode
+	}
+	require.Eventually(t, func() bool { return discoveryStatus() == 200 }, 3*time.Second, 10*time.Millisecond)
+	for range 256 {
+		c, err := net.DialTimeout("tcp", address, time.Second)
+		require.NoError(t, err)
+		connections = append(connections, c)
+		_, err = fmt.Fprintf(c, "POST /runners/heartbeat HTTP/1.1\r\nHost: %s\r\nContent-Type: application/json\r\nContent-Length: 1048576\r\n\r\n{", address)
+		require.NoError(t, err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	require.Equal(t, 200, discoveryStatus(), "unauthenticated incomplete control bodies still occupy every slot beyond ReadHeaderTimeout")
+	c, err := net.DialTimeout("tcp", address, time.Second)
+	require.NoError(t, err)
+	defer c.Close()
+	require.NoError(t, c.SetDeadline(time.Now().Add(7*time.Second)))
+	_, err = fmt.Fprintf(c, "POST /runners/heartbeat HTTP/1.1\r\nHost: %s\r\nAuthorization: bootstrap\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{", address)
+	require.NoError(t, err)
+	require.Equal(t, 200, discoveryStatus())
+	response, err := http.ReadResponse(bufio.NewReader(c), nil)
+	require.NoError(t, err, "authenticated incomplete control body must time out")
+	defer response.Body.Close()
+	require.Equal(t, http.StatusBadRequest, response.StatusCode)
+
 }
 
 func reviewServer(t *testing.T, upstream string) (*Registry, *Server) {
@@ -28,16 +74,6 @@ func reviewServer(t *testing.T, upstream string) (*Registry, *Server) {
 	reg := NewRegistry("bootstrap", "https://orch.example", time.Second, time.Minute)
 	return reg, NewServer(reg, p, p, slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
-
-func TestRegressionHourlyUSDMatchesAdvertisedUnit(t *testing.T) {
-	reg, _ := reviewServer(t, "http://127.0.0.1:1")
-	reg.SetWeiPerUSD(big.NewRat(3600, 1))
-	price := priceInfo{Price: "3600", Currency: "usd", Unit: "hour"}
-	require.NoError(t, reg.normalizePrice(&price))
-	require.Equal(t, "seconds", price.Unit)
-	require.Equal(t, "1", price.PriceUSD.String(), "$3600/hour must advertise $1/second")
-}
-
 func TestRegressionOffchainSingleShotCapacityAndHeaders(t *testing.T) {
 	seen := make(chan http.Header, 2)
 	release := make(chan struct{})
@@ -66,34 +102,22 @@ func TestRegressionOffchainSingleShotCapacityAndHeaders(t *testing.T) {
 		t.Fatal("second request neither rejected nor routed")
 	}
 }
-
-func TestRegressionReleasedSessionCancelsInFlightProxy(t *testing.T) {
-	started := make(chan struct{})
-	ended := make(chan struct{})
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { close(started); <-r.Context().Done(); close(ended) }))
-	defer upstream.Close()
-	reg, s := reviewServer(t, upstream.URL)
-	require.NoError(t, reg.AddStatic(StaticRunner{ID: "r", RunnerURL: upstream.URL, App: "a", Capacity: 1}))
-	sid, app, _, _, err := reg.Reserve("r")
+func TestRegressionStaticSessionChannelsReleased(t *testing.T) {
+	reg, s := reviewServer(t, "http://127.0.0.1:1")
+	require.NoError(t, reg.AddStatic(StaticRunner{ID: "static", RunnerURL: "http://127.0.0.1:1", App: "a", Capacity: 1}))
+	sid, _, _, _, err := reg.Reserve("static")
 	require.NoError(t, err)
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	done := make(chan struct{})
-	go func() {
-		s.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", app, nil).WithContext(ctx))
-		close(done)
-	}()
-	<-started
+	s.newChannel("owned", "events", "application/octet-stream", "static", sid)
 	reg.ReleaseBySession(sid)
-	select {
-	case <-ended:
-	case <-time.After(200 * time.Millisecond):
-		t.Error("session was removed but its upstream request remains live")
-	}
-	cancel()
-	<-done
+	require.Empty(t, s.channels, "static runners have no O2R channel, but session channels must still be removed")
 }
-
+func TestRegressionProxyTrueReturnsGeneratedURL(t *testing.T) {
+	reg, _ := reviewServer(t, "http://127.0.0.1:1")
+	require.NoError(t, reg.AddStatic(StaticRunner{ID: "static", RunnerURL: "http://127.0.0.1:1", App: "a", Capacity: 1, Proxy: true}))
+	_, app, _, _, err := reg.Reserve("static")
+	require.NoError(t, err)
+	require.Contains(t, app, "/run/", "proxy=true must retain the upstream generated-proxy behavior")
+}
 func TestRegressionSessionPricePinnedAcrossHeartbeat(t *testing.T) {
 	reg, _ := reviewServer(t, "http://127.0.0.1:1")
 	reg.SetWeiPerUSD(big.NewRat(3600, 1))
@@ -109,17 +133,14 @@ func TestRegressionSessionPricePinnedAcrossHeartbeat(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "1", quote.Price.String(), "existing session must retain its 1-wei price")
 }
-
-func TestRegressionStaticSessionChannelsReleased(t *testing.T) {
-	reg, s := reviewServer(t, "http://127.0.0.1:1")
-	require.NoError(t, reg.AddStatic(StaticRunner{ID: "static", RunnerURL: "http://127.0.0.1:1", App: "a", Capacity: 1}))
-	sid, _, _, _, err := reg.Reserve("static")
-	require.NoError(t, err)
-	s.newChannel("owned", "events", "application/octet-stream", "static", sid)
-	reg.ReleaseBySession(sid)
-	require.Empty(t, s.channels, "static runners have no O2R channel, but session channels must still be removed")
+func TestRegressionHourlyUSDMatchesAdvertisedUnit(t *testing.T) {
+	reg, _ := reviewServer(t, "http://127.0.0.1:1")
+	reg.SetWeiPerUSD(big.NewRat(3600, 1))
+	price := priceInfo{Price: "3600", Currency: "usd", Unit: "hour"}
+	require.NoError(t, reg.normalizePrice(&price))
+	require.Equal(t, "seconds", price.Unit)
+	require.Equal(t, "1", price.PriceUSD.String(), "$3600/hour must advertise $1/second")
 }
-
 func TestRegressionTrickleNextDeliversNextPublishedPart(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		_, s := reviewServer(t, "http://127.0.0.1:1")
@@ -154,9 +175,7 @@ type reviewStreamingWriter struct {
 }
 
 func (w *reviewStreamingWriter) Header() http.Header { return w.header }
-
-func (w *reviewStreamingWriter) WriteHeader(int) {}
-
+func (w *reviewStreamingWriter) WriteHeader(int)     {}
 func (w *reviewStreamingWriter) Write(b []byte) (int, error) {
 	select {
 	case w.wrote <- struct{}{}:
@@ -164,9 +183,7 @@ func (w *reviewStreamingWriter) Write(b []byte) (int, error) {
 	}
 	return len(b), nil
 }
-
 func (w *reviewStreamingWriter) Flush() {}
-
 func TestRegressionTrickleStreamsBeforePublisherEOF(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		_, s := reviewServer(t, "http://127.0.0.1:1")
@@ -190,4 +207,34 @@ func TestRegressionTrickleStreamsBeforePublisherEOF(t *testing.T) {
 		synctest.Wait()
 		cancel()
 	})
+}
+func TestRegressionReleasedSessionCancelsInFlightProxy(t *testing.T) {
+	started := make(chan struct{})
+	ended := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { close(started); <-r.Context().Done(); close(ended) }))
+	defer upstream.Close()
+	reg, s := reviewServer(t, upstream.URL)
+	require.NoError(t, reg.AddStatic(StaticRunner{ID: "r", RunnerURL: upstream.URL, App: "a", Capacity: 1}))
+	sid, app, _, _, err := reg.Reserve("r")
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		s.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", app, nil).WithContext(ctx))
+		close(done)
+	}()
+	<-started
+	reg.ReleaseBySession(sid)
+	select {
+	case <-ended:
+	case <-time.After(200 * time.Millisecond):
+		t.Error("session was removed but its upstream request remains live")
+	}
+	cancel()
+	<-done
+}
+func TestRegressionPaymentConfigurationRequiresKey(t *testing.T) {
+	p := Params{Listen: "127.0.0.1:8935", MetricsListen: "127.0.0.1:8936", ServiceURL: "http://127.0.0.1:8935", BootstrapSecret: "test", HeartbeatInterval: time.Second, HeartbeatTTL: time.Minute, PaymentDB: "payment.sqlite", PaymentRPCURL: "https://rpc.example", PaymentChainID: "1", PaymentController: "0x0000000000000000000000000000000000000001", WeiPerUSD: "1", TicketFaceValue: "1", TicketWinProb: "1"}
+	require.Error(t, p.Validate(), "without payment-key-file the complete payment configuration silently starts off-chain")
 }

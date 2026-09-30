@@ -4,8 +4,10 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/livepeer/node/destination"
+	"github.com/livepeer/node/pm"
 	"github.com/stretchr/testify/require"
 )
 
@@ -143,6 +146,44 @@ func TestRegistryTeardownCancelsSessions(t *testing.T) {
 				}
 				require.ErrorIs(t, ctx.Err(), context.Canceled)
 			})
+		})
+	}
+}
+
+func TestHealthFailureAndExhaustionCleanUpSession(t *testing.T) {
+	for _, reason := range []string{"health", "exhausted"} {
+		t.Run(reason, func(t *testing.T) {
+			reg, app := reviewServer(t, "http://127.0.0.1:1")
+			defer app.Close()
+			reg.SetWeiPerUSD(big.NewRat(3600, 1))
+			require.NoError(t, reg.AddStatic(StaticRunner{ID: "r", RunnerURL: "http://127.0.0.1:1", App: "test", PriceInfo: priceInfo{Price: "1", Currency: "usd", Unit: "hour"}}))
+			sid, _, _, _, err := reg.Reserve("r")
+			require.NoError(t, err)
+			ctx, ok := reg.sessionContext("r", sid)
+			require.True(t, ok)
+			app.newChannel("owned", "events", "application/octet-stream", "r", sid)
+			if reason == "health" {
+				health := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusServiceUnavailable) }))
+				defer health.Close()
+				reg.runners["r"].HealthURL = health.URL
+				reg.CheckStaticHealth(t.Context(), health.Client())
+			} else {
+				store, err := pm.OpenSQLite(filepath.Join(t.TempDir(), "payments.sqlite"))
+				require.NoError(t, err)
+				defer store.Close()
+				key := paymentTestKey(t)
+				engine, err := pm.NewEngine(store, paymentTestChain{}, key.Address(), big.NewInt(10), big.NewInt(1))
+				require.NoError(t, err)
+				_, err = engine.MakeChallenge(t.Context(), "r", sid, key.Address(), 1, "seconds", "https://orch.example")
+				require.NoError(t, err)
+				require.NoError(t, engine.Charge(t.Context(), sid, time.Now().Add(-2*time.Second)))
+				app.SetPayment(engine)
+				app.ChargePaidSessions(t.Context())
+			}
+			require.ErrorIs(t, ctx.Err(), context.Canceled)
+			require.Empty(t, app.channels)
+			_, sessions := reg.Counts()
+			require.Zero(t, sessions)
 		})
 	}
 }
