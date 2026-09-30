@@ -493,23 +493,6 @@ func (r *Registry) proxyTarget(proxyID string) (*url.URL, string, string, string
 	return nil, "", "", "", false
 }
 
-func (r *Registry) singleShotTarget(id string) (*url.URL, int, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	item := r.runners[id]
-	if item == nil || !r.usable(item) {
-		return nil, http.StatusNotFound, errors.New("runner unavailable")
-	}
-	if item.Mode != "single-shot" {
-		return nil, http.StatusBadRequest, errors.New("runner is not single-shot")
-	}
-	target, err := destination.ValidateURL(item.RunnerURL)
-	if err != nil {
-		return nil, http.StatusBadGateway, err
-	}
-	return target, http.StatusOK, nil
-}
-
 func (r *Registry) Expire() {
 	r.mu.Lock()
 	defer r.mu.Unlock()

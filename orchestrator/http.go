@@ -297,12 +297,25 @@ func (s *Server) proxySingleShot(w http.ResponseWriter, r *http.Request) {
 	if s.proxyPaidSingleShot(w, r) {
 		return
 	}
-	target, status, err := s.registry.singleShotTarget(r.PathValue("runner_id"))
+	runnerID := r.PathValue("runner_id")
+	id, err := randomID()
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "session creation failed")
+		return
+	}
+	id, _, _, status, err := s.registry.ReserveWithID(runnerID, id)
 	if err != nil {
 		fail(w, status, err.Error())
 		return
 	}
-	s.proxy(w, r, s.runnerPolicy, target, r.PathValue("app_path"), r.PathValue("runner_id"), "", "", "")
+	defer s.registry.ReleaseBySession(id)
+	target, token, status, err := s.registry.sessionTarget(runnerID, id)
+	if err != nil {
+		fail(w, status, err.Error())
+		return
+	}
+	control := s.registry.service + "/runner/" + url.PathEscape(runnerID) + "/session/" + id
+	s.proxy(w, r, s.runnerPolicy, target, r.PathValue("app_path"), runnerID, id, token, control)
 }
 
 func (s *Server) proxyGenerated(w http.ResponseWriter, r *http.Request) {
