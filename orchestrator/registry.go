@@ -88,6 +88,8 @@ type trickleChannel struct {
 }
 
 type runner struct {
+	USDQuote   priceInfo
+	PriceError bool
 	heartbeatRequest
 	Credential string
 	Last       time.Time
@@ -109,6 +111,7 @@ type session struct {
 }
 
 type Registry struct {
+	rateUntil     time.Time
 	runnerService string
 	proxyTemplate string
 	closed        bool
@@ -128,35 +131,12 @@ func NewRegistry(secret, service string, interval, ttl time.Duration) *Registry 
 	return &Registry{runners: make(map[string]*runner), secret: secret, service: strings.TrimRight(service, "/"), interval: interval, ttl: ttl}
 }
 
-func (r *Registry) SetWeiPerUSD(rate *big.Rat) {
-	if rate != nil {
-		r.weiPerUSD = new(big.Rat).Set(rate)
-	}
-}
+func (r *Registry) SetWeiPerUSD(rate *big.Rat) { r.setRate(rate, time.Time{}) }
 
 func (r *Registry) normalizePrice(price *priceInfo) error {
-	value := strings.TrimSpace(price.Price.String())
-	if value == "" || value == "0" {
-		*price = priceInfo{}
-		return nil
-	}
-	if r.weiPerUSD == nil {
-		return errors.New("paid runners require on-chain payment support")
-	}
-	if price.Currency != "" && !strings.EqualFold(price.Currency, "usd") {
-		return errors.New("runner price currency must be USD")
-	}
-	wei, unit, err := pm.ConvertRunnerPrice(value, price.Unit, r.weiPerUSD)
-	if err != nil {
-		return err
-	}
-	usd, _ := new(big.Rat).SetString(value)
-	if unit == "seconds" {
-		usd.Quo(usd, big.NewRat(3600, 1))
-	}
-	usdString := strings.TrimRight(strings.TrimRight(usd.FloatString(36), "0"), ".")
-	*price = priceInfo{Price: json.Number(wei.String()), PriceUSD: json.Number(usdString), Currency: "wei", Unit: unit}
-	return nil
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return normalizePriceAt(price, r.weiPerUSD)
 }
 
 func randomID() (string, error) {
@@ -216,11 +196,18 @@ func (r *Registry) Heartbeat(req heartbeatRequest, auth string) (heartbeatRespon
 	if err := validateHeartbeat(&req); err != nil {
 		return heartbeatResponse{}, http.StatusBadRequest, err
 	}
-	if err := r.normalizePrice(&req.PriceInfo); err != nil {
+	if err := r.validateProxyRunner(req); err != nil {
 		return heartbeatResponse{}, http.StatusBadRequest, err
 	}
+	quote := req.PriceInfo
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if err := normalizePriceAt(&req.PriceInfo, r.weiPerUSD); err != nil {
+		return heartbeatResponse{}, http.StatusBadRequest, err
+	}
+	if r.closed {
+		return heartbeatResponse{}, http.StatusServiceUnavailable, errors.New("orchestrator shutting down")
+	}
 	current := r.runners[req.RunnerID]
 	if current != nil && current.Static {
 		return heartbeatResponse{}, http.StatusForbidden, errors.New("static runner cannot heartbeat")
@@ -257,6 +244,7 @@ func (r *Registry) Heartbeat(req heartbeatRequest, auth string) (heartbeatRespon
 	if req.Status == "" {
 		req.Status = "ready"
 	}
+	current.USDQuote, current.PriceError = quote, false
 	current.heartbeatRequest = req
 	current.Last = time.Now()
 	// The SDK sends its active session IDs for reconciliation. Preserve
@@ -316,7 +304,7 @@ func (r *Registry) Discovery() []discoveryEntry {
 	defer r.mu.Unlock()
 	result := []discoveryRunner{}
 	for id, item := range r.runners {
-		if !r.usable(item) {
+		if !r.usable(item) || !r.priceAvailable(item) {
 			continue
 		}
 		available := item.Capacity - len(item.Sessions)
@@ -400,6 +388,9 @@ func (r *Registry) PriceForRunner(id string) (priceInfo, int, error) {
 	item := r.runners[id]
 	if item == nil || !r.usable(item) {
 		return priceInfo{}, http.StatusNotFound, errors.New("runner unavailable")
+	}
+	if !r.priceAvailable(item) {
+		return priceInfo{}, http.StatusServiceUnavailable, errors.New("runner price unavailable")
 	}
 	return item.PriceInfo, http.StatusOK, nil
 }
@@ -559,9 +550,10 @@ func (r *Registry) AddStatic(config StaticRunner) error {
 	if err := validateHeartbeat(&req); err != nil {
 		return fmt.Errorf("static runner %s: %w", config.ID, err)
 	}
-	if err := r.normalizePrice(&req.PriceInfo); err != nil {
-		return fmt.Errorf("static runner %s: %w", config.ID, err)
+	if err := r.validateProxyRunner(req); err != nil {
+		return err
 	}
+	quote := req.PriceInfo
 	if config.HealthURL != "" {
 		if _, err := destination.ValidateURL(config.HealthURL); err != nil {
 			return fmt.Errorf("static runner %s has invalid health URL", config.ID)
@@ -578,13 +570,16 @@ func (r *Registry) AddStatic(config StaticRunner) error {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if err := normalizePriceAt(&req.PriceInfo, r.weiPerUSD); err != nil {
+		return fmt.Errorf("static runner %s: %w", config.ID, err)
+	}
 	if r.runners[config.ID] != nil {
 		return fmt.Errorf("duplicate static runner id %s", config.ID)
 	}
 	if len(r.runners) >= maxRunners {
 		return errors.New("static runner capacity reached")
 	}
-	r.runners[config.ID] = &runner{heartbeatRequest: req, Static: true, Healthy: config.HealthURL == "", HealthURL: config.HealthURL, HealthCode: config.HealthCode, Sessions: map[string]*session{}}
+	r.runners[config.ID] = &runner{USDQuote: quote, heartbeatRequest: req, Static: true, Healthy: config.HealthURL == "", HealthURL: config.HealthURL, HealthCode: config.HealthCode, Sessions: map[string]*session{}}
 	return nil
 }
 
@@ -687,4 +682,64 @@ func (r *Registry) runnerServiceURL() string {
 		return r.runnerService
 	}
 	return r.service
+}
+
+func (r *Registry) setRate(rate *big.Rat, until time.Time) {
+	if rate == nil || rate.Sign() <= 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.weiPerUSD = new(big.Rat).Set(rate)
+	r.rateUntil = until
+	for _, item := range r.runners {
+		quote := item.USDQuote
+		item.PriceError = normalizePriceAt(&quote, r.weiPerUSD) != nil
+		if !item.PriceError {
+			item.PriceInfo = quote
+		}
+	}
+}
+
+func (r *Registry) priceAvailable(item *runner) bool {
+	return !item.PriceError && (item.PriceInfo.Price == "" || r.rateUntil.IsZero() || time.Now().Before(r.rateUntil))
+}
+
+func normalizePriceAt(price *priceInfo, rate *big.Rat) error {
+	value := strings.TrimSpace(price.Price.String())
+	if value == "" || value == "0" {
+		*price = priceInfo{}
+		return nil
+	}
+	numeric, ok := new(big.Rat).SetString(value)
+	if !ok || numeric.Sign() < 0 {
+		return errors.New("runner price must be nonnegative")
+	}
+	if numeric.Sign() == 0 {
+		*price = priceInfo{}
+		return nil
+	}
+	if price.Currency != "" && strings.ToLower(strings.TrimSpace(price.Currency)) != "usd" {
+		return errors.New("runner price currency must be USD")
+	}
+	if rate == nil {
+		// Off-chain registration accepts the runner's usual quote, but does
+		// not advertise or enforce payment requirements.
+		if v, ok := new(big.Rat).SetString(value); !ok || v.Sign() < 0 {
+			return errors.New("runner price must be nonnegative")
+		}
+		*price = priceInfo{}
+		return nil
+	}
+	wei, unit, err := pm.ConvertRunnerPrice(value, price.Unit, rate)
+	if err != nil {
+		return err
+	}
+	usd, _ := new(big.Rat).SetString(value)
+	if unit == "seconds" {
+		usd.Quo(usd, big.NewRat(3600, 1))
+	}
+	usdString := strings.TrimRight(strings.TrimRight(usd.FloatString(36), "0"), ".")
+	*price = priceInfo{Price: json.Number(wei.String()), PriceUSD: json.Number(usdString), Currency: "wei", Unit: unit}
+	return nil
 }
