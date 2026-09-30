@@ -324,8 +324,13 @@ func (s *Service) generate(w http.ResponseWriter, r *http.Request) {
 		signerError(w, 400, "invalid orchestrator Protobuf")
 		return
 	}
-	if len(info.Address) != 20 || info.Price.PricePerUnit <= 0 || info.Price.UnitsPerPrice <= 0 || len(info.TicketParams.Recipient) != 20 || len(info.TicketParams.RecipientRandHash) != 32 || info.Auth.SessionID == "" || info.Auth.Expiration <= time.Now().Unix() {
+	if len(info.Address) != 20 || info.Price.PricePerUnit <= 0 || info.Price.UnitsPerPrice <= 0 || len(info.TicketParams.Recipient) != 20 || len(info.TicketParams.RecipientRandHash) != 32 || info.Auth.SessionID == "" {
 		signerError(w, 400, "incomplete or expired orchestrator payment params")
+		return
+	}
+	if info.Auth.Expiration <= time.Now().Unix() {
+		w.Header().Set("Livepeer-Orchestrator-URL", info.Transcoder)
+		signerError(w, 480, "refresh session for remote signer")
 		return
 	}
 	if req.ManifestID == "" {
@@ -369,11 +374,7 @@ func (s *Service) generate(w http.ResponseWriter, r *http.Request) {
 		}
 		state = paymentState{StateID: id, OrchestratorAddress: address, App: req.App, Type: req.Type, ManifestID: req.ManifestID, InitialPricePerUnit: info.Price.PricePerUnit, InitialPixelsPerUnit: info.Price.UnitsPerPrice}
 	}
-	if state.SenderNonce >= 500 {
-		w.Header().Set("Livepeer-Orchestrator-URL", info.Transcoder)
-		signerError(w, 480, "refresh session for remote signer")
-		return
-	}
+
 	if state.InitialPricePerUnit <= 0 || state.InitialPixelsPerUnit <= 0 || new(big.Rat).SetFrac64(info.Price.PricePerUnit, info.Price.UnitsPerPrice).Cmp(new(big.Rat).SetFrac64(state.InitialPricePerUnit, state.InitialPixelsPerUnit)) > 0 {
 		signerError(w, 481, "orchestrator price exceeds initial session price")
 		return
@@ -383,6 +384,9 @@ func (s *Service) generate(w http.ResponseWriter, r *http.Request) {
 		var f paymentFailure
 		switch {
 		case errors.As(err, &f):
+			if f.status == 480 {
+				w.Header().Set("Livepeer-Orchestrator-URL", info.Transcoder)
+			}
 			signerError(w, f.status, f.reason)
 		case errors.Is(err, errStateConflict):
 			signerError(w, 409, err.Error())
@@ -426,6 +430,9 @@ func (s *Service) makePayment(ctx context.Context, req paymentRequest, info sign
 	if err != nil {
 		return nil, paymentFailure{482, "sender chain observation failed"}
 	}
+	if funds.Snapshot.Block == nil || funds.Snapshot.Round == nil || params.ExpirationBlock.Cmp(new(big.Int).Add(funds.Snapshot.Block, big.NewInt(1))) <= 0 || params.ExpirationParams.CreationRound < funds.Snapshot.Round.Int64()-2 || params.ExpirationParams.CreationRound > funds.Snapshot.Round.Int64() {
+		return nil, paymentFailure{480, "refresh session for remote signer"}
+	}
 	count, err := pm.RemoteBatchSize(params, fee, balance)
 	if err != nil {
 		return nil, invalid(err.Error())
@@ -437,6 +444,9 @@ func (s *Service) makePayment(ctx context.Context, req paymentRequest, info sign
 	if state.PMSessionID != params.RecipientRandHash.Hex() {
 		state.SenderNonce = 0
 		state.PMSessionID = params.RecipientRandHash.Hex()
+	}
+	if state.SenderNonce >= 500 {
+		return nil, paymentFailure{480, "refresh session for remote signer"}
 	}
 	batch, remaining, err := pm.MakeRemoteBatch(params, s.key, state.SenderNonce, fee, balance)
 	if err != nil {
