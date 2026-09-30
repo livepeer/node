@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"io"
 	"math/big"
-	"strings"
 	"time"
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
+	"github.com/livepeer/node/destination"
 	"github.com/livepeer/node/eth"
 )
 
@@ -85,7 +85,7 @@ func buildActions(command string, p Params) ([]action, error) {
 			result = append(result, action{"bondingManager", "transcoder", []any{cut, share}, zero})
 		}
 		if p.ServiceURI != "" {
-			if !(strings.HasPrefix(p.ServiceURI, "https://") || strings.HasPrefix(p.ServiceURI, "http://")) {
+			if u, err := destination.ValidateURL(p.ServiceURI); err != nil || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 				return nil, errors.New("service-uri must be an absolute HTTP or HTTPS URL")
 			}
 			result = append(result, action{"serviceRegistry", "setServiceURI", []any{p.ServiceURI}, zero})
@@ -116,6 +116,13 @@ func buildActions(command string, p Params) ([]action, error) {
 		v, err := lock()
 		if err != nil {
 			return nil, err
+		}
+		if p.Delegate != "" {
+			delegate, err := parseAddress(p.Delegate, "delegate")
+			if err != nil {
+				return nil, err
+			}
+			return []action{{"bondingManager", "rebondFromUnbonded", []any{delegate, v}, zero}}, nil
 		}
 		return []action{{"bondingManager", "rebond", []any{v}, zero}}, nil
 	case "stake withdraw":
@@ -311,7 +318,7 @@ func executeAction(ctx context.Context, p Params, out io.Writer, command string)
 	return nil
 }
 
-func addContractCommands(_ any, add func(string, string, func(context.Context, Params, io.Writer) error)) {
+func addContractCommands(add func(string, string, func(context.Context, Params, io.Writer) error)) {
 	add("orchestrator get", "Read orchestrator status and configuration", orchestratorGet)
 	for _, cmd := range []string{
 		"orchestrator activate", "orchestrator set-config", "orchestrator reward",
@@ -320,8 +327,7 @@ func addContractCommands(_ any, add func(string, string, func(context.Context, P
 		"ticketbroker fund", "ticketbroker unlock", "ticketbroker cancel-unlock", "ticketbroker withdraw",
 		"round initialize",
 	} {
-		name := cmd
-		add(name, "Simulate or explicitly submit "+name, func(ctx context.Context, p Params, out io.Writer) error { return executeAction(ctx, p, out, name) })
+		add(cmd, "Simulate or explicitly submit "+cmd, func(ctx context.Context, p Params, out io.Writer) error { return executeAction(ctx, p, out, cmd) })
 	}
 }
 

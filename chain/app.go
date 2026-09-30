@@ -189,7 +189,7 @@ func Root(out, errOut io.Writer) *cobra.Command {
 	}
 	add("status", "Read the configured Ethereum chain status", Status)
 	add("account", "Read the sender's ETH balance and pending nonce", Account)
-	addContractCommands(root, add)
+	addContractCommands(add)
 	root.InitDefaultCompletionCmd()
 	return root
 }
