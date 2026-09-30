@@ -143,7 +143,12 @@ func (r *Registry) normalizePrice(price *priceInfo) error {
 	if err != nil {
 		return err
 	}
-	*price = priceInfo{Price: json.Number(wei.String()), PriceUSD: json.Number(value), Currency: "wei", Unit: unit}
+	usd, _ := new(big.Rat).SetString(value)
+	if unit == "seconds" {
+		usd.Quo(usd, big.NewRat(3600, 1))
+	}
+	usdString := strings.TrimRight(strings.TrimRight(usd.FloatString(36), "0"), ".")
+	*price = priceInfo{Price: json.Number(wei.String()), PriceUSD: json.Number(usdString), Currency: "wei", Unit: unit}
 	return nil
 }
 
