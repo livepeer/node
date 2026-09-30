@@ -16,19 +16,11 @@ import (
 type PaymentChain struct{ Contracts *Contracts }
 
 func (c PaymentChain) IsActive(ctx context.Context, recipient ethcommon.Address) (bool, error) {
-	address, err := c.Contracts.Resolve(ctx, "bondingManager")
+	snapshot, err := c.Snapshot(ctx)
 	if err != nil {
 		return false, err
 	}
-	result, err := c.Contracts.Call(ctx, "bondingManager", address, "isActiveTranscoder", recipient)
-	if err != nil {
-		return false, err
-	}
-	active, ok := result[0].(bool)
-	if !ok {
-		return false, errors.New("invalid orchestrator active status")
-	}
-	return active, nil
+	return c.IsActiveAt(ctx, recipient, snapshot)
 }
 
 // Receipt reports a submitted redemption without retrying or resubmitting it.
@@ -60,41 +52,57 @@ func (c PaymentChain) Receipt(ctx context.Context, hash ethcommon.Hash) (confirm
 }
 
 type ChainSnapshot struct {
-	Block     *big.Int
-	Round     *big.Int
-	RoundHash ethcommon.Hash
+	Block          *big.Int // Protocol L1 block, including on Arbitrum.
+	Round          *big.Int // Last initialized round.
+	RoundHash      ethcommon.Hash
+	blockReference map[string]any
 }
 
 func (c PaymentChain) Snapshot(ctx context.Context) (ChainSnapshot, error) {
-	blockRaw, err := c.Contracts.RPC.CallString(ctx, "eth_blockNumber")
+	raw, err := c.Contracts.RPC.Call(ctx, "eth_getBlockByNumber", "latest", false)
 	if err != nil {
 		return ChainSnapshot{}, err
 	}
-	block, err := ParseHexQuantity(blockRaw)
+	var header struct {
+		Number        string `json:"number"`
+		L1BlockNumber string `json:"l1BlockNumber"`
+		Hash          string `json:"hash"`
+	}
+	if err := json.Unmarshal(raw, &header); err != nil || !ethcommon.IsHexHash(header.Hash) {
+		return ChainSnapshot{}, errors.New("invalid chain header")
+	}
+	clock := header.Number
+	if header.L1BlockNumber != "" {
+		clock = header.L1BlockNumber
+	}
+	block, err := ParseHexQuantity(clock)
 	if err != nil {
 		return ChainSnapshot{}, err
 	}
-	address, err := c.Contracts.Resolve(ctx, "roundsManager")
+	// EIP-1898 binds every read to this canonical block, including Controller
+	// resolution. A reorg causes an RPC error instead of a mixed snapshot.
+	ref := map[string]any{"blockHash": header.Hash, "requireCanonical": true}
+	address, err := c.Contracts.ResolveAt(ctx, ref, "roundsManager")
 	if err != nil {
 		return ChainSnapshot{}, err
 	}
-	roundResult, err := c.Contracts.Call(ctx, "roundsManager", address, "currentRound")
+	roundResult, err := c.Contracts.CallAt(ctx, ref, "roundsManager", address, "lastInitializedRound")
 	if err != nil {
 		return ChainSnapshot{}, err
 	}
 	round, ok := roundResult[0].(*big.Int)
-	if !ok || !round.IsInt64() {
-		return ChainSnapshot{}, errors.New("invalid current round")
+	if !ok || !round.IsInt64() || round.Sign() <= 0 {
+		return ChainSnapshot{}, errors.New("invalid initialized round")
 	}
-	hashResult, err := c.Contracts.Call(ctx, "roundsManager", address, "blockHashForRound", round)
+	hashResult, err := c.Contracts.CallAt(ctx, ref, "roundsManager", address, "blockHashForRound", round)
 	if err != nil {
 		return ChainSnapshot{}, err
 	}
 	hash, ok := hashResult[0].([32]byte)
-	if !ok {
+	if !ok || hash == ([32]byte{}) {
 		return ChainSnapshot{}, errors.New("invalid round block hash")
 	}
-	return ChainSnapshot{Block: block, Round: round, RoundHash: ethcommon.BytesToHash(hash[:])}, nil
+	return ChainSnapshot{Block: block, Round: round, RoundHash: ethcommon.Hash(hash), blockReference: ref}, nil
 }
 
 func tupleBigInt(value any, field string) (*big.Int, error) {
@@ -182,4 +190,23 @@ func (c PaymentChain) Redeem(ctx context.Context, key *Key, chainID *big.Int, t 
 		return ethcommon.Hash{}, err
 	}
 	return c.Contracts.Submit(ctx, plan, key, chainID)
+}
+
+func (c PaymentChain) IsActiveAt(ctx context.Context, recipient ethcommon.Address, snapshot ChainSnapshot) (bool, error) {
+	if snapshot.blockReference == nil {
+		return false, errors.New("canonical snapshot required")
+	}
+	address, err := c.Contracts.ResolveAt(ctx, snapshot.blockReference, "bondingManager")
+	if err != nil {
+		return false, err
+	}
+	result, err := c.Contracts.CallAt(ctx, snapshot.blockReference, "bondingManager", address, "isActiveTranscoder", recipient)
+	if err != nil {
+		return false, err
+	}
+	active, ok := result[0].(bool)
+	if !ok {
+		return false, errors.New("invalid orchestrator active status")
+	}
+	return active, nil
 }

@@ -17,7 +17,7 @@ func (c EthereumChain) Snapshot(ctx context.Context) (ChainSnapshot, error) {
 	if err != nil {
 		return ChainSnapshot{}, err
 	}
-	return ChainSnapshot{Block: state.Block, Round: state.Round, RoundHash: state.RoundHash}, nil
+	return state, nil
 }
 
 func (c EthereumChain) ValidateSender(ctx context.Context, sender ethcommon.Address, faceValue *big.Int) error {

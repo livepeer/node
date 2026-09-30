@@ -41,23 +41,7 @@ func OpenContracts(rpc *RPC, controller string) (*Contracts, error) {
 }
 
 func (c *Contracts) Resolve(ctx context.Context, name string) (ethcommon.Address, error) {
-	if _, ok := c.abis[name]; !ok {
-		return ethcommon.Address{}, errors.New("unsupported contract")
-	}
-	if name == "controller" {
-		return c.Controller, nil
-	}
-	contractName := map[string]string{"bondingManager": "BondingManager", "ticketBroker": "TicketBroker", "roundsManager": "RoundsManager", "serviceRegistry": "ServiceRegistry", "livepeerToken": "LivepeerToken"}[name]
-	id := crypto.Keccak256Hash([]byte(contractName))
-	values, err := c.Call(ctx, "controller", c.Controller, "getContract", id)
-	if err != nil {
-		return ethcommon.Address{}, err
-	}
-	address, ok := values[0].(ethcommon.Address)
-	if !ok || address == (ethcommon.Address{}) {
-		return ethcommon.Address{}, fmt.Errorf("%s is not registered in Controller", contractName)
-	}
-	return address, nil
+	return c.ResolveAt(ctx, "latest", name)
 }
 
 func (c *Contracts) Pack(name, method string, args ...any) ([]byte, error) {
@@ -72,23 +56,7 @@ func (c *Contracts) Pack(name, method string, args ...any) ([]byte, error) {
 }
 
 func (c *Contracts) Call(ctx context.Context, name string, address ethcommon.Address, method string, args ...any) ([]any, error) {
-	data, err := c.Pack(name, method, args...)
-	if err != nil {
-		return nil, err
-	}
-	raw, err := c.RPC.CallString(ctx, "eth_call", map[string]string{"to": address.Hex(), "data": "0x" + hex.EncodeToString(data)}, "latest")
-	if err != nil {
-		return nil, err
-	}
-	result, err := hex.DecodeString(strings.TrimPrefix(raw, "0x"))
-	if err != nil {
-		return nil, errors.New("invalid contract response")
-	}
-	values, err := c.abis[name].Unpack(method, result)
-	if err != nil {
-		return nil, fmt.Errorf("invalid %s.%s result: %w", name, method, err)
-	}
-	return values, nil
+	return c.CallAt(ctx, "latest", name, address, method, args...)
 }
 
 type TransactionPlan struct {
@@ -207,4 +175,47 @@ func (c *Contracts) WaitReceipt(ctx context.Context, hash ethcommon.Hash) (uint6
 		case <-ticker.C:
 		}
 	}
+}
+
+func (c *Contracts) ResolveAt(ctx context.Context, block any, name string) (ethcommon.Address, error) {
+	if _, ok := c.abis[name]; !ok {
+		return ethcommon.Address{}, errors.New("unsupported contract")
+	}
+	if name == "controller" {
+		return c.Controller, nil
+	}
+	contractName := map[string]string{"bondingManager": "BondingManager", "ticketBroker": "TicketBroker", "roundsManager": "RoundsManager", "serviceRegistry": "ServiceRegistry", "livepeerToken": "LivepeerToken"}[name]
+	if contractName == "" {
+		return ethcommon.Address{}, errors.New("contract requires an explicit address")
+	}
+	id := crypto.Keccak256Hash([]byte(contractName))
+	values, err := c.CallAt(ctx, block, "controller", c.Controller, "getContract", id)
+	if err != nil {
+		return ethcommon.Address{}, err
+	}
+	address, ok := values[0].(ethcommon.Address)
+	if !ok || address == (ethcommon.Address{}) {
+		return ethcommon.Address{}, fmt.Errorf("%s is not registered in Controller", contractName)
+	}
+	return address, nil
+}
+
+func (c *Contracts) CallAt(ctx context.Context, block any, name string, address ethcommon.Address, method string, args ...any) ([]any, error) {
+	data, err := c.Pack(name, method, args...)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := c.RPC.CallString(ctx, "eth_call", map[string]string{"to": address.Hex(), "data": "0x" + hex.EncodeToString(data)}, block)
+	if err != nil {
+		return nil, err
+	}
+	result, err := hex.DecodeString(strings.TrimPrefix(raw, "0x"))
+	if err != nil {
+		return nil, errors.New("invalid contract response")
+	}
+	values, err := c.abis[name].Unpack(method, result)
+	if err != nil {
+		return nil, fmt.Errorf("invalid %s.%s result: %w", name, method, err)
+	}
+	return values, nil
 }

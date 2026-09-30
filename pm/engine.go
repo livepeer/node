@@ -14,14 +14,11 @@ import (
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/livepeer/node/eth"
 	"github.com/livepeer/node/signercompat"
 )
 
-type ChainSnapshot struct {
-	Block     *big.Int
-	Round     *big.Int
-	RoundHash ethcommon.Hash
-}
+type ChainSnapshot = eth.ChainSnapshot
 
 // PaymentChain contains only the Ethereum reads needed by payment receipt.
 type PaymentChain interface {
