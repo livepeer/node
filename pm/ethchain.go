@@ -2,7 +2,6 @@ package pm
 
 import (
 	"context"
-	"math/big"
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/livepeer/node/eth"
@@ -20,12 +19,12 @@ func (c EthereumChain) Snapshot(ctx context.Context) (ChainSnapshot, error) {
 	return state, nil
 }
 
-func (c EthereumChain) ValidateSender(ctx context.Context, sender ethcommon.Address, faceValue *big.Int) error {
-	return c.Client.ValidateSender(ctx, sender, faceValue)
+func (c EthereumChain) SenderInfo(ctx context.Context, sender, recipient ethcommon.Address) (eth.SenderInfo, error) {
+	return c.Client.SenderInfo(ctx, sender, recipient)
 }
 
-func (c EthereumChain) IsActive(ctx context.Context, recipient ethcommon.Address) (bool, error) {
-	return c.Client.IsActive(ctx, recipient)
+func (c EthereumChain) IsActiveAt(ctx context.Context, recipient ethcommon.Address, snapshot ChainSnapshot) (bool, error) {
+	return c.Client.IsActiveAt(ctx, recipient, snapshot)
 }
 
 var _ PaymentChain = EthereumChain{}

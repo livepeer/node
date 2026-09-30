@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
+	"github.com/livepeer/node/eth"
 	"github.com/stretchr/testify/require"
 )
 
@@ -15,11 +16,12 @@ type inactivePaymentChain struct{}
 func (inactivePaymentChain) Snapshot(context.Context) (ChainSnapshot, error) {
 	return ChainSnapshot{Block: big.NewInt(50), Round: big.NewInt(5), RoundHash: ethcommon.HexToHash("0x1234")}, nil
 }
-func (inactivePaymentChain) IsActive(context.Context, ethcommon.Address) (bool, error) {
+func (inactivePaymentChain) IsActiveAt(context.Context, ethcommon.Address, ChainSnapshot) (bool, error) {
 	return false, nil
 }
-func (inactivePaymentChain) ValidateSender(context.Context, ethcommon.Address, *big.Int) error {
-	return nil
+func (c inactivePaymentChain) SenderInfo(ctx context.Context, _, _ ethcommon.Address) (eth.SenderInfo, error) {
+	snapshot, err := c.Snapshot(ctx)
+	return eth.SenderInfo{Snapshot: snapshot, Deposit: big.NewInt(1000000000), Reserve: big.NewInt(1000000000), WithdrawRound: new(big.Int)}, err
 }
 
 func TestInactiveOrchestratorDoesNotIssuePaidChallenge(t *testing.T) {

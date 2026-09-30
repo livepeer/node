@@ -23,8 +23,8 @@ type ChainSnapshot = eth.ChainSnapshot
 // PaymentChain contains only the Ethereum reads needed by payment receipt.
 type PaymentChain interface {
 	Snapshot(context.Context) (ChainSnapshot, error)
-	IsActive(context.Context, ethcommon.Address) (bool, error)
-	ValidateSender(context.Context, ethcommon.Address, *big.Int) error
+	IsActiveAt(context.Context, ethcommon.Address, ChainSnapshot) (bool, error)
+	SenderChain
 }
 
 type Engine struct {
@@ -37,7 +37,7 @@ type Engine struct {
 }
 
 func NewEngine(store *SQLiteStore, chain PaymentChain, recipient ethcommon.Address, faceValue, winProb *big.Int) (*Engine, error) {
-	if store == nil || chain == nil || recipient == (ethcommon.Address{}) || faceValue == nil || faceValue.Sign() <= 0 || winProb == nil || winProb.Sign() <= 0 || winProb.Cmp(maxWinProb) > 0 {
+	if store == nil || chain == nil || recipient == (ethcommon.Address{}) || faceValue == nil || faceValue.Sign() <= 0 || winProb == nil || winProb.Sign() <= 0 || winProb.Cmp(maxWinProb) >= 0 {
 		return nil, errors.New("invalid payment engine configuration")
 	}
 	return &Engine{store: store, chain: chain, recipient: recipient, faceValue: new(big.Int).Set(faceValue), winProb: new(big.Int).Set(winProb)}, nil
@@ -68,7 +68,7 @@ func (e *Engine) MakeChallenge(ctx context.Context, runner, manifest string, sen
 	if err != nil {
 		return Challenge{}, err
 	}
-	active, err := e.chain.IsActive(ctx, e.recipient)
+	active, err := e.chain.IsActiveAt(ctx, e.recipient, snapshot)
 	if err != nil {
 		return Challenge{}, err
 	}
@@ -173,8 +173,6 @@ func decodeHeaders(paymentHeader, segmentHeader string) (signercompat.Payment, s
 }
 
 func (e *Engine) Receive(ctx context.Context, runner, manifest, paymentHeader, segmentHeader string) (ethcommon.Address, *big.Rat, error) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
 	payment, segment, err := decodeHeaders(paymentHeader, segmentHeader)
 	if err != nil {
 		return ethcommon.Address{}, nil, err
@@ -207,17 +205,30 @@ func (e *Engine) Receive(ctx context.Context, runner, manifest, paymentHeader, s
 	if !(DefaultSigVerifier{}).Verify(sender, flatten, segment.Signature) {
 		return ethcommon.Address{}, nil, ErrInvalidPayment
 	}
-	snapshot, err := e.chain.Snapshot(ctx)
+	funds, err := e.chain.SenderInfo(ctx, sender, e.recipient)
 	if err != nil {
 		return ethcommon.Address{}, nil, err
 	}
-	params := TicketParams{Recipient: e.recipient, FaceValue: new(big.Int).SetBytes(info.TicketParams.FaceValue), WinProb: new(big.Int).SetBytes(info.TicketParams.WinProb), RecipientRandHash: ethcommon.BytesToHash(info.TicketParams.RecipientRandHash), Seed: new(big.Int).SetBytes(info.TicketParams.Seed), ExpirationBlock: new(big.Int).SetBytes(info.TicketParams.ExpirationBlock), ExpirationParams: &TicketExpirationParams{CreationRound: info.TicketParams.Expiration.CreationRound, CreationRoundBlockHash: ethcommon.BytesToHash(info.TicketParams.Expiration.CreationRoundBlockHash)}}
-	if params.ExpirationBlock.Cmp(snapshot.Block) <= 0 || params.FaceValue.Sign() <= 0 || params.WinProb.Sign() <= 0 {
-		return ethcommon.Address{}, nil, ErrInvalidPayment
-	}
-	if err := e.chain.ValidateSender(ctx, sender, params.FaceValue); err != nil {
+	snapshot := funds.Snapshot
+	active, err := e.chain.IsActiveAt(ctx, e.recipient, snapshot)
+	if err != nil {
 		return ethcommon.Address{}, nil, err
 	}
+	if !active {
+		return ethcommon.Address{}, nil, ErrInvalidPayment
+	}
+	params := TicketParams{Recipient: e.recipient, FaceValue: new(big.Int).SetBytes(info.TicketParams.FaceValue), WinProb: new(big.Int).SetBytes(info.TicketParams.WinProb), RecipientRandHash: ethcommon.BytesToHash(info.TicketParams.RecipientRandHash), Seed: new(big.Int).SetBytes(info.TicketParams.Seed), ExpirationBlock: new(big.Int).SetBytes(info.TicketParams.ExpirationBlock), ExpirationParams: &TicketExpirationParams{CreationRound: info.TicketParams.Expiration.CreationRound, CreationRoundBlockHash: ethcommon.BytesToHash(info.TicketParams.Expiration.CreationRoundBlockHash)}}
+	if snapshot.Block == nil || snapshot.Round == nil || params.ExpirationBlock.Cmp(snapshot.Block) <= 0 || params.ExpirationParams.CreationRound < snapshot.Round.Int64()-2 || params.ExpirationParams.CreationRound > snapshot.Round.Int64() || params.FaceValue.Sign() <= 0 || params.WinProb.Sign() <= 0 {
+		return ethcommon.Address{}, nil, ErrInvalidPayment
+	}
+	if err := ValidateSenderFunds(funds); err != nil {
+		return ethcommon.Address{}, nil, err
+	}
+	if funds.Reserve.Cmp(params.FaceValue) < 0 || funds.Deposit.Cmp(params.FaceValue) < 0 {
+		return ethcommon.Address{}, nil, ErrSenderUnavailable
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	// A single transaction atomically records nonce replay protection, winning
 	// tickets and expected-value credit for the session.
 	tx, err := e.store.db.BeginTx(ctx, nil)
@@ -226,8 +237,21 @@ func (e *Engine) Receive(ctx context.Context, runner, manifest, paymentHeader, s
 	}
 	defer tx.Rollback()
 	var currentBalance string
-	if err := tx.QueryRow("SELECT balance FROM payment_challenges WHERE manifest=?", manifest).Scan(&currentBalance); err != nil {
+	var currentInfo []byte
+	if err := tx.QueryRow("SELECT balance,info FROM payment_challenges WHERE manifest=?", manifest).Scan(&currentBalance, &currentInfo); err != nil {
 		return ethcommon.Address{}, nil, err
+	}
+	if !bytes.Equal(currentInfo, encoded) {
+		return ethcommon.Address{}, nil, ErrInvalidPayment
+	}
+	// Once redemption can reveal randomness, this epoch must never accept
+	// more tickets, even if a reorg moves the observed L1 clock backwards.
+	var exposed int
+	if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM winning_tickets w JOIN redemption_attempts a ON a.sig=w.sig WHERE w.recipient_rand_hash=? AND a.phase!='expired')`, params.RecipientRandHash.Hex()).Scan(&exposed); err != nil {
+		return ethcommon.Address{}, nil, err
+	}
+	if exposed != 0 {
+		return ethcommon.Address{}, nil, ErrInvalidPayment
 	}
 	balance, ok := new(big.Rat).SetString(currentBalance)
 	if !ok {
@@ -254,6 +278,29 @@ func (e *Engine) Receive(ctx context.Context, runner, manifest, paymentHeader, s
 				return ethcommon.Address{}, nil, err
 			}
 		}
+	}
+	// Include every unconfirmed winner, across all sessions for this sender.
+	// Keep uncertain transactions reserved until finalized receipt reconciliation.
+	rows, err := tx.Query("SELECT face_value FROM winning_tickets WHERE sender=? AND redeemed_at IS NULL AND creation_round>=? AND sig NOT IN (SELECT sig FROM redemption_attempts WHERE phase='reverted')", sender.Hex(), snapshot.Round.Int64()-2)
+	if err != nil {
+		return ethcommon.Address{}, nil, err
+	}
+	pending := new(big.Int)
+	for rows.Next() {
+		var face []byte
+		if err := rows.Scan(&face); err != nil {
+			rows.Close()
+			return ethcommon.Address{}, nil, err
+		}
+		pending.Add(pending, new(big.Int).SetBytes(face))
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return ethcommon.Address{}, nil, err
+	}
+	if pending.Cmp(new(big.Int).Add(funds.Deposit, funds.Reserve)) > 0 {
+		return ethcommon.Address{}, nil, ErrSenderUnavailable
 	}
 	if _, err := tx.Exec("UPDATE payment_challenges SET balance=? WHERE manifest=?", balance.RatString(), manifest); err != nil {
 		return ethcommon.Address{}, nil, err
