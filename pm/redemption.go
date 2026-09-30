@@ -2,19 +2,33 @@ package pm
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"math/big"
+	"time"
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/livepeer/node/eth"
 )
 
-// RedeemPending submits each unattempted winning ticket once. SQLite records
-// the attempt before broadcasting so an uncertain RPC outcome cannot silently
-// trigger a second transaction. An operator can inspect recorded failures.
-func RedeemPending(ctx context.Context, store *SQLiteStore, chain eth.PaymentChain, key *eth.Key, chainID, currentBlock *big.Int) []error {
-	if store == nil || key == nil || chainID == nil || currentBlock == nil {
+// RedeemPending only reveals randomness once the parameter acceptance window
+// has ended. Preparation failures leave tickets queued; signed identities are
+// durable before broadcasting. Call from one bounded worker per store.
+func RedeemPending(ctx context.Context, store *SQLiteStore, chain eth.PaymentChain, key *eth.Key, chainID *big.Int, snapshot eth.ChainSnapshot) []error {
+	if store == nil || key == nil || chainID == nil || snapshot.Block == nil || snapshot.Round == nil {
 		return []error{fmt.Errorf("redemption is not configured")}
+	}
+	// A crash after preparation but before the broadcast marker is safe to
+	// resume. A broadcast marker requires receipt checks or explicit retry.
+	var preparedHash string
+	err := store.db.QueryRow("SELECT w.tx_hash FROM winning_tickets w JOIN redemption_attempts a ON a.sig=w.sig WHERE a.phase='prepared' LIMIT 1").Scan(&preparedHash)
+	if err == nil {
+		if err := RetryRedemption(ctx, store, chain.Contracts, ethcommon.HexToHash(preparedHash)); err != nil {
+			return []error{err}
+		}
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return []error{err}
 	}
 	senders, err := store.PendingSenders()
 	if err != nil {
@@ -22,6 +36,9 @@ func RedeemPending(ctx context.Context, store *SQLiteStore, chain eth.PaymentCha
 	}
 	var failures []error
 	for _, sender := range senders {
+		if ctx.Err() != nil {
+			return append(failures, ctx.Err())
+		}
 		ticket, err := store.SelectEarliestWinningTicket(sender, 0)
 		if err != nil {
 			failures = append(failures, err)
@@ -30,22 +47,26 @@ func RedeemPending(ctx context.Context, store *SQLiteStore, chain eth.PaymentCha
 		if ticket == nil {
 			continue
 		}
-		if ticket.ParamsExpirationBlock.Cmp(currentBlock) > 0 {
+		if ticket.CreationRound < snapshot.Round.Int64()-2 {
+			_, err := store.db.Exec("INSERT INTO redemption_attempts(sig,attempted_at,phase,error) VALUES(?,?,'expired','ticket creation round expired')", ticket.Sig, time.Now().UTC().Format(time.RFC3339Nano))
+			if err != nil {
+				failures = append(failures, err)
+			}
 			continue
 		}
-		if err := store.ClaimRedemption(ticket); err != nil {
-			failures = append(failures, err)
+		if ticket.ParamsExpirationBlock.Cmp(snapshot.Block) > 0 {
 			continue
 		}
 		redeemTicket := eth.RedeemTicket{Recipient: ticket.Recipient, Sender: ticket.Sender, FaceValue: ticket.FaceValue, WinProb: ticket.WinProb, SenderNonce: ticket.SenderNonce, RecipientRandHash: ticket.RecipientRandHash, AuxData: ticket.AuxData(), Signature: ticket.Sig, RecipientRand: ticket.RecipientRand}
-		hash, err := chain.Redeem(ctx, key, chainID, redeemTicket)
-		if err != nil {
-			_ = store.RecordRedemptionError(ticket, err)
-			failures = append(failures, fmt.Errorf("sender %s: %w", sender.Hex(), err))
-			continue
+		prepared, err := chain.PrepareRedemption(ctx, key, chainID, redeemTicket)
+		if err == nil {
+			err = store.recordPrepared(ctx, ticket, prepared)
 		}
-		if err := store.MarkWinningTicketSubmitted(ticket, hash); err != nil {
-			failures = append(failures, fmt.Errorf("transaction %s: %w", hash.Hex(), err))
+		if err == nil {
+			err = broadcastRedemption(ctx, store, chain.Contracts, ticket.Sig, prepared)
+		}
+		if err != nil {
+			failures = append(failures, fmt.Errorf("sender %s: %w", sender.Hex(), err))
 		}
 	}
 	return failures
@@ -80,5 +101,30 @@ func ReconcileSubmitted(ctx context.Context, store *SQLiteStore, chain ReceiptRe
 			failures = append(failures, err)
 		}
 	}
+	return failures
+}
+
+func ProcessRedemptions(ctx context.Context, store *SQLiteStore, chain eth.PaymentChain, key *eth.Key, chainID *big.Int) []error {
+	var failures []error
+	if store == nil || key == nil {
+		return nil
+	}
+	snapshot, err := chain.Snapshot(ctx)
+	if err != nil {
+		failures = append(failures, err)
+	} else {
+		active, err := chain.IsActiveAt(ctx, key.Address(), snapshot)
+		if err != nil {
+			failures = append(failures, err)
+		} else {
+			if err := store.SetOrchestratorActive(key.Address(), snapshot.Round, active); err != nil {
+				failures = append(failures, err)
+			}
+			if active {
+				failures = append(failures, RedeemPending(ctx, store, chain, key, chainID, snapshot)...)
+			}
+		}
+	}
+	failures = append(failures, ReconcileSubmitted(ctx, store, chain)...)
 	return failures
 }

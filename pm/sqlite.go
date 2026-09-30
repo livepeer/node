@@ -54,6 +54,8 @@ func OpenSQLite(path string) (*SQLiteStore, error) {
 			params_expiration_block TEXT NOT NULL,
 			redeemed_at TEXT, tx_hash TEXT)`,
 		"CREATE INDEX IF NOT EXISTS winning_tickets_pending ON winning_tickets(sender, creation_round, seq) WHERE tx_hash IS NULL",
+		"CREATE INDEX IF NOT EXISTS winning_tickets_epoch ON winning_tickets(recipient_rand_hash)",
+		"CREATE INDEX IF NOT EXISTS winning_tickets_liability ON winning_tickets(sender,creation_round) WHERE redeemed_at IS NULL",
 		`CREATE TABLE IF NOT EXISTS orchestrator_rounds (
 			address TEXT NOT NULL, round TEXT NOT NULL, active INTEGER NOT NULL,
 			PRIMARY KEY(address, round))`,
@@ -66,6 +68,7 @@ func OpenSQLite(path string) (*SQLiteStore, error) {
 			sender TEXT NOT NULL, recipient_rand_hash TEXT NOT NULL,
 			sender_nonce INTEGER NOT NULL,
 			PRIMARY KEY(sender, recipient_rand_hash, sender_nonce))`,
+		`CREATE TABLE IF NOT EXISTS payment_ticket_epochs(hash TEXT PRIMARY KEY, expires_at INTEGER NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS redemption_attempts (
 			sig BLOB PRIMARY KEY, attempted_at TEXT NOT NULL, error TEXT)`,
 	} {
@@ -74,7 +77,17 @@ func OpenSQLite(path string) (*SQLiteStore, error) {
 			return nil, fmt.Errorf("payment SQLite migration: %w", err)
 		}
 	}
-	return &SQLiteStore{db: db}, nil
+	// Legacy guards get a full retention window on migration.
+	if _, err := db.Exec("INSERT OR IGNORE INTO payment_ticket_epochs SELECT DISTINCT recipient_rand_hash,? FROM used_payment_tickets", time.Now().Add(24*time.Hour).Unix()); err != nil {
+		db.Close()
+		return nil, err
+	}
+	store := &SQLiteStore{db: db}
+	if err := store.migrateRedemptions(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return store, nil
 }
 
 func (s *SQLiteStore) Close() error { return s.db.Close() }
@@ -158,7 +171,7 @@ type SubmittedRedemption struct {
 }
 
 func (s *SQLiteStore) SubmittedRedemptions() ([]SubmittedRedemption, error) {
-	rows, err := s.db.Query(`SELECT w.sig,w.tx_hash FROM winning_tickets w JOIN redemption_attempts a ON a.sig=w.sig WHERE w.tx_hash IS NOT NULL AND w.redeemed_at IS NULL AND a.error IS NULL`)
+	rows, err := s.db.Query(`SELECT w.sig,w.tx_hash FROM winning_tickets w JOIN redemption_attempts a ON a.sig=w.sig WHERE w.tx_hash IS NOT NULL AND w.redeemed_at IS NULL AND a.phase NOT IN ('confirmed','reverted','expired')`)
 	if err != nil {
 		return nil, err
 	}
@@ -179,7 +192,12 @@ func (s *SQLiteStore) SubmittedRedemptions() ([]SubmittedRedemption, error) {
 }
 
 func (s *SQLiteStore) ConfirmRedemption(sig []byte) error {
-	result, err := s.db.Exec(`UPDATE winning_tickets SET redeemed_at=? WHERE sig=? AND tx_hash IS NOT NULL AND redeemed_at IS NULL`, time.Now().UTC().Format(time.RFC3339Nano), sig)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	result, err := tx.Exec(`UPDATE winning_tickets SET redeemed_at=? WHERE sig=? AND tx_hash IS NOT NULL AND redeemed_at IS NULL`, time.Now().UTC().Format(time.RFC3339Nano), sig)
 	if err != nil {
 		return err
 	}
@@ -190,11 +208,15 @@ func (s *SQLiteStore) ConfirmRedemption(sig []byte) error {
 	if n != 1 {
 		return errors.New("redemption is absent or already confirmed")
 	}
-	return nil
+	_, err = tx.Exec("UPDATE redemption_attempts SET phase='confirmed',error=NULL WHERE sig=?", sig)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *SQLiteStore) FailRedemption(sig []byte) error {
-	result, err := s.db.Exec(`UPDATE redemption_attempts SET error='transaction reverted' WHERE sig=? AND error IS NULL`, sig)
+	result, err := s.db.Exec(`UPDATE redemption_attempts SET phase='reverted',error='transaction reverted' WHERE sig=? AND phase!='reverted'`, sig)
 	if err != nil {
 		return err
 	}
@@ -216,7 +238,8 @@ func (s *SQLiteStore) RemoveWinningTicket(t *SignedTicket) error {
 	return err
 }
 
-// SetOrchestratorActive records a finalized watcher observation for a round.
+// SetOrchestratorActive records an observed active status for a round; it is
+// not a finality assertion or a substitute for canonical chain reads.
 func (s *SQLiteStore) SetOrchestratorActive(addr ethcommon.Address, round *big.Int, active bool) error {
 	if round == nil || round.Sign() < 0 {
 		return errors.New("invalid round")

@@ -39,6 +39,8 @@ func OpenRPC(endpoint string, grants []string, caFile string) (*RPC, error) {
 	}
 	client := policy.Client()
 	client.Timeout = 15 * time.Second
+	// Redirects can replay eth_sendRawTransaction POST bodies.
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return &RPC{endpoint: endpoint, client: client}, nil
 }
 

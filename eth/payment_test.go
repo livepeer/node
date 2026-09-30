@@ -83,3 +83,52 @@ func TestPaymentSnapshotUsesCanonicalL1AndInitializedRound(t *testing.T) {
 		})
 	}
 }
+
+func TestRedemptionReceiptRequiresCanonicalFinality(t *testing.T) {
+	for _, scenario := range []string{"pending", "unfinalized", "reorg", "confirmed", "reverted"} {
+		t.Run(scenario, func(t *testing.T) {
+			hash := ethcommon.HexToHash("0xabcd").Hex()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var request struct {
+					Method string
+					Params []json.RawMessage
+				}
+				require.NoError(t, json.NewDecoder(r.Body).Decode(&request))
+				var result any
+				if request.Method == "eth_getTransactionReceipt" {
+					if scenario != "pending" {
+						status := "0x1"
+						if scenario == "reverted" {
+							status = "0x0"
+						}
+						result = map[string]string{"status": status, "blockNumber": "0x10", "blockHash": hash}
+					}
+				} else {
+					var block string
+					require.NoError(t, json.Unmarshal(request.Params[0], &block))
+					if block == "finalized" {
+						number := "0x10"
+						if scenario == "unfinalized" {
+							number = "0xf"
+						}
+						result = map[string]string{"number": number}
+					} else {
+						canonical := hash
+						if scenario == "reorg" {
+							canonical = ethcommon.HexToHash("0xffff").Hex()
+						}
+						result = map[string]string{"hash": canonical}
+					}
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": result})
+			}))
+			defer server.Close()
+			rpc, err := OpenRPC(server.URL, []string{strings.TrimPrefix(server.URL, "http://")}, "")
+			require.NoError(t, err)
+			confirmed, reverted, err := (PaymentChain{Contracts: &Contracts{RPC: rpc}}).Receipt(t.Context(), ethcommon.HexToHash("0x1234"))
+			require.NoError(t, err)
+			require.Equal(t, scenario == "confirmed", confirmed)
+			require.Equal(t, scenario == "reverted", reverted)
+		})
+	}
+}

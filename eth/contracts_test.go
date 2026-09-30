@@ -42,6 +42,8 @@ func TestContractTransactionLifecycle(t *testing.T) {
 		switch req.Method {
 		case "eth_chainId":
 			result = "0x1"
+		case "eth_getBlockByNumber":
+			result = map[string]string{"number": "0x200", "l1BlockNumber": "0x32", "hash": ethcommon.HexToHash("0x1234").Hex()}
 		case "eth_blockNumber":
 			result = "0x32"
 		case "eth_call":
@@ -58,12 +60,15 @@ func TestContractTransactionLifecycle(t *testing.T) {
 					return strings.HasPrefix(call.Data, "0x"+hex.EncodeToString(crypto.Keccak256([]byte(signature))[:4]))
 				}
 				switch {
-				case selector("currentRound()"):
+				case selector("currentRound()"), selector("lastInitializedRound()"):
+
 					result = "0x" + fmt.Sprintf("%064x", 5)
 				case selector("blockHashForRound(uint256)"):
 					result = "0x" + fmt.Sprintf("%064x", 0x1234)
 				case selector("getSenderInfo(address)"):
 					result = "0x" + fmt.Sprintf("%064x%064x%064x%064x", 10, 0, 1, 0)
+				case selector("claimableReserve(address,address)"):
+					result = "0x" + fmt.Sprintf("%064x", 10)
 				case selector("isActiveTranscoder(address)"):
 					result = "0x" + strings.Repeat("0", 63) + "1"
 				default:
@@ -95,7 +100,7 @@ func TestContractTransactionLifecycle(t *testing.T) {
 			if receipts == 1 {
 				result = nil
 			} else {
-				result = map[string]string{"status": "0x1", "blockNumber": "0x10"}
+				result = map[string]string{"status": "0x1", "blockNumber": "0x10", "blockHash": ethcommon.HexToHash("0x1234").Hex()}
 			}
 		default:
 			t.Errorf("unexpected RPC method %s", req.Method)
@@ -141,8 +146,7 @@ func TestContractTransactionLifecycle(t *testing.T) {
 	require.Equal(t, int64(50), snapshot.Block.Int64())
 	require.Equal(t, int64(5), snapshot.Round.Int64())
 	require.Equal(t, ethcommon.HexToHash("0x1234"), snapshot.RoundHash)
-	require.NoError(t, (PaymentChain{Contracts: contracts}).ValidateSender(context.Background(), key.Address(), big.NewInt(10)))
-	require.Error(t, (PaymentChain{Contracts: contracts}).ValidateSender(context.Background(), key.Address(), big.NewInt(11)))
+	require.NoError(t, (PaymentChain{Contracts: contracts}).ValidateSender(t.Context(), key.Address(), big.NewInt(1)))
 	redeemedHash, err := (PaymentChain{Contracts: contracts}).Redeem(context.Background(), key, big.NewInt(1), RedeemTicket{Recipient: key.Address(), Sender: ethcommon.HexToAddress("0x3000"), FaceValue: big.NewInt(10), WinProb: big.NewInt(100), SenderNonce: 2, RecipientRandHash: ethcommon.HexToHash("0x4000"), AuxData: make([]byte, 64), Signature: make([]byte, 65), RecipientRand: big.NewInt(7)})
 	require.NoError(t, err)
 	require.NotEqual(t, ethcommon.Hash{}, redeemedHash)

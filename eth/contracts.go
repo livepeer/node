@@ -44,6 +44,29 @@ func (c *Contracts) Resolve(ctx context.Context, name string) (ethcommon.Address
 	return c.ResolveAt(ctx, "latest", name)
 }
 
+func (c *Contracts) ResolveAt(ctx context.Context, block any, name string) (ethcommon.Address, error) {
+	if _, ok := c.abis[name]; !ok {
+		return ethcommon.Address{}, errors.New("unsupported contract")
+	}
+	if name == "controller" {
+		return c.Controller, nil
+	}
+	contractName := map[string]string{"bondingManager": "BondingManager", "ticketBroker": "TicketBroker", "roundsManager": "RoundsManager", "serviceRegistry": "ServiceRegistry", "livepeerToken": "LivepeerToken"}[name]
+	if contractName == "" {
+		return ethcommon.Address{}, errors.New("contract requires an explicit address")
+	}
+	id := crypto.Keccak256Hash([]byte(contractName))
+	values, err := c.CallAt(ctx, block, "controller", c.Controller, "getContract", id)
+	if err != nil {
+		return ethcommon.Address{}, err
+	}
+	address, ok := values[0].(ethcommon.Address)
+	if !ok || address == (ethcommon.Address{}) {
+		return ethcommon.Address{}, fmt.Errorf("%s is not registered in Controller", contractName)
+	}
+	return address, nil
+}
+
 func (c *Contracts) Pack(name, method string, args ...any) ([]byte, error) {
 	contract, ok := c.abis[name]
 	if !ok {
@@ -57,6 +80,26 @@ func (c *Contracts) Pack(name, method string, args ...any) ([]byte, error) {
 
 func (c *Contracts) Call(ctx context.Context, name string, address ethcommon.Address, method string, args ...any) ([]any, error) {
 	return c.CallAt(ctx, "latest", name, address, method, args...)
+}
+
+func (c *Contracts) CallAt(ctx context.Context, block any, name string, address ethcommon.Address, method string, args ...any) ([]any, error) {
+	data, err := c.Pack(name, method, args...)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := c.RPC.CallString(ctx, "eth_call", map[string]string{"to": address.Hex(), "data": "0x" + hex.EncodeToString(data)}, block)
+	if err != nil {
+		return nil, err
+	}
+	result, err := hex.DecodeString(strings.TrimPrefix(raw, "0x"))
+	if err != nil {
+		return nil, errors.New("invalid contract response")
+	}
+	values, err := c.abis[name].Unpack(method, result)
+	if err != nil {
+		return nil, fmt.Errorf("invalid %s.%s result: %w", name, method, err)
+	}
+	return values, nil
 }
 
 type TransactionPlan struct {
@@ -98,48 +141,74 @@ func (c *Contracts) PlanTransaction(ctx context.Context, from, to ethcommon.Addr
 	return TransactionPlan{To: to, From: from, Data: call["data"], ValueWei: value.String(), GasLimit: gas.Uint64(), GasPriceWei: gasPrice.String()}, nil
 }
 
-// Submit signs and broadcasts exactly once; the caller must explicitly opt in.
-func (c *Contracts) Submit(ctx context.Context, plan TransactionPlan, key *Key, chainID *big.Int) (ethcommon.Hash, error) {
-	if key == nil || key.Address() != plan.From {
-		return ethcommon.Hash{}, errors.New("sender does not match private key")
+type SignedTransaction struct {
+	Hash  ethcommon.Hash
+	Raw   []byte
+	Nonce uint64
+	From  ethcommon.Address
+}
+
+// Prepare performs reads and signing only; callers can durably save the identity
+// before the first possible broadcast.
+func (c *Contracts) Prepare(ctx context.Context, plan TransactionPlan, key *Key, chainID *big.Int) (SignedTransaction, error) {
+	if key == nil || key.Address() != plan.From || chainID == nil || chainID.Sign() <= 0 {
+		return SignedTransaction{}, errors.New("sender does not match private key")
 	}
 	nonceRaw, err := c.RPC.CallString(ctx, "eth_getTransactionCount", plan.From.Hex(), "pending")
 	if err != nil {
-		return ethcommon.Hash{}, err
+		return SignedTransaction{}, err
 	}
 	nonce, err := ParseHexQuantity(nonceRaw)
 	if err != nil || !nonce.IsUint64() {
-		return ethcommon.Hash{}, errors.New("invalid sender nonce")
+		return SignedTransaction{}, errors.New("invalid sender nonce")
 	}
 	data, err := hex.DecodeString(strings.TrimPrefix(plan.Data, "0x"))
 	if err != nil {
-		return ethcommon.Hash{}, errors.New("invalid transaction data")
+		return SignedTransaction{}, errors.New("invalid transaction data")
 	}
 	value, ok := new(big.Int).SetString(plan.ValueWei, 10)
 	if !ok {
-		return ethcommon.Hash{}, errors.New("invalid transaction value")
+		return SignedTransaction{}, errors.New("invalid transaction value")
 	}
 	gasPrice, ok := new(big.Int).SetString(plan.GasPriceWei, 10)
 	if !ok {
-		return ethcommon.Hash{}, errors.New("invalid gas price")
+		return SignedTransaction{}, errors.New("invalid gas price")
 	}
 	tx := types.NewTx(&types.LegacyTx{Nonce: nonce.Uint64(), To: &plan.To, Value: value, Gas: plan.GasLimit, GasPrice: gasPrice, Data: data})
 	signed, err := types.SignTx(tx, types.LatestSignerForChainID(chainID), key.private)
 	if err != nil {
-		return ethcommon.Hash{}, err
+		return SignedTransaction{}, err
 	}
 	raw, err := signed.MarshalBinary()
 	if err != nil {
-		return ethcommon.Hash{}, err
+		return SignedTransaction{}, err
 	}
-	hash, err := c.RPC.CallString(ctx, "eth_sendRawTransaction", "0x"+hex.EncodeToString(raw))
+	return SignedTransaction{Hash: signed.Hash(), Raw: raw, Nonce: nonce.Uint64(), From: plan.From}, nil
+}
+
+// Broadcast sends these exact signed bytes once. Always retain the local hash:
+// any transport error can occur after the node has accepted the transaction.
+func (c *Contracts) Broadcast(ctx context.Context, tx SignedTransaction) error {
+	var signed types.Transaction
+	if err := signed.UnmarshalBinary(tx.Raw); err != nil || signed.Hash() != tx.Hash {
+		return errors.New("invalid prepared transaction")
+	}
+	hash, err := c.RPC.CallString(ctx, "eth_sendRawTransaction", "0x"+hex.EncodeToString(tx.Raw))
+	if err != nil {
+		return err
+	}
+	if !ethcommon.IsHexHash(hash) || ethcommon.HexToHash(hash) != tx.Hash {
+		return errors.New("transaction hash from RPC does not match signed transaction")
+	}
+	return nil
+}
+
+func (c *Contracts) Submit(ctx context.Context, plan TransactionPlan, key *Key, chainID *big.Int) (ethcommon.Hash, error) {
+	tx, err := c.Prepare(ctx, plan, key, chainID)
 	if err != nil {
 		return ethcommon.Hash{}, err
 	}
-	if !ethcommon.IsHexHash(hash) {
-		return ethcommon.Hash{}, errors.New("invalid transaction hash from RPC")
-	}
-	return ethcommon.HexToHash(hash), nil
+	return tx.Hash, c.Broadcast(ctx, tx)
 }
 
 // WaitReceipt waits for one confirmed receipt and reports reverted transactions.
@@ -175,47 +244,4 @@ func (c *Contracts) WaitReceipt(ctx context.Context, hash ethcommon.Hash) (uint6
 		case <-ticker.C:
 		}
 	}
-}
-
-func (c *Contracts) ResolveAt(ctx context.Context, block any, name string) (ethcommon.Address, error) {
-	if _, ok := c.abis[name]; !ok {
-		return ethcommon.Address{}, errors.New("unsupported contract")
-	}
-	if name == "controller" {
-		return c.Controller, nil
-	}
-	contractName := map[string]string{"bondingManager": "BondingManager", "ticketBroker": "TicketBroker", "roundsManager": "RoundsManager", "serviceRegistry": "ServiceRegistry", "livepeerToken": "LivepeerToken"}[name]
-	if contractName == "" {
-		return ethcommon.Address{}, errors.New("contract requires an explicit address")
-	}
-	id := crypto.Keccak256Hash([]byte(contractName))
-	values, err := c.CallAt(ctx, block, "controller", c.Controller, "getContract", id)
-	if err != nil {
-		return ethcommon.Address{}, err
-	}
-	address, ok := values[0].(ethcommon.Address)
-	if !ok || address == (ethcommon.Address{}) {
-		return ethcommon.Address{}, fmt.Errorf("%s is not registered in Controller", contractName)
-	}
-	return address, nil
-}
-
-func (c *Contracts) CallAt(ctx context.Context, block any, name string, address ethcommon.Address, method string, args ...any) ([]any, error) {
-	data, err := c.Pack(name, method, args...)
-	if err != nil {
-		return nil, err
-	}
-	raw, err := c.RPC.CallString(ctx, "eth_call", map[string]string{"to": address.Hex(), "data": "0x" + hex.EncodeToString(data)}, block)
-	if err != nil {
-		return nil, err
-	}
-	result, err := hex.DecodeString(strings.TrimPrefix(raw, "0x"))
-	if err != nil {
-		return nil, errors.New("invalid contract response")
-	}
-	values, err := c.abis[name].Unpack(method, result)
-	if err != nil {
-		return nil, fmt.Errorf("invalid %s.%s result: %w", name, method, err)
-	}
-	return values, nil
 }

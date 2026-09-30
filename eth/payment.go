@@ -33,7 +33,9 @@ func (c PaymentChain) Receipt(ctx context.Context, hash ethcommon.Hash) (confirm
 		return false, false, nil
 	}
 	var receipt struct {
-		Status string `json:"status"`
+		Status      string `json:"status"`
+		BlockNumber string `json:"blockNumber"`
+		BlockHash   string `json:"blockHash"`
 	}
 	if err := json.Unmarshal(data, &receipt); err != nil {
 		return false, false, errors.New("invalid redemption receipt")
@@ -41,6 +43,42 @@ func (c PaymentChain) Receipt(ctx context.Context, hash ethcommon.Hash) (confirm
 	status, err := ParseHexQuantity(receipt.Status)
 	if err != nil || !status.IsUint64() {
 		return false, false, errors.New("invalid redemption receipt status")
+	}
+	block, err := ParseHexQuantity(receipt.BlockNumber)
+	if err != nil || !ethcommon.IsHexHash(receipt.BlockHash) {
+		return false, false, errors.New("invalid redemption receipt block")
+	}
+	// Wait for finality and verify the receipt still belongs to the canonical
+	// chain. A pre-finality reorg leaves the transaction in reconciliation.
+	raw, err := c.Contracts.RPC.Call(ctx, "eth_getBlockByNumber", "finalized", false)
+	if err != nil {
+		return false, false, err
+	}
+	var finalized struct {
+		Number string `json:"number"`
+	}
+	if err := json.Unmarshal(raw, &finalized); err != nil {
+		return false, false, err
+	}
+	head, err := ParseHexQuantity(finalized.Number)
+	if err != nil {
+		return false, false, err
+	}
+	if head.Cmp(block) < 0 {
+		return false, false, nil
+	}
+	raw, err = c.Contracts.RPC.Call(ctx, "eth_getBlockByNumber", receipt.BlockNumber, false)
+	if err != nil {
+		return false, false, err
+	}
+	var canonical struct {
+		Hash string `json:"hash"`
+	}
+	if err := json.Unmarshal(raw, &canonical); err != nil {
+		return false, false, err
+	}
+	if canonical.Hash != receipt.BlockHash {
+		return false, false, nil
 	}
 	if status.Uint64() == 1 {
 		return true, false, nil
@@ -173,23 +211,11 @@ type RedeemTicket struct {
 }
 
 func (c PaymentChain) Redeem(ctx context.Context, key *Key, chainID *big.Int, t RedeemTicket) (ethcommon.Hash, error) {
-	if key == nil || key.Address() != t.Recipient || t.FaceValue == nil || t.WinProb == nil || t.RecipientRand == nil {
-		return ethcommon.Hash{}, errors.New("redemption recipient key mismatch")
-	}
-	address, err := c.Contracts.Resolve(ctx, "ticketBroker")
+	tx, err := c.PrepareRedemption(ctx, key, chainID, t)
 	if err != nil {
 		return ethcommon.Hash{}, err
 	}
-	coreTicket := brokerTicket{Recipient: t.Recipient, Sender: t.Sender, FaceValue: t.FaceValue, WinProb: t.WinProb, SenderNonce: new(big.Int).SetUint64(uint64(t.SenderNonce)), RecipientRandHash: t.RecipientRandHash, AuxData: t.AuxData}
-	data, err := c.Contracts.Pack("ticketBroker", "redeemWinningTicket", coreTicket, t.Signature, t.RecipientRand)
-	if err != nil {
-		return ethcommon.Hash{}, err
-	}
-	plan, err := c.Contracts.PlanTransaction(ctx, key.Address(), address, data, big.NewInt(0))
-	if err != nil {
-		return ethcommon.Hash{}, err
-	}
-	return c.Contracts.Submit(ctx, plan, key, chainID)
+	return tx.Hash, c.Contracts.Broadcast(ctx, tx)
 }
 
 func (c PaymentChain) IsActiveAt(ctx context.Context, recipient ethcommon.Address, snapshot ChainSnapshot) (bool, error) {
@@ -209,4 +235,24 @@ func (c PaymentChain) IsActiveAt(ctx context.Context, recipient ethcommon.Addres
 		return false, errors.New("invalid orchestrator active status")
 	}
 	return active, nil
+}
+
+func (c PaymentChain) PrepareRedemption(ctx context.Context, key *Key, chainID *big.Int, t RedeemTicket) (SignedTransaction, error) {
+	if key == nil || key.Address() != t.Recipient || t.FaceValue == nil || t.WinProb == nil || t.RecipientRand == nil {
+		return SignedTransaction{}, errors.New("redemption recipient key mismatch")
+	}
+	address, err := c.Contracts.Resolve(ctx, "ticketBroker")
+	if err != nil {
+		return SignedTransaction{}, err
+	}
+	coreTicket := brokerTicket{Recipient: t.Recipient, Sender: t.Sender, FaceValue: t.FaceValue, WinProb: t.WinProb, SenderNonce: new(big.Int).SetUint64(uint64(t.SenderNonce)), RecipientRandHash: t.RecipientRandHash, AuxData: t.AuxData}
+	data, err := c.Contracts.Pack("ticketBroker", "redeemWinningTicket", coreTicket, t.Signature, t.RecipientRand)
+	if err != nil {
+		return SignedTransaction{}, err
+	}
+	plan, err := c.Contracts.PlanTransaction(ctx, key.Address(), address, data, big.NewInt(0))
+	if err != nil {
+		return SignedTransaction{}, err
+	}
+	return c.Contracts.Prepare(ctx, plan, key, chainID)
 }

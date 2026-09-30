@@ -174,6 +174,7 @@ func Root(out, errOut io.Writer) *cobra.Command {
 	cmd.SetErr(errOut)
 	cmd.SilenceUsage = true
 	cmd.SilenceErrors = true
+	cmd.AddCommand(redemptionCommand())
 	cmd.InitDefaultCompletionCmd()
 	return cmd
 }

@@ -229,28 +229,7 @@ func (s *Server) ChargePaidSessions(ctx context.Context) {
 }
 
 func (s *Server) RedeemWinningTickets(ctx context.Context, store *pm.SQLiteStore, chain eth.PaymentChain, key *eth.Key, chainID *big.Int) {
-	if store == nil || key == nil {
-		return
-	}
-	snapshot, err := chain.Snapshot(ctx)
-	if err != nil {
-		s.logger.Error("chain watcher failed", "error", err)
-	} else {
-		active, err := chain.IsActive(ctx, key.Address())
-		if err != nil {
-			s.logger.Error("orchestrator activity check failed", "error", err)
-		} else {
-			if err := store.SetOrchestratorActive(key.Address(), snapshot.Round, active); err != nil {
-				s.logger.Error("chain watcher persistence failed", "error", err)
-			}
-			if active {
-				for _, err := range pm.RedeemPending(ctx, store, chain, key, chainID, snapshot.Block) {
-					s.logger.Error("ticket redemption failed", "error", err)
-				}
-			}
-		}
-	}
-	for _, err := range pm.ReconcileSubmitted(ctx, store, chain) {
-		s.logger.Error("ticket receipt reconciliation failed", "error", err)
+	for _, err := range pm.ProcessRedemptions(ctx, store, chain, key, chainID) {
+		s.logger.Error("payment redemption", "error", err)
 	}
 }
