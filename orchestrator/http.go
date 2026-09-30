@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -329,6 +330,18 @@ func (s *Server) proxyGenerated(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) proxy(w http.ResponseWriter, r *http.Request, policy destination.Policy, target *url.URL, appPath, runnerID, sid, token, control string) {
+	sessionCtx, ok := s.registry.sessionContext(runnerID, sid)
+	if !ok {
+		fail(w, http.StatusNotFound, "session not found")
+		return
+	}
+	ctx, cancel := context.WithCancel(r.Context())
+	stop := context.AfterFunc(sessionCtx, cancel)
+	defer stop()
+	defer cancel()
+	if sessionCtx.Err() != nil {
+		cancel()
+	}
 	proxy := &httputil.ReverseProxy{
 		Transport:     policy.Transport(0),
 		FlushInterval: -1,
@@ -337,7 +350,7 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, policy destinatio
 			fail(w, http.StatusBadGateway, "runner destination unavailable")
 		},
 		Rewrite: func(req *httputil.ProxyRequest) {
-			u := *target
+			u := target.Clone()
 			u.RawQuery = target.RawQuery
 			if req.In.URL.RawQuery != "" {
 				if u.RawQuery != "" {
@@ -345,20 +358,18 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, policy destinatio
 				}
 				u.RawQuery += req.In.URL.RawQuery
 			}
-			req.SetURL(&u)
+			req.SetURL(u)
 			req.Out.URL.Path = strings.TrimRight(target.Path, "/") + "/" + strings.TrimLeft(appPath, "/")
 			req.Out.URL.RawPath = ""
 			req.Out.URL.RawQuery = u.RawQuery
 			req.SetXForwarded()
 			req.Out.Header.Set("Livepeer-Runner-Route", runnerID)
-			if sid != "" {
-				req.Out.Header.Set("Livepeer-Session-Id", sid)
-				req.Out.Header.Set("Livepeer-Session-Token", token)
-				req.Out.Header.Set("Livepeer-Session-Control", control)
-			}
+			req.Out.Header.Set("Livepeer-Session-Id", sid)
+			req.Out.Header.Set("Livepeer-Session-Token", token)
+			req.Out.Header.Set("Livepeer-Session-Control", control)
 		},
 	}
-	proxy.ServeHTTP(w, r)
+	proxy.ServeHTTP(w, r.WithContext(ctx))
 }
 
 func (s *Server) createChannels(w http.ResponseWriter, r *http.Request) {
@@ -563,3 +574,5 @@ func (s *Server) trickle(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) String() string { return fmt.Sprint(s.registry) }
+
+func (s *Server) Close() { s.registry.Close() }

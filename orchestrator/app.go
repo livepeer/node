@@ -292,6 +292,7 @@ func Serve(parent context.Context, p Params, logOut io.Writer) error {
 	}
 	logger := slog.New(slog.NewTextHandler(logOut, nil))
 	app := NewServer(registry, runnerPolicy, proxyPolicy, logger)
+	defer app.Close()
 	app.SetPayment(engine)
 	sem := make(chan struct{}, 256)
 	limited := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -349,6 +350,7 @@ func Serve(parent context.Context, p Params, logOut io.Writer) error {
 	for {
 		select {
 		case <-ctx.Done():
+			app.Close()
 			shutdownCtx, done := context.WithTimeout(context.Background(), 15*time.Second)
 			defer done()
 			_ = mainServer.Shutdown(shutdownCtx)

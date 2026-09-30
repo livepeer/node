@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
@@ -98,6 +99,8 @@ type runner struct {
 }
 
 type session struct {
+	ctx     context.Context
+	cancel  context.CancelFunc
 	ID      string
 	Token   string
 	Proxies map[string]*url.URL
@@ -105,6 +108,7 @@ type session struct {
 }
 
 type Registry struct {
+	closed    bool
 	mu        sync.Mutex
 	runners   map[string]*runner
 	secret    string
@@ -271,6 +275,9 @@ func (r *Registry) Unregister(id, auth string) (int, error) {
 	if current.Static || !equalSecret(current.Credential, auth) {
 		return http.StatusUnauthorized, errors.New("invalid runner credential")
 	}
+	for sid := range current.Sessions {
+		r.releaseLocked(id, sid)
+	}
 	if r.onEvent != nil {
 		r.onEvent(id, "unregistered", "")
 	}
@@ -314,7 +321,7 @@ func (r *Registry) Discovery() []discoveryEntry {
 }
 
 func (r *Registry) usable(item *runner) bool {
-	return (item.Static || time.Since(item.Last) <= r.ttl) && item.Healthy && item.Status == "ready"
+	return !r.closed && (item.Static || time.Since(item.Last) <= r.ttl) && item.Healthy && item.Status == "ready"
 }
 
 func (r *Registry) appURL(id, mode, sessionID string) string {
@@ -359,7 +366,8 @@ func (r *Registry) ReserveWithID(id, requestedID string) (string, string, string
 	if err != nil {
 		return "", "", "", http.StatusInternalServerError, err
 	}
-	item.Sessions[sessionID] = &session{ID: sessionID, Token: token, Created: time.Now(), Proxies: map[string]*url.URL{}}
+	ctx, cancel := context.WithCancel(context.Background())
+	item.Sessions[sessionID] = &session{ID: sessionID, Token: token, Created: time.Now(), Proxies: map[string]*url.URL{}, ctx: ctx, cancel: cancel}
 	if r.onEvent != nil {
 		r.onEvent(id, "reserved", sessionID)
 	}
@@ -415,10 +423,7 @@ func (r *Registry) ReleaseBySession(sid string) {
 	defer r.mu.Unlock()
 	for id, item := range r.runners {
 		if item.Sessions[sid] != nil {
-			delete(item.Sessions, sid)
-			if r.onEvent != nil {
-				r.onEvent(id, "released", sid)
-			}
+			r.releaseLocked(id, sid)
 			return
 		}
 	}
@@ -434,10 +439,7 @@ func (r *Registry) release(id, sid, token string, callback bool) (int, error) {
 	if callback && !equalSecret(item.Sessions[sid].Token, token) {
 		return http.StatusForbidden, errors.New("invalid session token")
 	}
-	delete(item.Sessions, sid)
-	if r.onEvent != nil {
-		r.onEvent(id, "released", sid)
-	}
+	r.releaseLocked(id, sid)
 	return http.StatusOK, nil
 }
 
@@ -498,6 +500,9 @@ func (r *Registry) Expire() {
 	defer r.mu.Unlock()
 	for id, item := range r.runners {
 		if !item.Static && time.Since(item.Last) > r.ttl {
+			for sid := range item.Sessions {
+				r.releaseLocked(id, sid)
+			}
 			if r.onEvent != nil {
 				r.onEvent(id, "expired", "")
 			}
@@ -607,4 +612,42 @@ func (r *Registry) Counts() (runners, sessions int) {
 func (r *Registry) String() string {
 	runners, sessions := r.Counts()
 	return fmt.Sprintf("runners=%d sessions=%d", runners, sessions)
+}
+
+// releaseLocked is the single teardown path for capacity and active requests.
+// The caller holds r.mu; cancellation never waits for the request to finish.
+func (r *Registry) releaseLocked(id, sid string) {
+	item := r.runners[id]
+	if item == nil || item.Sessions[sid] == nil {
+		return
+	}
+	item.Sessions[sid].cancel()
+	delete(item.Sessions, sid)
+	if r.onEvent != nil {
+		r.onEvent(id, "released", sid)
+	}
+}
+
+func (r *Registry) sessionContext(id, sid string) (context.Context, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	item := r.runners[id]
+	if item == nil || item.Sessions[sid] == nil {
+		return nil, false
+	}
+	return item.Sessions[sid].ctx, true
+}
+
+func (r *Registry) Close() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.closed = true
+	for id, item := range r.runners {
+		for sid := range item.Sessions {
+			r.releaseLocked(id, sid)
+		}
+		if r.onEvent != nil {
+			r.onEvent(id, "unregistered", "")
+		}
+	}
 }

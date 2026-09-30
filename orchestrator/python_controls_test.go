@@ -116,7 +116,9 @@ func TestPinnedPythonRequestSessionControls(t *testing.T) {
 	require.Equal(t, "/app-proxy/foo", target["path"])
 	response, err = client.Post(reservation.AppURL+"/stop", "application/json", nil)
 	require.NoError(t, err)
-	require.Equal(t, 204, response.StatusCode)
+	// Stopping the session cancels this very request before the runner can
+	// return its final 204 response.
+	require.Equal(t, http.StatusBadGateway, response.StatusCode)
 	require.NoError(t, response.Body.Close())
 	response, err = client.Post(proxyURL+"/after-stop", "text/plain", nil)
 	require.NoError(t, err)

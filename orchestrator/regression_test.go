@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"math/big"
@@ -63,4 +64,31 @@ func TestRegressionOffchainSingleShotCapacityAndHeaders(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("second request neither rejected nor routed")
 	}
+}
+
+func TestRegressionReleasedSessionCancelsInFlightProxy(t *testing.T) {
+	started := make(chan struct{})
+	ended := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { close(started); <-r.Context().Done(); close(ended) }))
+	defer upstream.Close()
+	reg, s := reviewServer(t, upstream.URL)
+	require.NoError(t, reg.AddStatic(StaticRunner{ID: "r", RunnerURL: upstream.URL, App: "a", Capacity: 1}))
+	sid, app, _, _, err := reg.Reserve("r")
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		s.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", app, nil).WithContext(ctx))
+		close(done)
+	}()
+	<-started
+	reg.ReleaseBySession(sid)
+	select {
+	case <-ended:
+	case <-time.After(200 * time.Millisecond):
+		t.Error("session was removed but its upstream request remains live")
+	}
+	cancel()
+	<-done
 }
