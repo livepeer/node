@@ -300,7 +300,7 @@ func TestTickets(t *testing.T) {
 	tickets = batch.Tickets()
 	assert.Equal(2, len(tickets))
 
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		checkTicket(batch, i, tickets[i])
 	}
 }

@@ -29,14 +29,12 @@ type Validator interface {
 // validator is an implementation of the Validator interface
 type validator struct {
 	sigVerifier SigVerifier
-	tm          TimeManager
 }
 
 // NewValidator returns an instance of a validator
-func NewValidator(sigVerifier SigVerifier, tm TimeManager) Validator {
+func NewValidator(sigVerifier SigVerifier) Validator {
 	return &validator{
 		sigVerifier: sigVerifier,
-		tm:          tm,
 	}
 }
 

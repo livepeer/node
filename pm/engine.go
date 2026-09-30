@@ -286,7 +286,7 @@ func (e *Engine) Receive(ctx context.Context, runner, manifest, paymentHeader, s
 	if ticketCount+len(payment.SenderParams) > 1000000 {
 		return ethcommon.Address{}, nil, errors.New("payment ticket capacity reached")
 	}
-	validator := NewValidator(DefaultSigVerifier{}, nil)
+	validator := NewValidator(DefaultSigVerifier{})
 	winningRand := new(big.Int).SetBytes(recipientRand)
 	for _, sp := range payment.SenderParams {
 		if sp.SenderNonce == 0 || sp.SenderNonce >= 600 || len(sp.Sig) != 65 {
