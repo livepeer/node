@@ -1,7 +1,6 @@
 package orchestrator
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,45 +10,32 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/livepeer/node/destination"
 	"github.com/livepeer/node/pm"
+	"github.com/livepeer/node/trickle"
 )
 
 const (
 	maxControlBody     = 1 << 20
-	maxTricklePart     = 8 << 20
-	maxTrickleBytes    = 64 << 20
 	maxTrickleChannels = 1024
-	maxTrickleParts    = 64
 )
 
-type channel struct {
-	name      string
-	mime      string
-	runnerID  string
-	sessionID string
-	parts     map[int][]byte
-	latest    int
-	closed    bool
-	wakeup    chan struct{}
-}
-
 type Server struct {
-	registry     *Registry
-	runnerPolicy destination.Policy
-	proxyPolicy  destination.Policy
-	logger       *slog.Logger
-	payment      *pm.Engine
-	mux          *http.ServeMux
-	mu           sync.Mutex
-	channels     map[string]*channel
-	o2r          map[string]string
-	bytesUsed    int
+	trickleServer *trickle.Server
+	registry      *Registry
+	runnerPolicy  destination.Policy
+	proxyPolicy   destination.Policy
+	logger        *slog.Logger
+	payment       *pm.Engine
+	mux           *http.ServeMux
+	mu            sync.Mutex
+	channels      map[string]*channel
+	o2r           map[string]string
+	bytesUsed     int
 }
 
 func NewServer(registry *Registry, runnerPolicy, proxyPolicy destination.Policy, logger *slog.Logger) *Server {
@@ -74,8 +60,7 @@ func NewServer(registry *Registry, runnerPolicy, proxyPolicy destination.Policy,
 	s.mux.HandleFunc("/run/{proxy_id}/{app_path...}", s.proxyGenerated)
 	s.mux.HandleFunc("/proxy/{proxy_id}", s.proxyGenerated)
 	s.mux.HandleFunc("/proxy/{proxy_id}/{app_path...}", s.proxyGenerated)
-	s.mux.HandleFunc("/ai/trickle/{channel}", s.trickle)
-	s.mux.HandleFunc("/ai/trickle/{channel}/{seq}", s.trickle)
+	s.trickleServer = trickle.ConfigureServer(trickle.TrickleServerConfig{BasePath: "/ai/trickle/", Mux: s.mux, BeforeDelete: s.beforeDeleteChannel})
 	return s
 }
 
@@ -130,12 +115,20 @@ func (s *Server) heartbeat(w http.ResponseWriter, r *http.Request) {
 			fail(w, http.StatusInternalServerError, "runner channel creation failed")
 			return
 		}
+		s.registry.mu.Lock()
+		current := s.registry.runners[resp.RunnerID]
+		if s.registry.closed || current == nil || current.Credential != resp.HeartbeatSecret {
+			s.registry.mu.Unlock()
+			fail(w, 503, "runner registration expired")
+			return
+		}
 		s.mu.Lock()
-		s.channels[id] = &channel{name: "o2r", mime: "application/json", runnerID: resp.RunnerID, parts: map[int][]byte{}, latest: -1, wakeup: make(chan struct{})}
+		s.newChannel(id, "o2r", "application/json", resp.RunnerID, "")
 		s.o2r[resp.RunnerID] = id
 		s.mu.Unlock()
+		s.registry.mu.Unlock()
 		address := s.registry.service + "/ai/trickle/" + id
-		resp.O2R = &trickleChannel{Name: "o2r", ChannelName: id, URL: address, InternalURL: address, MimeType: "application/json"}
+		resp.O2R = &trickleChannel{Name: "o2r", ChannelName: id, URL: address, MimeType: "application/json"}
 	}
 	writeJSON(w, status, resp)
 }
@@ -145,7 +138,7 @@ func (s *Server) emitSessionEvent(runnerID, event, sid string) {
 		s.mu.Lock()
 		for id, ch := range s.channels {
 			if ch.runnerID == runnerID {
-				s.closeChannel(id, ch)
+				s.closeChannel(id)
 			}
 		}
 		delete(s.o2r, runnerID)
@@ -158,61 +151,14 @@ func (s *Server) emitSessionEvent(runnerID, event, sid string) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	ch := s.channels[s.o2r[runnerID]]
-	if ch != nil && !ch.closed {
-		_ = s.storePart(ch, ch.latest+1, data)
-	}
+	s.publishSessionEvent(s.o2r[runnerID], data)
 	if event == "released" {
 		for id, owned := range s.channels {
-			if owned.runnerID == runnerID && owned.sessionID == sid && !owned.closed {
-				s.closeChannel(id, owned)
+			if owned.runnerID == runnerID && owned.sessionID == sid {
+				s.closeChannel(id)
 			}
 		}
 	}
-}
-
-// storePart and closeChannel require s.mu.
-func (s *Server) storePart(ch *channel, seq int, data []byte) bool {
-	if existing, exists := ch.parts[seq]; exists {
-		return bytes.Equal(existing, data)
-	}
-	oldest, oldSize := 0, 0
-	if len(ch.parts) >= maxTrickleParts {
-		first := true
-		for index := range ch.parts {
-			if first || index < oldest {
-				oldest = index
-				first = false
-			}
-		}
-		oldSize = len(ch.parts[oldest])
-	}
-	if s.bytesUsed-oldSize+len(data) > maxTrickleBytes {
-		return false
-	}
-	if len(ch.parts) >= maxTrickleParts {
-		s.bytesUsed -= oldSize
-		delete(ch.parts, oldest)
-	}
-	ch.parts[seq] = data
-	s.bytesUsed += len(data)
-	if seq > ch.latest {
-		ch.latest = seq
-	}
-	close(ch.wakeup)
-	ch.wakeup = make(chan struct{})
-	return true
-}
-
-func (s *Server) closeChannel(id string, ch *channel) {
-	ch.closed = true
-	close(ch.wakeup)
-	ch.wakeup = make(chan struct{})
-	for _, part := range ch.parts {
-		s.bytesUsed -= len(part)
-	}
-	ch.parts = nil
-	delete(s.channels, id)
 }
 
 func (s *Server) unregister(w http.ResponseWriter, r *http.Request) {
@@ -405,29 +351,61 @@ func (s *Server) createChannels(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "invalid channels request")
 		return
 	}
-	result := []map[string]string{}
+	ctx, ok := s.registry.sessionContext(r.PathValue("runner_id"), r.PathValue("session_id"))
+	if !ok {
+		fail(w, http.StatusNotFound, "session not found")
+		return
+	}
 	for _, item := range body.Channels {
-		if item.Name == "" || item.MimeType == "" {
-			fail(w, http.StatusBadRequest, "name and mime_type required")
+		if item.Name == "" {
+			fail(w, http.StatusBadRequest, "channel name required")
 			return
 		}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Release cancels the context before acquiring s.mu for cleanup. Checking
+	// it under this lock prevents a late callback from recreating owned data.
+	if ctx.Err() != nil {
+		fail(w, http.StatusNotFound, "session not found")
+		return
+	}
+	existing := map[string]string{}
+	for id, ch := range s.channels {
+		if ch.runnerID == r.PathValue("runner_id") && ch.sessionID == r.PathValue("session_id") {
+			existing[ch.name] = id
+		}
+	}
+	missing := map[string]string{}
+	for _, item := range body.Channels {
+		if existing[item.Name] == "" && missing[item.Name] == "" {
+			id, err := randomID()
+			if err != nil {
+				fail(w, http.StatusInternalServerError, "channel creation failed")
+				return
+			}
+			missing[item.Name] = id
+		}
+	}
 	// Reserve space for one O2R channel per possible runner.
-	if len(s.channels)+len(body.Channels) > maxTrickleChannels-maxRunners {
+	if len(s.channels)+len(missing) > maxTrickleChannels-maxRunners {
 		fail(w, http.StatusServiceUnavailable, "too many channels")
 		return
 	}
+	result := []map[string]string{}
 	for _, item := range body.Channels {
-		id, err := randomID()
-		if err != nil {
-			fail(w, http.StatusInternalServerError, "channel creation failed")
-			return
+		id := existing[item.Name]
+		if id == "" {
+			id = missing[item.Name]
+			if item.MimeType == "" {
+				item.MimeType = "application/octet-stream"
+			}
+			s.newChannel(id, item.Name, item.MimeType, r.PathValue("runner_id"), r.PathValue("session_id"))
+			existing[item.Name] = id
 		}
-		s.channels[id] = &channel{name: item.Name, mime: item.MimeType, runnerID: r.PathValue("runner_id"), sessionID: r.PathValue("session_id"), parts: map[int][]byte{}, latest: -1, wakeup: make(chan struct{})}
+		ch := s.channels[id]
 		address := s.registry.service + "/ai/trickle/" + id
-		result = append(result, map[string]string{"name": item.Name, "channel_name": id, "url": address, "internal_url": address, "mime_type": item.MimeType})
+		result = append(result, map[string]string{"name": ch.name, "channel_name": id, "url": address, "internal_url": s.registry.service + "/ai/trickle/" + id, "mime_type": ch.mime})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"channels": result})
 }
@@ -449,147 +427,13 @@ func (s *Server) deleteChannels(w http.ResponseWriter, r *http.Request) {
 	for _, name := range body.Channels {
 		for id, ch := range s.channels {
 			if ch.runnerID == r.PathValue("runner_id") && ch.sessionID == r.PathValue("session_id") && (id == name || ch.name == name) {
-				s.closeChannel(id, ch)
+				s.closeChannel(id)
 				deleted = append(deleted, name)
 			}
 		}
 	}
 	s.mu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": deleted})
-}
-
-func (s *Server) trickle(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("channel")
-	s.mu.Lock()
-	ch := s.channels[id]
-	s.mu.Unlock()
-	if ch == nil {
-		fail(w, http.StatusNotFound, "channel not found")
-		return
-	}
-	if r.Method == http.MethodDelete {
-		if r.PathValue("seq") != "" {
-			seq, err := strconv.Atoi(r.PathValue("seq"))
-			if err != nil || seq < 0 {
-				fail(w, http.StatusBadRequest, "invalid sequence")
-				return
-			}
-			s.mu.Lock()
-			_, exists := ch.parts[seq]
-			s.mu.Unlock()
-			if !exists {
-				fail(w, http.StatusBadRequest, "segment not found")
-				return
-			}
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		s.mu.Lock()
-		s.closeChannel(id, ch)
-		s.mu.Unlock()
-		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
-		return
-	}
-	if r.PathValue("seq") == "" {
-		if r.Method == http.MethodPost {
-			// Channels are created only through the authenticated session
-			// callback. The public publisher create call is idempotent.
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-	if r.PathValue("seq") == "next" && r.Method == http.MethodGet {
-		s.mu.Lock()
-		next := ch.latest + 1
-		closed := ch.closed
-		s.mu.Unlock()
-		w.Header().Set("Lp-Trickle-Latest", strconv.Itoa(next))
-		if closed {
-			w.Header().Set("Lp-Trickle-Closed", "terminated")
-		}
-		_, _ = io.WriteString(w, strconv.Itoa(next))
-		return
-	}
-	seq, err := strconv.Atoi(r.PathValue("seq"))
-	if err != nil {
-		fail(w, http.StatusBadRequest, "sequence required")
-		return
-	}
-	if r.Method == http.MethodPost {
-		if seq < 0 {
-			fail(w, http.StatusBadRequest, "invalid sequence")
-			return
-		}
-		data, err := io.ReadAll(io.LimitReader(r.Body, maxTricklePart+1))
-		if err != nil || len(data) > maxTricklePart {
-			fail(w, http.StatusRequestEntityTooLarge, "trickle segment too large")
-			return
-		}
-		s.mu.Lock()
-		if ch.closed {
-			s.mu.Unlock()
-			w.Header().Set("Lp-Trickle-Closed", "true")
-			fail(w, http.StatusGone, "channel closed")
-			return
-		}
-		if !s.storePart(ch, seq, data) {
-			s.mu.Unlock()
-			fail(w, http.StatusServiceUnavailable, "trickle buffer full or duplicate sequence")
-			return
-		}
-		s.mu.Unlock()
-		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
-		return
-	}
-	if r.Method != http.MethodGet {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-	s.mu.Lock()
-	requested := seq
-	if requested == -2 {
-		requested = max(ch.latest, 0)
-	} else if requested == -1 {
-		requested = ch.latest + 1
-	}
-	s.mu.Unlock()
-	for {
-		s.mu.Lock()
-		data, ok := ch.parts[requested]
-		closed := ch.closed
-		latest := ch.latest
-		wakeup := ch.wakeup
-		s.mu.Unlock()
-		if ok {
-			w.Header().Set("Content-Type", ch.mime)
-			w.Header().Set("Lp-Trickle-Seq", strconv.Itoa(requested))
-			w.Header().Set("Lp-Trickle-Latest", strconv.Itoa(latest))
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write(data)
-			return
-		}
-		if requested < latest-maxTrickleParts+1 && !ok {
-			w.Header().Set("Lp-Trickle-Latest", strconv.Itoa(latest))
-			w.WriteHeader(470)
-			return
-		}
-		if closed {
-			w.Header().Set("Lp-Trickle-Closed", "true")
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		select {
-		case <-wakeup:
-		case <-r.Context().Done():
-			return
-		case <-time.After(25 * time.Second):
-			w.Header().Set("Lp-Trickle-Latest", strconv.Itoa(latest))
-			w.WriteHeader(470)
-			return
-		}
-	}
 }
 
 func (s *Server) String() string { return fmt.Sprint(s.registry) }

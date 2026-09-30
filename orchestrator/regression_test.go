@@ -115,7 +115,7 @@ func TestRegressionStaticSessionChannelsReleased(t *testing.T) {
 	require.NoError(t, reg.AddStatic(StaticRunner{ID: "static", RunnerURL: "http://127.0.0.1:1", App: "a", Capacity: 1}))
 	sid, _, _, _, err := reg.Reserve("static")
 	require.NoError(t, err)
-	s.channels["owned"] = &channel{runnerID: "static", sessionID: sid, parts: map[int][]byte{}, wakeup: make(chan struct{})}
+	s.newChannel("owned", "events", "application/octet-stream", "static", sid)
 	reg.ReleaseBySession(sid)
 	require.Empty(t, s.channels, "static runners have no O2R channel, but session channels must still be removed")
 }
@@ -123,7 +123,7 @@ func TestRegressionStaticSessionChannelsReleased(t *testing.T) {
 func TestRegressionTrickleNextDeliversNextPublishedPart(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		_, s := reviewServer(t, "http://127.0.0.1:1")
-		s.channels["test"] = &channel{mime: "application/octet-stream", parts: map[int][]byte{}, latest: -1, wakeup: make(chan struct{})}
+		s.newChannel("test", "events", "application/octet-stream", "", "")
 		ctx, cancel := context.WithCancel(t.Context())
 		defer cancel()
 		done := make(chan struct{})
@@ -145,5 +145,49 @@ func TestRegressionTrickleNextDeliversNextPublishedPart(t *testing.T) {
 			cancel()
 			synctest.Wait()
 		}
+	})
+}
+
+type reviewStreamingWriter struct {
+	header http.Header
+	wrote  chan struct{}
+}
+
+func (w *reviewStreamingWriter) Header() http.Header { return w.header }
+
+func (w *reviewStreamingWriter) WriteHeader(int) {}
+
+func (w *reviewStreamingWriter) Write(b []byte) (int, error) {
+	select {
+	case w.wrote <- struct{}{}:
+	default:
+	}
+	return len(b), nil
+}
+
+func (w *reviewStreamingWriter) Flush() {}
+
+func TestRegressionTrickleStreamsBeforePublisherEOF(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		_, s := reviewServer(t, "http://127.0.0.1:1")
+		s.newChannel("test", "events", "application/octet-stream", "", "")
+		input, writer := io.Pipe()
+		defer writer.Close()
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		out := &reviewStreamingWriter{header: http.Header{}, wrote: make(chan struct{}, 1)}
+		go s.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("POST", "/ai/trickle/test/0", input))
+		go s.ServeHTTP(out, httptest.NewRequest("GET", "/ai/trickle/test/0", nil).WithContext(ctx))
+		_, err := writer.Write([]byte("streaming chunk"))
+		require.NoError(t, err)
+		synctest.Wait()
+		select {
+		case <-out.wrote:
+		default:
+			t.Error("subscriber cannot receive any bytes until the publisher closes its segment")
+		}
+		require.NoError(t, writer.Close())
+		synctest.Wait()
+		cancel()
 	})
 }
