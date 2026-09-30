@@ -203,8 +203,14 @@ func (c *TrickleSubscriber) preconnect() (*http.Response, error) {
 	for {
 		select {
 		case err := <-errCh:
+			cancel(nil)
 			return nil, err
 		case resp := <-respCh:
+			if resp.StatusCode == http.StatusOK {
+				resp.Body = &cancelOnClose{ReadCloser: resp.Body, cancel: cancel}
+			} else {
+				cancel(nil)
+			}
 			return resp, nil
 		case <-time.After(preconnectRefreshTimeout):
 			// Use a custom error for the timeout to avoid clashes with parent cancellations
@@ -214,6 +220,17 @@ func (c *TrickleSubscriber) preconnect() (*http.Response, error) {
 			runConnect(ctx)
 		}
 	}
+}
+
+type cancelOnClose struct {
+	io.ReadCloser
+	cancel context.CancelCauseFunc
+}
+
+func (body *cancelOnClose) Close() error {
+	err := body.ReadCloser.Close()
+	body.cancel(nil)
+	return err
 }
 
 // Read retrieves data from the current segment and sets up the next segment concurrently.

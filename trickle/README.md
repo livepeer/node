@@ -34,6 +34,11 @@ Clients are responsible for maintaining their own position in the sequence.
 
 Servers may opt to keep the last N segments for subscribers to catch up on.
 
+This server keeps the last five segments per channel. Each segment is limited
+to 10 MB by default; `TrickleServerConfig.MaxSegmentBytes` can change the
+limit. An HTTP publisher receives status 413 when a segment exceeds it, and a
+local publisher receives `ErrSegmentTooLarge`.
+
 Servers will 404 if a `channel-name` or a `seq` does not exist.
 
 Clients may pre-connect the next segment in order to set up the resource and minimize connection set-up time.

@@ -19,6 +19,8 @@ import (
 
 const CHANGEFEED = "_changes"
 
+const defaultMaxSegmentBytes = 10_000_000
+
 type TrickleServerConfig struct {
 	// Base HTTP path for the server
 	BasePath string
@@ -37,6 +39,9 @@ type TrickleServerConfig struct {
 
 	// How often to sweep for idle channels (default 1 minute)
 	SweepInterval time.Duration
+
+	// Maximum bytes retained in one segment (default 10 MB).
+	MaxSegmentBytes int
 
 	// BeforeCreate runs before HTTP channel creation.
 	// Return RequestError for expected client/policy failures.
@@ -58,22 +63,24 @@ type Server struct {
 }
 
 type Stream struct {
-	mutex     sync.RWMutex
-	segments  []*Segment
-	name      string
-	mimeType  string
-	nextWrite int
-	writeTime time.Time
-	closed    bool
+	mutex           sync.RWMutex
+	segments        []*Segment
+	name            string
+	mimeType        string
+	nextWrite       int
+	writeTime       time.Time
+	closed          bool
+	maxSegmentBytes int
 }
 
 type Segment struct {
-	idx    int
-	mutex  *sync.Mutex
-	cond   *sync.Cond
-	buffer *segmentBuffer
-	closed bool
-	done   atomic.Bool
+	idx      int
+	mutex    *sync.Mutex
+	cond     *sync.Cond
+	buffer   *segmentBuffer
+	maxBytes int
+	closed   bool
+	done     atomic.Bool
 
 	// to shut down any pending publishers
 	closeCh chan bool
@@ -92,6 +99,7 @@ type Changefeed struct {
 const maxSegmentsPerStream = 5
 
 var FirstByteTimeout = errors.New("pending read timeout")
+var ErrSegmentTooLarge = errors.New("segment exceeds maximum size")
 
 // RequestError represents an expected request or policy failure from a hook.
 type RequestError struct {
@@ -129,6 +137,9 @@ func applyDefaults(config *TrickleServerConfig) {
 	if config.SweepInterval == 0 {
 		config.SweepInterval = time.Minute
 	}
+	if config.MaxSegmentBytes <= 0 {
+		config.MaxSegmentBytes = defaultMaxSegmentBytes
+	}
 }
 
 func ConfigureServer(config TrickleServerConfig) *Server {
@@ -137,13 +148,13 @@ func ConfigureServer(config TrickleServerConfig) *Server {
 		config:  config,
 	}
 
+	applyDefaults(&streamManager.config)
 	// set up changefeed
 	if config.Changefeed {
 		streamManager.internalPub = NewLocalPublisher(streamManager, CHANGEFEED, "application/json")
 		streamManager.internalPub.CreateChannel()
 	}
 
-	applyDefaults(&streamManager.config)
 	var (
 		mux      = streamManager.config.Mux
 		basePath = streamManager.config.BasePath
@@ -192,10 +203,11 @@ func (sm *Server) getOrCreateStream(streamName, mimeType string, forceCreate boo
 	stream, exists := sm.streams[streamName]
 	if !exists && (forceCreate || sm.config.Autocreate) {
 		stream = &Stream{
-			segments:  make([]*Segment, maxSegmentsPerStream),
-			name:      streamName,
-			mimeType:  mimeType,
-			writeTime: time.Now(),
+			segments:        make([]*Segment, maxSegmentsPerStream),
+			name:            streamName,
+			mimeType:        mimeType,
+			writeTime:       time.Now(),
+			maxSegmentBytes: sm.config.MaxSegmentBytes,
 		}
 		sm.streams[streamName] = stream
 		slog.Info("Creating stream", "stream", streamName)
@@ -311,7 +323,7 @@ func (sm *Server) closeSeq(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	idx, err := strconv.Atoi(r.PathValue("idx"))
-	if err != nil {
+	if err != nil || idx < 0 {
 		http.Error(w, "Invalid idx", http.StatusBadRequest)
 		return
 	}
@@ -359,7 +371,7 @@ func (sm *Server) handlePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	idx, err := strconv.Atoi(r.PathValue("idx"))
-	if err != nil {
+	if err != nil || idx < -1 {
 		http.Error(w, "Invalid idx", http.StatusBadRequest)
 		return
 	}
@@ -429,6 +441,30 @@ func (tr *timeoutReader) Close() error {
 // Handle post requests for a given index
 func (s *Stream) handlePost(w http.ResponseWriter, r *http.Request, idx int) {
 	segment, _ := s.getForWrite(idx)
+	readDone := make(chan struct{})
+	interruptDone := make(chan struct{})
+	go func() {
+		defer close(interruptDone)
+		select {
+		case <-segment.closeCh:
+			// Closing a segment must also release a publisher blocked on its body.
+			if err := http.NewResponseController(w).SetReadDeadline(time.Now()); err != nil {
+				_ = r.Body.Close()
+			}
+		case <-r.Context().Done():
+			_ = r.Body.Close()
+		case <-readDone:
+		}
+	}()
+	interruptStopped := false
+	stopInterrupt := func() {
+		if !interruptStopped {
+			close(readDone)
+			<-interruptDone
+			interruptStopped = true
+		}
+	}
+	defer stopInterrupt()
 
 	if r.Header.Get("Lp-Trickle-Reset") != "" {
 		// Usually means the publisher had to restart for some reason.
@@ -459,6 +495,10 @@ func (s *Stream) handlePost(w http.ResponseWriter, r *http.Request, idx int) {
 	var startedAt time.Time
 	for {
 		n, err := reader.Read(buf)
+		if segment.done.Load() {
+			w.Header().Set("Lp-Trickle-Seq", strconv.Itoa(segment.idx))
+			return
+		}
 		if n > 0 {
 			if totalRead == 0 {
 				startedAt = time.Now()
@@ -467,7 +507,15 @@ func (s *Stream) handlePost(w http.ResponseWriter, r *http.Request, idx int) {
 				s.writeTime = startedAt
 				s.mutex.Unlock()
 			}
-			segment.writeData(buf[:n])
+			if err := segment.writeData(buf[:n]); err != nil {
+				reader.skipClose = true
+				w.Header().Set("Connection", "close")
+				w.Header().Set("Lp-Trickle-Seq", strconv.Itoa(segment.idx))
+				stopInterrupt()
+				segment.close()
+				http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
+				return
+			}
 			if n == len(buf) && n < 1024*1024 { // 1 MB max
 				// filled the buffer, so double it for efficiency
 				buf = make([]byte, len(buf)*2)
@@ -511,6 +559,7 @@ func (s *Stream) handlePost(w http.ResponseWriter, r *http.Request, idx int) {
 
 	// Mark segment as closed
 	w.Header().Set("Lp-Trickle-Seq", strconv.Itoa(segment.idx))
+	stopInterrupt()
 	segment.close()
 	slog.Info("POST completed", "stream", s.name, "idx", idx, "bytes", totalRead, "took", time.Since(startedAt))
 }
@@ -531,7 +580,7 @@ func (s *Stream) getForWrite(idx int) (*Segment, bool) {
 		// probably an old segment so overwrite it
 		segment.close()
 	}
-	segment := newSegment(idx)
+	segment := newSegment(idx, s.maxSegmentBytes)
 	s.segments[segmentPos] = segment
 	return segment, false
 }
@@ -557,7 +606,7 @@ func (s *Stream) getForRead(idx int) (*Segment, int, bool, bool) {
 	segment := s.segments[segmentPos]
 	if !exists(segment, idx) && (idx == s.nextWrite || (s.nextWrite == 0 && idx == 1)) && !s.closed {
 		// read request is just a little bit ahead of write head
-		segment = newSegment(idx)
+		segment = newSegment(idx, s.maxSegmentBytes)
 		s.segments[segmentPos] = segment
 		slog.Info("GET precreating", "stream", s.name, "idx", idx, "next", s.nextWrite)
 	}
@@ -572,7 +621,7 @@ func (sm *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	idx, err := strconv.Atoi(r.PathValue("idx"))
-	if err != nil {
+	if err != nil || idx < -2 {
 		http.Error(w, "Invalid idx", http.StatusBadRequest)
 		return
 	}
@@ -676,26 +725,31 @@ func (s *Stream) handleGet(w http.ResponseWriter, r *http.Request, idx int) {
 	}
 }
 
-func newSegment(idx int) *Segment {
+func newSegment(idx, maxBytes int) *Segment {
 	mu := &sync.Mutex{}
 	return &Segment{
-		idx:     idx,
-		buffer:  newSegmentBuffer(),
-		cond:    sync.NewCond(mu),
-		mutex:   mu,
-		closeCh: make(chan bool),
+		idx:      idx,
+		buffer:   newSegmentBuffer(),
+		maxBytes: maxBytes,
+		cond:     sync.NewCond(mu),
+		mutex:    mu,
+		closeCh:  make(chan bool),
 	}
 }
 
-func (segment *Segment) writeData(data []byte) {
+func (segment *Segment) writeData(data []byte) error {
 	segment.mutex.Lock()
 	defer segment.mutex.Unlock()
+	if len(data) > segment.maxBytes-segment.buffer.totalWritten {
+		return ErrSegmentTooLarge
+	}
 
 	// Write to buffer
 	segment.buffer.write(data)
 
 	// Signal waiting readers
 	segment.cond.Broadcast()
+	return nil
 }
 
 func (s *Segment) readData(readPos int) ([]byte, int, bool) {

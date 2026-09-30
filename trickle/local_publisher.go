@@ -66,7 +66,10 @@ func (c *TrickleLocalPublisher) Write(data io.Reader) error {
 				stream.writeTime = time.Now()
 				stream.mutex.Unlock()
 			}
-			segment.writeData(buf[:n])
+			if err := segment.writeData(buf[:n]); err != nil {
+				segment.close()
+				return err
+			}
 			totalRead += n
 		}
 		if err != nil {

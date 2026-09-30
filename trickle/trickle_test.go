@@ -15,6 +15,56 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestTrickle_InvalidNegativeSequence(t *testing.T) {
+	mux := http.NewServeMux()
+	server := ConfigureServer(TrickleServerConfig{Mux: mux})
+	NewLocalPublisher(server, "test", "text/plain").CreateChannel()
+	for _, tc := range []struct{ method, path string }{
+		{http.MethodPost, "/test/-2"},
+		{http.MethodGet, "/test/-3"},
+		{http.MethodDelete, "/test/-1"},
+	} {
+		t.Run(tc.method+tc.path, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, httptest.NewRequest(tc.method, tc.path, nil))
+			require.Equal(t, http.StatusBadRequest, w.Code)
+		})
+	}
+}
+
+func TestTrickle_SegmentSizeLimit(t *testing.T) {
+	t.Run("default applies to local publisher", func(t *testing.T) {
+		server := ConfigureServer(TrickleServerConfig{Mux: http.NewServeMux()})
+		require.Equal(t, 10_000_000, server.config.MaxSegmentBytes)
+		publisher := NewLocalPublisher(server, "local", "text/plain")
+		publisher.CreateChannel()
+		require.NoError(t, publisher.Write(bytes.NewReader(make([]byte, 10_000_000))))
+		require.ErrorIs(t, publisher.Write(bytes.NewReader(make([]byte, 10_000_001))), ErrSegmentTooLarge)
+	})
+
+	t.Run("configured limit applies to HTTP and local publishers", func(t *testing.T) {
+		mux := http.NewServeMux()
+		server := ConfigureServer(TrickleServerConfig{Mux: mux, MaxSegmentBytes: 5})
+		publisher := NewLocalPublisher(server, "http", "text/plain")
+		publisher.CreateChannel()
+		post := func(seq, body string) *httptest.ResponseRecorder {
+			t.Helper()
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/http/"+seq, bytes.NewBufferString(body)))
+			return w
+		}
+		require.Equal(t, http.StatusOK, post("0", "12345").Code)
+		tooLarge := post("1", "123456")
+		require.Equal(t, http.StatusRequestEntityTooLarge, tooLarge.Code)
+		require.Equal(t, "close", tooLarge.Header().Get("Connection"))
+
+		local := NewLocalPublisher(server, "local", "text/plain")
+		local.CreateChannel()
+		require.ErrorIs(t, local.Write(bytes.NewBufferString("123456")), ErrSegmentTooLarge)
+		require.NoError(t, local.Write(bytes.NewBufferString("12345")))
+	})
+}
+
 func TestTrickle_Close(t *testing.T) {
 	require := require.New(t)
 	mux := http.NewServeMux()
