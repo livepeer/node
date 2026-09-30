@@ -104,20 +104,21 @@ type session struct {
 	cancel    context.CancelFunc
 	ID        string
 	Token     string
-	Proxies   map[string]*url.URL
+	Proxies   map[string]sessionProxy
 	Created   time.Time
 }
 
 type Registry struct {
-	closed    bool
-	mu        sync.Mutex
-	runners   map[string]*runner
-	secret    string
-	service   string
-	interval  time.Duration
-	ttl       time.Duration
-	onEvent   func(runnerID, event, sessionID string)
-	weiPerUSD *big.Rat
+	proxyTemplate string
+	closed        bool
+	mu            sync.Mutex
+	runners       map[string]*runner
+	secret        string
+	service       string
+	interval      time.Duration
+	ttl           time.Duration
+	onEvent       func(runnerID, event, sessionID string)
+	weiPerUSD     *big.Rat
 }
 
 const maxRunners = 256
@@ -316,7 +317,7 @@ func (r *Registry) Discovery() []discoveryEntry {
 		if available <= 0 {
 			continue
 		}
-		result = append(result, discoveryRunner{URL: r.appURL(id, item.Mode, ""), App: item.App, Version: item.Version, Metadata: item.Metadata, GPU: item.GPU, Mode: item.Mode, Capacity: item.Capacity, CapacityUsed: len(item.Sessions), CapacityAvailable: available, PriceInfo: item.PriceInfo})
+		result = append(result, discoveryRunner{URL: r.discoveryURL(id, item), App: item.App, Version: item.Version, Metadata: item.Metadata, GPU: item.GPU, Mode: item.Mode, Capacity: item.Capacity, CapacityUsed: len(item.Sessions), CapacityAvailable: available, PriceInfo: item.PriceInfo})
 	}
 	return []discoveryEntry{{Address: r.service, Runners: result}}
 }
@@ -368,11 +369,23 @@ func (r *Registry) ReserveWithID(id, requestedID string) (string, string, string
 		return "", "", "", http.StatusInternalServerError, err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	item.Sessions[sessionID] = &session{ID: sessionID, Token: token, Created: time.Now(), Proxies: map[string]*url.URL{}, ctx: ctx, cancel: cancel, PriceInfo: item.PriceInfo}
+	item.Sessions[sessionID] = &session{ID: sessionID, Token: token, Created: time.Now(), Proxies: map[string]sessionProxy{}, ctx: ctx, cancel: cancel, PriceInfo: item.PriceInfo}
+	appURL := r.appURL(id, item.Mode, sessionID)
+	if item.Proxy && item.Mode == "persistent" {
+		target, _ := url.Parse(item.RunnerURL)
+		proxyID, err := randomID()
+		if err != nil {
+			cancel()
+			delete(item.Sessions, sessionID)
+			return "", "", "", http.StatusInternalServerError, err
+		}
+		item.Sessions[sessionID].Proxies[proxyID] = sessionProxy{target: target, runner: true}
+		appURL = r.proxyURL(proxyID)
+	}
 	if r.onEvent != nil {
 		r.onEvent(id, "reserved", sessionID)
 	}
-	return sessionID, r.appURL(id, item.Mode, sessionID), r.service + "/apps/" + url.PathEscape(id) + "/session/" + url.PathEscape(sessionID), http.StatusOK, nil
+	return sessionID, appURL, r.service + "/apps/" + url.PathEscape(id) + "/session/" + url.PathEscape(sessionID), http.StatusOK, nil
 }
 
 func (r *Registry) PriceForRunner(id string) (priceInfo, int, error) {
@@ -476,11 +489,14 @@ func (r *Registry) addProxy(id, sid, token string, target *url.URL) (string, err
 	if err != nil {
 		return "", err
 	}
-	item.Sessions[sid].Proxies[proxyID] = target
+	if len(item.Sessions[sid].Proxies) >= 25 {
+		return "", errors.New("too many session proxies")
+	}
+	item.Sessions[sid].Proxies[proxyID] = sessionProxy{target: target}
 	return proxyID, nil
 }
 
-func (r *Registry) proxyTarget(proxyID string) (*url.URL, string, string, string, bool) {
+func (r *Registry) proxyTarget(proxyID string) (sessionProxy, string, string, string, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for runnerID, item := range r.runners {
@@ -488,12 +504,12 @@ func (r *Registry) proxyTarget(proxyID string) (*url.URL, string, string, string
 			continue
 		}
 		for sid, sess := range item.Sessions {
-			if target := sess.Proxies[proxyID]; target != nil {
+			if target, ok := sess.Proxies[proxyID]; ok {
 				return target, runnerID, sid, sess.Token, true
 			}
 		}
 	}
-	return nil, "", "", "", false
+	return sessionProxy{}, "", "", "", false
 }
 
 func (r *Registry) Expire() {
@@ -653,4 +669,9 @@ func (r *Registry) Close() {
 			r.onEvent(id, "unregistered", "")
 		}
 	}
+}
+
+type sessionProxy struct {
+	target *url.URL
+	runner bool
 }

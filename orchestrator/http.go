@@ -70,6 +70,8 @@ func NewServer(registry *Registry, runnerPolicy, proxyPolicy destination.Policy,
 	s.mux.HandleFunc("/apps/{runner_id}/session/{session_id}/app/{app_path...}", s.proxySession)
 	s.mux.HandleFunc("/apps/{runner_id}/app", s.proxySingleShot)
 	s.mux.HandleFunc("/apps/{runner_id}/app/{app_path...}", s.proxySingleShot)
+	s.mux.HandleFunc("/run/{proxy_id}", s.proxyGenerated)
+	s.mux.HandleFunc("/run/{proxy_id}/{app_path...}", s.proxyGenerated)
 	s.mux.HandleFunc("/proxy/{proxy_id}", s.proxyGenerated)
 	s.mux.HandleFunc("/proxy/{proxy_id}/{app_path...}", s.proxyGenerated)
 	s.mux.HandleFunc("/ai/trickle/{channel}", s.trickle)
@@ -77,7 +79,15 @@ func NewServer(registry *Registry, runnerPolicy, proxyPolicy destination.Policy,
 	return s
 }
 
-func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.mux.ServeHTTP(w, r) }
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if id, path := s.registry.matchProxy(r); id != "" {
+		r.SetPathValue("proxy_id", id)
+		r.SetPathValue("app_path", path)
+		s.proxyGenerated(w, r)
+		return
+	}
+	s.mux.ServeHTTP(w, r)
+}
 
 func (s *Server) SetPayment(engine *pm.Engine) { s.payment = engine }
 
@@ -319,13 +329,22 @@ func (s *Server) proxySingleShot(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) proxyGenerated(w http.ResponseWriter, r *http.Request) {
+	if s.registry.singleShotProxy(r.PathValue("proxy_id")) {
+		r.SetPathValue("runner_id", r.PathValue("proxy_id"))
+		s.proxySingleShot(w, r)
+		return
+	}
 	target, runnerID, sid, token, ok := s.registry.proxyTarget(r.PathValue("proxy_id"))
 	if !ok {
 		fail(w, http.StatusNotFound, "proxy not found")
 		return
 	}
 	control := s.registry.service + "/runner/" + url.PathEscape(runnerID) + "/session/" + url.PathEscape(sid)
-	s.proxy(w, r, s.proxyPolicy, target, r.PathValue("app_path"), runnerID, sid, token, control)
+	policy := s.proxyPolicy
+	if target.runner {
+		policy = s.runnerPolicy
+	}
+	s.proxy(w, r, policy, target.target, r.PathValue("app_path"), runnerID, sid, token, control)
 }
 
 func (s *Server) proxy(w http.ResponseWriter, r *http.Request, policy destination.Policy, target *url.URL, appPath, runnerID, sid, token, control string) {

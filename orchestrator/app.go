@@ -29,6 +29,7 @@ func init() {
 }
 
 type Params struct {
+	ProxyURLTemplate    string        `name:"proxy-url-template" optional:"true" toml:"proxy_url_template" descr:"Generated proxy URL with {proxy} in a hostname label or final path segment"`
 	ConfigFile          string        `name:"config" configfile:"true" file:"true" optional:"true" toml:"-" descr:"TOML configuration path"`
 	Listen              string        `name:"listen" default:"127.0.0.1:8935" toml:"listen" descr:"Public HTTP listener"`
 	MetricsListen       string        `name:"metrics-listen" default:"127.0.0.1:8936" toml:"metrics_listen" descr:"Loopback metrics listener"`
@@ -89,6 +90,9 @@ func (p Params) Validate() error {
 		if _, err := destination.ValidateURL(p.PaymentRPCURL); err != nil {
 			return errors.New("invalid payment RPC URL")
 		}
+	}
+	if err := validateProxyTemplate(p.ProxyURLTemplate); err != nil {
+		return err
 	}
 	listenHost, _, err := net.SplitHostPort(p.Listen)
 	if err != nil {
@@ -251,6 +255,7 @@ func Serve(parent context.Context, p Params, logOut io.Writer) error {
 		return err
 	}
 	registry := NewRegistry(p.BootstrapSecret, p.ServiceURL, p.HeartbeatInterval, p.HeartbeatTTL)
+	registry.proxyTemplate = p.ProxyURLTemplate
 	var engine *pm.Engine
 	var paymentStore *pm.SQLiteStore
 	var paymentChain eth.PaymentChain
