@@ -70,7 +70,7 @@ func (p Params) Validate() error {
 	}
 	paymentRequested := p.PaymentKeyFile != "" || p.PaymentDB != "" || p.PaymentRPCURL != "" || p.PaymentChainID != "" || p.PaymentController != "" || p.WeiPerUSD != "" || p.TicketFaceValue != "" || p.TicketWinProb != "" || len(p.PaymentRPCGrants) > 0 || p.PaymentRPCCAFile != ""
 	if paymentRequested {
-		if p.PaymentDB == "" || p.PaymentRPCURL == "" || p.PaymentChainID == "" || p.PaymentController == "" || p.WeiPerUSD == "" || p.TicketFaceValue == "" || p.TicketWinProb == "" {
+		if p.PaymentKeyFile == "" || p.PaymentDB == "" || p.PaymentRPCURL == "" || p.PaymentChainID == "" || p.PaymentController == "" || p.WeiPerUSD == "" || p.TicketFaceValue == "" || p.TicketWinProb == "" {
 			return errors.New("on-chain payment requires payment-db, key, RPC, chain-id, controller, wei-per-usd, face-value and win-prob")
 		}
 		if !eth.ValidAddress(p.PaymentController) {
