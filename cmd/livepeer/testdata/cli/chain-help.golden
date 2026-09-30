@@ -1,0 +1,21 @@
+Direct Livepeer Ethereum management
+
+Usage:
+  livepeer-chain [command]
+
+Available Commands:
+  account      Read the sender's ETH balance and pending nonce
+  completion   Generate the autocompletion script for the specified shell
+  earnings     
+  help         Help about any command
+  orchestrator 
+  round        
+  stake        
+  status       Read the configured Ethereum chain status
+  ticketbroker 
+
+Flags:
+  -h, --help      help for livepeer-chain
+  -v, --version   version for livepeer-chain
+
+Use "livepeer-chain [command] --help" for more information about a command.

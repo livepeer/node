@@ -10,7 +10,7 @@ from livepeer_gateway.trickle_publisher import TricklePublisher
 from livepeer_gateway.trickle_subscriber import TrickleSubscriber
 
 
-async def main(orchestrator: str, runner_url: str, bootstrap: str) -> None:
+async def check(orchestrator: str, runner_url: str, bootstrap: str, mode: str, proxy_mode: bool) -> None:
     reserved: asyncio.Queue[str] = asyncio.Queue()
     released: asyncio.Queue[str] = asyncio.Queue()
 
@@ -25,6 +25,8 @@ async def main(orchestrator: str, runner_url: str, bootstrap: str) -> None:
         secret=bootstrap,
         runner_url=runner_url,
         app="python-sdk-compat",
+        mode=mode,
+        proxy=proxy_mode,
         auto_detect_gpu=False,
         heartbeat_interval_s=0.2,
         on_session_reserve=on_reserve,
@@ -34,6 +36,16 @@ async def main(orchestrator: str, runner_url: str, bootstrap: str) -> None:
         assert registration.runner_id
         assert registration.o2r_channel
         async with aiohttp.ClientSession() as client:
+            if mode == "single-shot":
+                async with client.get(f"{orchestrator}/discovery") as response:
+                    entries = await response.json()
+                entry = next(item for entry in entries for item in entry["runners"] if item["app"] == "python-sdk-compat")
+                async with client.get(entry["url"] + "/hello") as response:
+                    assert response.status == 200, await response.text()
+                    assert await response.text() == "from-runner"
+                session_id = await asyncio.wait_for(reserved.get(), 5)
+                assert await asyncio.wait_for(released.get(), 5) == session_id
+                return
             async with client.post(
                 f"{orchestrator}/apps/{registration.runner_id}/session"
             ) as response:
@@ -99,6 +111,13 @@ async def main(orchestrator: str, runner_url: str, bootstrap: str) -> None:
     finally:
         await registration.close()
     print("Python SDK registration, heartbeat, reserve/release callbacks and unregister passed")
+
+
+async def main(orchestrator: str, runner_url: str, bootstrap: str) -> None:
+    for mode in ("persistent", "single-shot"):
+        for proxy in (False, True):
+            await check(orchestrator, runner_url, bootstrap, mode, proxy)
+    print("Python SDK registration mode/proxy matrix passed")
 
 
 if __name__ == "__main__":

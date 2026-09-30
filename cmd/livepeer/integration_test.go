@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -65,6 +66,24 @@ func TestRealBinaryOffchainFlow(t *testing.T) {
 			forwarded, err := exec.Command(dispatcher, dispatched...).CombinedOutput()
 			require.NoError(t, err, string(forwarded))
 			require.Equal(t, string(actual), string(forwarded), "component=%s args=%v", component, arguments)
+			golden := filepath.Join(root, "cmd", "livepeer", "testdata", "cli", component+"-"+strings.TrimPrefix(strings.Join(arguments, "-"), "--")+".golden")
+			value := actual
+			if arguments[0] == "completion" {
+				// The generated shell boilerplate is large; pin its complete digest.
+				value = fmt.Appendf(nil, "%x\n", sha256.Sum256(actual))
+			}
+			if os.Getenv("UPDATE_CLI_GOLDENS") == "1" {
+				require.NoError(t, os.MkdirAll(filepath.Dir(golden), 0755))
+				require.NoError(t, os.WriteFile(golden, value, 0644))
+			}
+			expected, err := os.ReadFile(golden)
+			require.NoError(t, err)
+			if !bytes.Equal(expected, value) {
+				artifact := filepath.Join(t.ArtifactDir(), filepath.Base(golden)+".actual")
+				require.NoError(t, os.WriteFile(artifact, actual, 0644))
+				t.Errorf("CLI golden differs: %s; full output: %s", golden, artifact)
+			}
+
 		}
 	}
 
@@ -89,11 +108,20 @@ func TestRealBinaryOffchainFlow(t *testing.T) {
 	var log bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &log, &log
 	require.NoError(t, cmd.Start())
+	processDone := make(chan struct{})
+	var processErr error
+	go func() { processErr = cmd.Wait(); close(processDone) }()
 	t.Cleanup(func() {
 		if cmd.Process != nil {
 			_ = cmd.Process.Signal(syscall.SIGTERM)
-			_, _ = cmd.Process.Wait()
+			select {
+			case <-processDone:
+			case <-time.After(3 * time.Second):
+				_ = cmd.Process.Kill()
+				<-processDone
+			}
 		}
+		_ = os.WriteFile(filepath.Join(t.ArtifactDir(), "orchestrator.log"), log.Bytes(), 0644)
 	})
 	require.Eventually(t, func() bool {
 		response, err := http.Get(metricsURL + "/readyz")
@@ -133,11 +161,9 @@ func TestRealBinaryOffchainFlow(t *testing.T) {
 	checkGoSDK(t, root, serviceURL, runner.URL)
 	checkPythonSDK(t, root, serviceURL, runner.URL)
 	require.NoError(t, cmd.Process.Signal(syscall.SIGTERM))
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
 	select {
-	case err := <-done:
-		require.NoError(t, err, log.String())
+	case <-processDone:
+		require.NoError(t, processErr, log.String())
 	case <-time.After(5 * time.Second):
 		t.Fatal("orchestrator did not shut down")
 	}
@@ -171,7 +197,8 @@ func checkPythonSDK(t *testing.T, root, serviceURL, runnerURL string) {
 	revision, err := exec.Command("git", "-C", sdkDir, "rev-parse", "HEAD").Output()
 	require.NoError(t, err)
 	require.Equal(t, "44df06157fcdb864e37d971e8caba86b2a7dc92e", strings.TrimSpace(string(revision)))
-	// Always export the committed tree: a developer checkout can have local
+	t.Attr("python_sdk_revision", strings.TrimSpace(string(revision)))
+	// By default export the committed tree: a developer checkout can have local
 	// experiments without changing the compatibility fixture under test.
 	export := t.TempDir()
 	archive := exec.Command("git", "-C", sdkDir, "archive", "HEAD")
@@ -182,9 +209,15 @@ func checkPythonSDK(t *testing.T, root, serviceURL, runnerURL string) {
 	require.NoError(t, tar.Start())
 	require.NoError(t, archive.Run())
 	require.NoError(t, tar.Wait())
+	if os.Getenv("PYTHON_RUNNER_USE_WORKING_TREE") == "1" {
+		export = sdkDir
+		t.Attr("python_sdk_tree", "working-copy")
+	} else {
+		t.Attr("python_sdk_tree", "committed")
+	}
 	fixture := filepath.Join(root, "cmd", "livepeer", "testdata", "python_sdk_compat.py")
 	run := exec.Command(python, fixture, serviceURL, runnerURL, "exact-bootstrap")
-	run.Env = append(os.Environ(), "PYTHONPATH="+filepath.Join(export, "src"))
+	run.Env = append(os.Environ(), "PYTHONPATH="+filepath.Join(export, "src"), "PYTHONDONTWRITEBYTECODE=1")
 	output, err := run.CombinedOutput()
 	require.NoError(t, err, string(output))
 	require.Contains(t, string(output), "Python SDK registration")
@@ -203,6 +236,7 @@ func checkGoSDK(t *testing.T, root, serviceURL, runnerURL string) {
 	revision, err := exec.Command("git", "-C", sdkDir, "rev-parse", "HEAD").Output()
 	require.NoError(t, err)
 	require.Equal(t, "c3be5a14a91f8a3437133419becaced324d804fe", strings.TrimSpace(string(revision)))
+	t.Attr("go_sdk_revision", strings.TrimSpace(string(revision)))
 	status, err := exec.Command("git", "-C", sdkDir, "status", "--porcelain").Output()
 	require.NoError(t, err)
 	require.Empty(t, status, "SDK checkout must be clean for compatibility result")

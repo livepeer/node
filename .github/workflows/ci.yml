@@ -31,7 +31,16 @@ jobs:
           git -C "$PYTHON_RUNNER_SDK_DIR" checkout --detach 44df06157fcdb864e37d971e8caba86b2a7dc92e
           uv sync --project "$PYTHON_RUNNER_SDK_DIR" --locked --no-dev --python 3.12
       - name: Race and real-process tests
-        run: go test -race ./...
+        run: |
+          mkdir -p "${{ runner.temp }}/livepeer-test-artifacts"
+          go test -race -artifacts -outputdir=${{ runner.temp }}/livepeer-test-artifacts ./...
+      - name: Save test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-artifacts
+          path: ${{ runner.temp }}/livepeer-test-artifacts
+          if-no-files-found: ignore
       - name: Vet
         run: go vet ./...
       - name: Staticcheck
