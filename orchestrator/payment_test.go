@@ -57,7 +57,7 @@ func TestPaidFixedSessionWithRemoteSigner(t *testing.T) {
 	require.NoError(t, err)
 	defer store.Close()
 	max := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
-	engine, err := pm.NewEngine(store, paymentTestChain{}, recipient.Address(), big.NewInt(10), max)
+	engine, err := pm.NewEngine(store, paymentTestChain{}, recipient.Address(), big.NewInt(10), new(big.Int).Sub(max, big.NewInt(1)))
 	require.NoError(t, err)
 	registry := NewRegistry("bootstrap", "http://127.0.0.1:8935", time.Second, 30*time.Second)
 	registry.SetWeiPerUSD(big.NewRat(10, 1))
@@ -72,6 +72,7 @@ func TestPaidFixedSessionWithRemoteSigner(t *testing.T) {
 	signerService, err := signer.OpenService(payer, filepath.Join(t.TempDir(), "signer.sqlite"), "")
 	require.NoError(t, err)
 	defer signerService.Close()
+	signerService.SetPaymentChain(paymentTestChain{})
 	reserveURL := "/apps/runner1/session"
 	first := httptest.NewRequest(http.MethodPost, reserveURL, nil)
 	first.Header.Set("Livepeer-Payer-Address", payer.Address().Hex())
@@ -139,7 +140,7 @@ func TestPinnedPythonPaidSingleShot(t *testing.T) {
 	require.NoError(t, err)
 	defer store.Close()
 	max := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
-	engine, err := pm.NewEngine(store, paymentTestChain{}, recipient.Address(), big.NewInt(10), max)
+	engine, err := pm.NewEngine(store, paymentTestChain{}, recipient.Address(), big.NewInt(10), new(big.Int).Sub(max, big.NewInt(1)))
 	require.NoError(t, err)
 	registry := NewRegistry("", "http://127.0.0.1:0", time.Second, 30*time.Second)
 	registry.SetWeiPerUSD(big.NewRat(10, 1))
@@ -156,6 +157,7 @@ func TestPinnedPythonPaidSingleShot(t *testing.T) {
 	signerService, err := signer.OpenService(payer, filepath.Join(t.TempDir(), "signer.sqlite"), "")
 	require.NoError(t, err)
 	defer signerService.Close()
+	signerService.SetPaymentChain(paymentTestChain{})
 	signerHTTP := httptest.NewServer(signerService)
 	defer signerHTTP.Close()
 	fixture := filepath.Join(root, "cmd", "livepeer", "testdata", "python_paid_compat.py")
@@ -186,6 +188,7 @@ func TestPinnedPythonSignerDiscovery(t *testing.T) {
 	signerService, err := signer.OpenService(paymentTestKey(t), filepath.Join(t.TempDir(), "signer.sqlite"), "")
 	require.NoError(t, err)
 	defer signerService.Close()
+	signerService.SetPaymentChain(paymentTestChain{})
 	require.NoError(t, signerService.SetDiscovery([]string{orch.URL}, []string{strings.TrimPrefix(orch.URL, "http://")}, ""))
 	signerHTTP := httptest.NewServer(signerService)
 	defer signerHTTP.Close()
@@ -229,4 +232,13 @@ func pinnedPythonSDK(t *testing.T) (python, export, root string) {
 	require.NoError(t, archive.Run())
 	require.NoError(t, tar.Wait())
 	return
+}
+
+func (c paymentTestChain) SenderInfo(ctx context.Context, _, _ ethcommon.Address) (eth.SenderInfo, error) {
+	snapshot, err := c.Snapshot(ctx)
+	return eth.SenderInfo{Snapshot: snapshot, Deposit: big.NewInt(1000000000), Reserve: big.NewInt(1000000000), WithdrawRound: new(big.Int)}, err
+}
+
+func (paymentTestChain) IsActiveAt(context.Context, ethcommon.Address, pm.ChainSnapshot) (bool, error) {
+	return true, nil
 }

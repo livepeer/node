@@ -256,3 +256,45 @@ func (c PaymentChain) PrepareRedemption(ctx context.Context, key *Key, chainID *
 	}
 	return c.Contracts.Prepare(ctx, plan, key, chainID)
 }
+
+// SenderInfo is a coherent view of a sender's collateral and the amount of
+// reserve this particular recipient can claim in the initialized round.
+type SenderInfo struct {
+	Snapshot                        ChainSnapshot
+	Deposit, Reserve, WithdrawRound *big.Int
+}
+
+func (c PaymentChain) SenderInfo(ctx context.Context, sender, recipient ethcommon.Address) (SenderInfo, error) {
+	snapshot, err := c.Snapshot(ctx)
+	if err != nil {
+		return SenderInfo{}, err
+	}
+	address, err := c.Contracts.ResolveAt(ctx, snapshot.blockReference, "ticketBroker")
+	if err != nil {
+		return SenderInfo{}, err
+	}
+	values, err := c.Contracts.CallAt(ctx, snapshot.blockReference, "ticketBroker", address, "getSenderInfo", sender)
+	if err != nil {
+		return SenderInfo{}, err
+	}
+	if len(values) != 2 {
+		return SenderInfo{}, errors.New("invalid sender info")
+	}
+	deposit, err := tupleBigInt(values[0], "Deposit")
+	if err != nil {
+		return SenderInfo{}, err
+	}
+	withdraw, err := tupleBigInt(values[0], "WithdrawRound")
+	if err != nil {
+		return SenderInfo{}, err
+	}
+	values, err = c.Contracts.CallAt(ctx, snapshot.blockReference, "ticketBroker", address, "claimableReserve", sender, recipient)
+	if err != nil {
+		return SenderInfo{}, err
+	}
+	reserve, ok := values[0].(*big.Int)
+	if !ok {
+		return SenderInfo{}, errors.New("invalid claimable reserve")
+	}
+	return SenderInfo{Snapshot: snapshot, Deposit: deposit, Reserve: reserve, WithdrawRound: withdraw}, nil
+}

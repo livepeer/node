@@ -70,16 +70,11 @@ type Service struct {
 	mux             *http.ServeMux
 	discoveryURLs   []string
 	discoveryClient *http.Client
-	paymentChain    interface {
-		ValidateSender(context.Context, ethcommon.Address, *big.Int) error
-	}
+	paymentChain    pm.SenderChain
+	senderPolicy    pm.SenderPolicy
 }
 
-func (s *Service) SetPaymentChain(chain interface {
-	ValidateSender(context.Context, ethcommon.Address, *big.Int) error
-}) {
-	s.paymentChain = chain
-}
+func (s *Service) SetPaymentChain(chain pm.SenderChain) { s.paymentChain = chain }
 
 func (s *Service) SetDiscovery(orchestrators, grants []string, caFile string) error {
 	policy, err := destination.New("signer-discovery", grants)
@@ -117,7 +112,7 @@ func OpenService(key *eth.Key, statePath, authToken string) (*Service, error) {
 func (s *Service) Close() error { return s.store.close() }
 
 func NewService(key *eth.Key, store *stateStore, authToken string) *Service {
-	s := &Service{key: key, store: store, authToken: authToken, mux: http.NewServeMux()}
+	s := &Service{key: key, store: store, authToken: authToken, mux: http.NewServeMux(), senderPolicy: pm.DefaultSenderPolicy()}
 	s.mux.HandleFunc("POST /sign-orchestrator-info", s.signInfo)
 	s.mux.HandleFunc("POST /generate-live-payment", s.generate)
 	s.mux.HandleFunc("GET /discover-orchestrators", s.discover)
@@ -424,11 +419,21 @@ func (s *Service) makePayment(ctx context.Context, req paymentRequest, info sign
 		}
 	}
 	params := pm.TicketParams{Recipient: ethcommon.BytesToAddress(info.TicketParams.Recipient), FaceValue: new(big.Int).SetBytes(info.TicketParams.FaceValue), WinProb: new(big.Int).SetBytes(info.TicketParams.WinProb), RecipientRandHash: ethcommon.BytesToHash(info.TicketParams.RecipientRandHash), Seed: new(big.Int).SetBytes(info.TicketParams.Seed), ExpirationBlock: new(big.Int).SetBytes(info.TicketParams.ExpirationBlock), ExpirationParams: &pm.TicketExpirationParams{CreationRound: info.TicketParams.Expiration.CreationRound, CreationRoundBlockHash: ethcommon.BytesToHash(info.TicketParams.Expiration.CreationRoundBlockHash)}}
-	if s.paymentChain != nil {
-		if err := s.paymentChain.ValidateSender(ctx, s.key.Address(), params.FaceValue); err != nil {
-			return nil, paymentFailure{482, "sender deposit or reserve is unavailable"}
-		}
+	if s.paymentChain == nil {
+		return nil, paymentFailure{482, "sender chain unavailable"}
 	}
+	funds, err := s.paymentChain.SenderInfo(ctx, s.key.Address(), params.Recipient)
+	if err != nil {
+		return nil, paymentFailure{482, "sender chain observation failed"}
+	}
+	count, err := pm.RemoteBatchSize(params, fee, balance)
+	if err != nil {
+		return nil, invalid(err.Error())
+	}
+	if err := s.senderPolicy.Check(params, count, funds); err != nil {
+		return nil, invalid(err.Error())
+	}
+
 	if state.PMSessionID != params.RecipientRandHash.Hex() {
 		state.SenderNonce = 0
 		state.PMSessionID = params.RecipientRandHash.Hex()

@@ -26,10 +26,6 @@ import (
 
 type unavailableSender struct{}
 
-func (unavailableSender) ValidateSender(context.Context, ethcommon.Address, *big.Int) error {
-	return errors.New("sender has no deposit")
-}
-
 func testService(t *testing.T) (*Service, signercompat.OrchestratorInfo) {
 	t.Helper()
 	private, err := crypto.GenerateKey()
@@ -43,9 +39,11 @@ func testService(t *testing.T) (*Service, signercompat.OrchestratorInfo) {
 	t.Cleanup(func() { _ = store.close() })
 	max := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
 	info := signercompat.OrchestratorInfo{Transcoder: "https://orch.example.com", Address: ethcommon.HexToAddress("0x1234").Bytes(), Price: signercompat.PriceInfo{PricePerUnit: 10, UnitsPerPrice: 1},
-		TicketParams: signercompat.TicketParams{Recipient: ethcommon.HexToAddress("0x1234").Bytes(), FaceValue: big.NewInt(10).Bytes(), WinProb: max.Bytes(), RecipientRandHash: crypto.Keccak256(make([]byte, 32)), Seed: big.NewInt(1).Bytes(), ExpirationBlock: big.NewInt(500).Bytes(), Expiration: signercompat.ExpirationParams{CreationRound: 4, CreationRoundBlockHash: ethcommon.HexToHash("0x1234").Bytes()}},
+		TicketParams: signercompat.TicketParams{Recipient: ethcommon.HexToAddress("0x1234").Bytes(), FaceValue: big.NewInt(20).Bytes(), WinProb: new(big.Int).Add(new(big.Int).Quo(max, big.NewInt(2)), big.NewInt(1)).Bytes(), RecipientRandHash: crypto.Keccak256(make([]byte, 32)), Seed: big.NewInt(1).Bytes(), ExpirationBlock: big.NewInt(500).Bytes(), Expiration: signercompat.ExpirationParams{CreationRound: 4, CreationRoundBlockHash: ethcommon.HexToHash("0x1234").Bytes()}},
 		Auth:         signercompat.AuthToken{Token: []byte("token"), SessionID: "manifest-1", Expiration: time.Now().Add(time.Hour).Unix()}}
-	return NewService(key, store, ""), info
+	service := NewService(key, store, "")
+	service.SetPaymentChain(fundedSender{})
+	return service, info
 }
 
 func postPayment(t *testing.T, s *Service, request map[string]any) *httptest.ResponseRecorder {
@@ -156,4 +154,14 @@ func TestSignerStateFilePermissions(t *testing.T) {
 	require.NoError(t, os.Chmod(path, 0644))
 	_, err = openStateStore(path)
 	require.ErrorContains(t, err, "owner-only")
+}
+
+func (unavailableSender) SenderInfo(context.Context, ethcommon.Address, ethcommon.Address) (eth.SenderInfo, error) {
+	return eth.SenderInfo{}, errors.New("sender has no deposit")
+}
+
+type fundedSender struct{}
+
+func (fundedSender) SenderInfo(context.Context, ethcommon.Address, ethcommon.Address) (eth.SenderInfo, error) {
+	return eth.SenderInfo{Snapshot: eth.ChainSnapshot{Block: big.NewInt(50), Round: big.NewInt(5)}, Deposit: new(big.Int).Exp(big.NewInt(10), big.NewInt(20), nil), Reserve: new(big.Int).Exp(big.NewInt(10), big.NewInt(20), nil), WithdrawRound: new(big.Int)}, nil
 }

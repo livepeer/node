@@ -337,3 +337,8 @@ func (e *Engine) Balance(manifest string) (*big.Rat, error) {
 	}
 	return result, nil
 }
+
+// SenderChain contains the sender collateral observation used by both payment sides.
+type SenderChain interface {
+	SenderInfo(context.Context, ethcommon.Address, ethcommon.Address) (eth.SenderInfo, error)
+}

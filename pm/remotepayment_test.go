@@ -25,7 +25,7 @@ func TestMakeRemoteBatchCarriesFractionalExpectedValue(t *testing.T) {
 }
 
 func TestMakeRemoteBatchRejectsExcessiveMint(t *testing.T) {
-	params := TicketParams{FaceValue: big.NewInt(1), WinProb: new(big.Int).Set(maxWinProb), ExpirationBlock: big.NewInt(100), ExpirationParams: &TicketExpirationParams{}}
+	params := TicketParams{FaceValue: big.NewInt(1), WinProb: new(big.Int).Sub(maxWinProb, big.NewInt(1)), ExpirationBlock: big.NewInt(100), ExpirationParams: &TicketExpirationParams{}}
 	_, _, err := MakeRemoteBatch(params, batchTestSigner{}, 0, big.NewRat(101, 1), big.NewRat(0, 1))
 	require.ErrorContains(t, err, "exceeds 100")
 }
