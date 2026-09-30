@@ -21,7 +21,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/livepeer/node/eth"
 	"github.com/livepeer/node/pm"
-	"github.com/livepeer/node/signercompat"
+	"github.com/livepeer/node/pm/wire"
 	"github.com/stretchr/testify/require"
 )
 
@@ -37,7 +37,7 @@ func (fundedSender) SenderInfo(context.Context, ethcommon.Address, ethcommon.Add
 	return eth.SenderInfo{Snapshot: eth.ChainSnapshot{Block: big.NewInt(50), Round: big.NewInt(5)}, Deposit: new(big.Int).Exp(big.NewInt(10), big.NewInt(20), nil), Reserve: new(big.Int).Exp(big.NewInt(10), big.NewInt(20), nil), WithdrawRound: new(big.Int)}, nil
 }
 
-func testService(t *testing.T) (*Service, signercompat.OrchestratorInfo) {
+func testService(t *testing.T) (*Service, wire.OrchestratorInfo) {
 	t.Helper()
 	private, err := crypto.GenerateKey()
 	require.NoError(t, err)
@@ -46,9 +46,9 @@ func testService(t *testing.T) (*Service, signercompat.OrchestratorInfo) {
 	key, err := eth.OpenKeyFile(keyFile)
 	require.NoError(t, err)
 	max := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
-	info := signercompat.OrchestratorInfo{Transcoder: "https://orch.example.com", Address: ethcommon.HexToAddress("0x1234").Bytes(), Price: signercompat.PriceInfo{PricePerUnit: 10, UnitsPerPrice: 1},
-		TicketParams: signercompat.TicketParams{Recipient: ethcommon.HexToAddress("0x1234").Bytes(), FaceValue: big.NewInt(20).Bytes(), WinProb: new(big.Int).Add(new(big.Int).Quo(max, big.NewInt(2)), big.NewInt(1)).Bytes(), RecipientRandHash: crypto.Keccak256(make([]byte, 32)), Seed: big.NewInt(1).Bytes(), ExpirationBlock: big.NewInt(500).Bytes(), Expiration: signercompat.ExpirationParams{CreationRound: 4, CreationRoundBlockHash: ethcommon.HexToHash("0x1234").Bytes()}},
-		Auth:         signercompat.AuthToken{Token: []byte("token"), SessionID: "manifest-1", Expiration: time.Now().Add(time.Hour).Unix()}}
+	info := wire.OrchestratorInfo{Transcoder: "https://orch.example.com", Address: ethcommon.HexToAddress("0x1234").Bytes(), Price: wire.PriceInfo{PricePerUnit: 10, UnitsPerPrice: 1},
+		TicketParams: wire.TicketParams{Recipient: ethcommon.HexToAddress("0x1234").Bytes(), FaceValue: big.NewInt(20).Bytes(), WinProb: new(big.Int).Add(new(big.Int).Quo(max, big.NewInt(2)), big.NewInt(1)).Bytes(), RecipientRandHash: crypto.Keccak256(make([]byte, 32)), Seed: big.NewInt(1).Bytes(), ExpirationBlock: big.NewInt(500).Bytes(), Expiration: wire.ExpirationParams{CreationRound: 4, CreationRoundBlockHash: ethcommon.HexToHash("0x1234").Bytes()}},
+		Auth:         wire.AuthToken{Token: []byte("token"), SessionID: "manifest-1", Expiration: time.Now().Add(time.Hour).Unix()}}
 	service := newService(key, "")
 	service.SetPaymentChain(fundedSender{})
 	prices, err := newPricePolicy("1000000000000", "1000000000000")
@@ -71,14 +71,14 @@ func postPayment(t *testing.T, s *Service, request map[string]any) *httptest.Res
 // signed-state, price ceiling and unsupported-type cases.
 func TestFixedPaymentAndSignedStateContinuation(t *testing.T) {
 	s, info := testService(t)
-	request := map[string]any{"orchestrator": base64.StdEncoding.EncodeToString(signercompat.EncodeOrchestratorInfo(info)), "type": "fixed", "ManifestID": "manifest-1"}
+	request := map[string]any{"orchestrator": base64.StdEncoding.EncodeToString(wire.EncodeOrchestratorInfo(info)), "type": "fixed", "ManifestID": "manifest-1"}
 	w := postPayment(t, s, request)
 	require.Equal(t, 200, w.Code, w.Body.String())
 	var first paymentResponse
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &first))
 	decoded, err := base64.StdEncoding.DecodeString(first.Payment)
 	require.NoError(t, err)
-	payment, err := signercompat.DecodePayment(decoded)
+	payment, err := wire.DecodePayment(decoded)
 	require.NoError(t, err)
 	require.Equal(t, s.key.Address().Bytes(), payment.Sender)
 	require.Len(t, payment.SenderParams, 1)
@@ -87,7 +87,7 @@ func TestFixedPaymentAndSignedStateContinuation(t *testing.T) {
 	require.True(t, (pm.DefaultSigVerifier{}).Verify(s.key.Address(), ticket.Hash().Bytes(), payment.SenderParams[0].Sig))
 	segmentBytes, err := base64.StdEncoding.DecodeString(first.SegCreds)
 	require.NoError(t, err)
-	segment, err := signercompat.DecodeSegData(segmentBytes)
+	segment, err := wire.DecodeSegData(segmentBytes)
 	require.NoError(t, err)
 	require.Equal(t, "manifest-1", string(segment.ManifestID))
 	request["state"] = first.State
@@ -108,7 +108,7 @@ func TestFixedPaymentAndSignedStateContinuation(t *testing.T) {
 
 func TestSignerRejectsRemovedTypeAndHighPrice(t *testing.T) {
 	s, info := testService(t)
-	request := map[string]any{"orchestrator": base64.StdEncoding.EncodeToString(signercompat.EncodeOrchestratorInfo(info)), "type": "lv2v"}
+	request := map[string]any{"orchestrator": base64.StdEncoding.EncodeToString(wire.EncodeOrchestratorInfo(info)), "type": "lv2v"}
 	require.Equal(t, 400, postPayment(t, s, request).Code)
 	request["type"] = "live"
 	request["maxPrice"] = map[string]any{"price": "9", "currency": "wei", "unit": "seconds"}
@@ -121,7 +121,7 @@ func TestSignerChecksConfiguredSenderAndAuth(t *testing.T) {
 	s, info := testService(t)
 	s.authToken = "secret"
 	s.SetPaymentChain(unavailableSender{})
-	request := map[string]any{"orchestrator": base64.StdEncoding.EncodeToString(signercompat.EncodeOrchestratorInfo(info)), "type": "fixed", "ManifestID": "manifest-1"}
+	request := map[string]any{"orchestrator": base64.StdEncoding.EncodeToString(wire.EncodeOrchestratorInfo(info)), "type": "fixed", "ManifestID": "manifest-1"}
 	body, err := json.Marshal(request)
 	require.NoError(t, err)
 	w := httptest.NewRecorder()
@@ -165,13 +165,13 @@ func TestSignedStateMovesBetweenIndependentSigners(t *testing.T) {
 	}
 	for _, kind := range []string{"fixed", "live"} {
 		t.Run(kind, func(t *testing.T) {
-			request := map[string]any{"orchestrator": base64.StdEncoding.EncodeToString(signercompat.EncodeOrchestratorInfo(info)), "type": kind}
+			request := map[string]any{"orchestrator": base64.StdEncoding.EncodeToString(wire.EncodeOrchestratorInfo(info)), "type": kind}
 			var previous paymentState
 			for i := range 3 {
 				if i == 2 {
 					refreshed := info
 					refreshed.TicketParams.RecipientRandHash = crypto.Keccak256([]byte(kind + "-refreshed"))
-					request["orchestrator"] = base64.StdEncoding.EncodeToString(signercompat.EncodeOrchestratorInfo(refreshed))
+					request["orchestrator"] = base64.StdEncoding.EncodeToString(wire.EncodeOrchestratorInfo(refreshed))
 				}
 				response := postPayment(t, replicas[i%2], request)
 				require.Equal(t, 200, response.Code, response.Body.String())
@@ -198,7 +198,7 @@ func TestSignedStateMovesBetweenIndependentSigners(t *testing.T) {
 
 func TestSignerReturns482AtTicketEVFloor(t *testing.T) {
 	s, info := testService(t)
-	request := map[string]any{"orchestrator": signercompat.EncodeOrchestratorInfo(info), "type": "fixed"}
+	request := map[string]any{"orchestrator": wire.EncodeOrchestratorInfo(info), "type": "fixed"}
 	response := postPayment(t, s, request)
 	require.Equal(t, 200, response.Code, response.Body.String())
 	var first paymentResponse

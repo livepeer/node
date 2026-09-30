@@ -22,7 +22,7 @@ import (
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/livepeer/node/eth"
-	"github.com/livepeer/node/signercompat"
+	"github.com/livepeer/node/pm/wire"
 	"github.com/stretchr/testify/require"
 )
 
@@ -30,20 +30,20 @@ func TestPricePolicyExactCeilingsAndRateExpiry(t *testing.T) {
 	p, err := newPricePolicy("1/3", "1/2")
 	require.NoError(t, err)
 	require.False(t, p.ready())
-	require.Equal(t, 503, p.check("live", signercompat.PriceInfo{PricePerUnit: 1, UnitsPerPrice: 1}).(paymentFailure).status)
+	require.Equal(t, 503, p.check("live", wire.PriceInfo{PricePerUnit: 1, UnitsPerPrice: 1}).(paymentFailure).status)
 	require.NoError(t, p.setRate(big.NewRat(3, 1), time.Now().Add(time.Minute)))
 	require.True(t, p.ready())
-	require.NoError(t, p.check("live", signercompat.PriceInfo{PricePerUnit: 1, UnitsPerPrice: 1}))
-	require.Equal(t, 481, p.check("live", signercompat.PriceInfo{PricePerUnit: 4, UnitsPerPrice: 3}).(paymentFailure).status)
-	require.NoError(t, p.check("fixed", signercompat.PriceInfo{PricePerUnit: 3, UnitsPerPrice: 2}))
-	require.Equal(t, 481, p.check("fixed", signercompat.PriceInfo{PricePerUnit: 5, UnitsPerPrice: 3}).(paymentFailure).status)
+	require.NoError(t, p.check("live", wire.PriceInfo{PricePerUnit: 1, UnitsPerPrice: 1}))
+	require.Equal(t, 481, p.check("live", wire.PriceInfo{PricePerUnit: 4, UnitsPerPrice: 3}).(paymentFailure).status)
+	require.NoError(t, p.check("fixed", wire.PriceInfo{PricePerUnit: 3, UnitsPerPrice: 2}))
+	require.Equal(t, 481, p.check("fixed", wire.PriceInfo{PricePerUnit: 5, UnitsPerPrice: 3}).(paymentFailure).status)
 	require.NoError(t, p.setRate(big.NewRat(6, 1), time.Now().Add(time.Minute)))
-	require.NoError(t, p.check("live", signercompat.PriceInfo{PricePerUnit: 2, UnitsPerPrice: 1}), "refreshed rate must take effect")
+	require.NoError(t, p.check("live", wire.PriceInfo{PricePerUnit: 2, UnitsPerPrice: 1}), "refreshed rate must take effect")
 	p.mu.Lock()
 	p.validUntil = time.Now().Add(-time.Second)
 	p.mu.Unlock()
 	require.False(t, p.ready())
-	require.Equal(t, 503, p.check("fixed", signercompat.PriceInfo{PricePerUnit: 1, UnitsPerPrice: 1}).(paymentFailure).status)
+	require.Equal(t, 503, p.check("fixed", wire.PriceInfo{PricePerUnit: 1, UnitsPerPrice: 1}).(paymentFailure).status)
 	require.Error(t, p.setRate(big.NewRat(6, 1), time.Now().Add(-time.Second)))
 }
 
@@ -111,10 +111,10 @@ func TestOracleRateEnforcesBothUSDCeilings(t *testing.T) {
 	policy, err := newPricePolicy("1/500000000000000", "3/500000000000000")
 	require.NoError(t, err)
 	require.NoError(t, policy.setRate(rate, until))
-	require.NoError(t, policy.check("live", signercompat.PriceInfo{PricePerUnit: 1, UnitsPerPrice: 1}))
-	require.Equal(t, 481, policy.check("live", signercompat.PriceInfo{PricePerUnit: 2, UnitsPerPrice: 1}).(paymentFailure).status)
-	require.NoError(t, policy.check("fixed", signercompat.PriceInfo{PricePerUnit: 3, UnitsPerPrice: 1}))
-	require.Equal(t, 481, policy.check("fixed", signercompat.PriceInfo{PricePerUnit: 4, UnitsPerPrice: 1}).(paymentFailure).status)
+	require.NoError(t, policy.check("live", wire.PriceInfo{PricePerUnit: 1, UnitsPerPrice: 1}))
+	require.Equal(t, 481, policy.check("live", wire.PriceInfo{PricePerUnit: 2, UnitsPerPrice: 1}).(paymentFailure).status)
+	require.NoError(t, policy.check("fixed", wire.PriceInfo{PricePerUnit: 3, UnitsPerPrice: 1}))
+	require.Equal(t, 481, policy.check("fixed", wire.PriceInfo{PricePerUnit: 4, UnitsPerPrice: 1}).(paymentFailure).status)
 }
 
 func TestPaidSignerRequiresUSDPriceSettings(t *testing.T) {
@@ -141,7 +141,7 @@ func TestSignerUnavailableFeedThenRefresh(t *testing.T) {
 	policy, err := newPricePolicy("20", "20")
 	require.NoError(t, err)
 	s.pricePolicy = policy
-	req := map[string]any{"orchestrator": signercompat.EncodeOrchestratorInfo(info), "type": "fixed"}
+	req := map[string]any{"orchestrator": wire.EncodeOrchestratorInfo(info), "type": "fixed"}
 	require.Equal(t, 503, postPayment(t, s, req).Code)
 	require.False(t, policy.ready())
 	var available atomic.Bool
@@ -209,7 +209,7 @@ func TestSignerStartsUnreadyWhenFirstFeedReadFails(t *testing.T) {
 		return response.StatusCode == 503
 	}, 3*time.Second, 10*time.Millisecond)
 	_, info := testService(t)
-	data, err := json.Marshal(map[string]any{"orchestrator": signercompat.EncodeOrchestratorInfo(info), "type": "fixed"})
+	data, err := json.Marshal(map[string]any{"orchestrator": wire.EncodeOrchestratorInfo(info), "type": "fixed"})
 	require.NoError(t, err)
 	response, err := client.Post("http://"+listen+"/generate-live-payment", "application/json", bytes.NewReader(data))
 	require.NoError(t, err)

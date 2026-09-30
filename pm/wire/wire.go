@@ -1,7 +1,7 @@
 // Package wire preserves the retained fields and field numbers of the
 // legacy unversioned remote-signer Protobuf envelopes. Unknown fields are
 // skipped so current Go and Python runner clients can send their full messages.
-package signercompat
+package wire
 
 import (
 	"errors"

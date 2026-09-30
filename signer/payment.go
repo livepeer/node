@@ -12,7 +12,7 @@ import (
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/livepeer/node/pm"
-	"github.com/livepeer/node/signercompat"
+	"github.com/livepeer/node/pm/wire"
 )
 
 type remoteSender struct {
@@ -44,7 +44,7 @@ type paymentState struct {
 	ManifestID           string
 }
 
-func (s remoteSender) Generate(ctx context.Context, paymentType, manifest string, info signercompat.OrchestratorInfo, state paymentState, oldSequence int64) (paymentDraft, error) {
+func (s remoteSender) Generate(ctx context.Context, paymentType, manifest string, info wire.OrchestratorInfo, state paymentState, oldSequence int64) (paymentDraft, error) {
 	if s.Signer == nil || (paymentType != "live" && paymentType != "fixed") || manifest == "" || oldSequence < -1 || oldSequence == math.MaxInt64 || info.Price.PricePerUnit <= 0 || info.Price.UnitsPerPrice <= 0 {
 		return paymentDraft{}, errors.New("invalid remote payment request")
 	}
@@ -96,11 +96,11 @@ func (s remoteSender) Generate(ctx context.Context, paymentType, manifest string
 	if err != nil {
 		return paymentDraft{}, err
 	}
-	senderParams := make([]signercompat.TicketSenderParams, 0, len(batch.SenderParams))
+	senderParams := make([]wire.TicketSenderParams, 0, len(batch.SenderParams))
 	for _, sp := range batch.SenderParams {
-		senderParams = append(senderParams, signercompat.TicketSenderParams{SenderNonce: sp.SenderNonce, Sig: sp.Sig})
+		senderParams = append(senderParams, wire.TicketSenderParams{SenderNonce: sp.SenderNonce, Sig: sp.Sig})
 	}
-	message := signercompat.Payment{TicketParams: info.TicketParams, Sender: s.Signer.Address().Bytes(), Expiration: info.TicketParams.Expiration, SenderParams: senderParams, ExpectedPrice: info.Price}
+	message := wire.Payment{TicketParams: info.TicketParams, Sender: s.Signer.Address().Bytes(), Expiration: info.TicketParams.Expiration, SenderParams: senderParams, ExpectedPrice: info.Price}
 	segHash := crypto.Keccak256(nil)
 	flatten := append([]byte(manifest), make([]byte, 32)...)
 	flatten = append(flatten, segHash...)
@@ -108,10 +108,10 @@ func (s remoteSender) Generate(ctx context.Context, paymentType, manifest string
 	if err != nil {
 		return paymentDraft{}, err
 	}
-	segment := signercompat.SegData{ManifestID: []byte(manifest), Hash: segHash, Signature: sig, Auth: info.Auth}
+	segment := wire.SegData{ManifestID: []byte(manifest), Hash: segHash, Signature: sig, Auth: info.Auth}
 	state.SenderNonce = batch.SenderParams[len(batch.SenderParams)-1].SenderNonce
 	state.Balance = remaining.RatString()
 	state.LastUpdate = now
 	state.SequenceNumber = uint64(oldSequence + 1)
-	return paymentDraft{Payment: base64.StdEncoding.EncodeToString(signercompat.EncodePayment(message)), SegCreds: base64.StdEncoding.EncodeToString(signercompat.EncodeSegData(segment)), State: state}, nil
+	return paymentDraft{Payment: base64.StdEncoding.EncodeToString(wire.EncodePayment(message)), SegCreds: base64.StdEncoding.EncodeToString(wire.EncodeSegData(segment)), State: state}, nil
 }

@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/livepeer/node/signercompat"
+	"github.com/livepeer/node/pm/wire"
 )
 
 // pricePolicy holds only a local observation of the exchange rate. Signer
@@ -61,7 +61,7 @@ func (p *pricePolicy) ready() bool {
 	return ok
 }
 
-func (p *pricePolicy) check(paymentType string, price signercompat.PriceInfo) error {
+func (p *pricePolicy) check(paymentType string, price wire.PriceInfo) error {
 	rate, ok := p.rate()
 	if !ok {
 		return paymentFailure{503, "signer USD conversion rate unavailable"}

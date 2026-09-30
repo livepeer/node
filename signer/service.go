@@ -21,7 +21,7 @@ import (
 	"github.com/livepeer/node/destination"
 	"github.com/livepeer/node/eth"
 	"github.com/livepeer/node/pm"
-	"github.com/livepeer/node/signercompat"
+	"github.com/livepeer/node/pm/wire"
 )
 
 type signedState struct {
@@ -281,7 +281,7 @@ type paymentFailure struct {
 func (e paymentFailure) Error() string { return e.reason }
 func invalid(reason string) error      { return paymentFailure{http.StatusBadRequest, reason} }
 
-func checkMaxPrice(req paymentRequest, price signercompat.PriceInfo) error {
+func checkMaxPrice(req paymentRequest, price wire.PriceInfo) error {
 	if req.MaxPrice == nil {
 		return nil
 	}
@@ -319,7 +319,7 @@ func (s *Service) generate(w http.ResponseWriter, r *http.Request) {
 		signerError(w, 400, "payment capabilities are unsupported")
 		return
 	}
-	info, err := signercompat.DecodeOrchestratorInfo(req.Orchestrator)
+	info, err := wire.DecodeOrchestratorInfo(req.Orchestrator)
 	if err != nil {
 		signerError(w, 400, "invalid orchestrator Protobuf")
 		return
@@ -429,7 +429,7 @@ func (s *Service) generate(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(response)
 }
 
-func (s *Service) makePayment(ctx context.Context, req paymentRequest, info signercompat.OrchestratorInfo, state paymentState, oldSequence int64) (paymentDraft, error) {
+func (s *Service) makePayment(ctx context.Context, req paymentRequest, info wire.OrchestratorInfo, state paymentState, oldSequence int64) (paymentDraft, error) {
 	payment, err := (remoteSender{Signer: s.key, Chain: s.paymentChain, Policy: s.senderPolicy}).Generate(ctx, req.Type, req.ManifestID, info, state, oldSequence)
 	if err != nil {
 		switch {

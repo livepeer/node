@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/livepeer/node/signercompat"
+	"github.com/livepeer/node/pm/wire"
 	"github.com/stretchr/testify/require"
 )
 
@@ -45,7 +45,7 @@ func TestAuthWebhookCachePriceAndIdentity(t *testing.T) {
 	}))
 	defer webhook.Close()
 	require.NoError(t, s.SetAuthWebhook(webhook.URL, []string{strings.TrimPrefix(webhook.URL, "http://")}, "", map[string]string{"X-Webhook-Secret": "configured"}))
-	req := map[string]any{"orchestrator": base64.StdEncoding.EncodeToString(signercompat.EncodeOrchestratorInfo(info)), "type": "fixed"}
+	req := map[string]any{"orchestrator": base64.StdEncoding.EncodeToString(wire.EncodeOrchestratorInfo(info)), "type": "fixed"}
 	w := postPayment(t, s, req)
 	require.Equal(t, 200, w.Code, w.Body.String())
 	var first paymentResponse
@@ -86,7 +86,7 @@ func TestAuthWebhookPriceRejectsBeforeResponse(t *testing.T) {
 	}))
 	defer webhook.Close()
 	require.NoError(t, s.SetAuthWebhook(webhook.URL, []string{strings.TrimPrefix(webhook.URL, "http://")}, "", nil))
-	w := postPayment(t, s, map[string]any{"orchestrator": base64.StdEncoding.EncodeToString(signercompat.EncodeOrchestratorInfo(info)), "type": "fixed"})
+	w := postPayment(t, s, map[string]any{"orchestrator": base64.StdEncoding.EncodeToString(wire.EncodeOrchestratorInfo(info)), "type": "fixed"})
 	require.Equal(t, 481, w.Code, w.Body.String())
 	require.NotContains(t, w.Body.String(), "segCreds")
 	require.NotContains(t, w.Body.String(), "payment")
@@ -102,7 +102,7 @@ func TestExpiredParamsRequestRefresh(t *testing.T) {
 			} else {
 				info.TicketParams.ExpirationBlock = []byte{51}
 			}
-			w := postPayment(t, s, map[string]any{"orchestrator": base64.StdEncoding.EncodeToString(signercompat.EncodeOrchestratorInfo(info)), "type": "fixed"})
+			w := postPayment(t, s, map[string]any{"orchestrator": base64.StdEncoding.EncodeToString(wire.EncodeOrchestratorInfo(info)), "type": "fixed"})
 			require.Equal(t, 480, w.Code, w.Body.String())
 			require.Equal(t, info.Transcoder, w.Header().Get("Livepeer-Orchestrator-URL"))
 		})

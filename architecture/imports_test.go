@@ -59,8 +59,8 @@ func forbiddenImport(file, dep string) string {
 			return "legacy, media or gRPC dependency"
 		}
 	}
-	if strings.HasPrefix(dep, "google.golang.org/protobuf") && !strings.HasPrefix(file, "signercompat/") {
-		return "Protobuf runtime outside signercompat"
+	if strings.HasPrefix(dep, "google.golang.org/protobuf") && !strings.HasPrefix(file, "pm/wire/") {
+		return "Protobuf runtime outside pm/wire"
 	}
 	if !strings.HasPrefix(dep, module) {
 		return ""
@@ -82,8 +82,8 @@ func forbiddenImport(file, dep string) string {
 			return "cross-component or shared-to-component import"
 		}
 	}
-	if strings.HasPrefix(local, "signercompat") && !strings.HasPrefix(file, "signer/") && !strings.HasPrefix(file, "pm/") {
-		return "signer compatibility import outside signer"
+	if strings.HasPrefix(local, "pm/wire") && !strings.HasPrefix(file, "signer/") && !strings.HasPrefix(file, "pm/") {
+		return "payment wire import outside signer or pm"
 	}
 	if (local == "pm" || strings.HasPrefix(local, "pm/")) && (strings.HasPrefix(file, "chain/") || strings.HasPrefix(file, "eth/")) {
 		return "chain or Ethereum package imports payment implementation"

@@ -1,4 +1,4 @@
-package signercompat
+package wire
 
 import (
 	"testing"

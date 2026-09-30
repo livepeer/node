@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/livepeer/node/destination"
-	"github.com/livepeer/node/signercompat"
+	"github.com/livepeer/node/pm/wire"
 )
 
 type maxPrice struct {
@@ -50,7 +50,7 @@ func (s *Service) SetAuthWebhook(endpoint string, grants []string, caFile string
 	return nil
 }
 
-func (s *Service) authorizePayment(r *http.Request, req paymentRequest, price signercompat.PriceInfo, state *paymentState) error {
+func (s *Service) authorizePayment(r *http.Request, req paymentRequest, price wire.PriceInfo, state *paymentState) error {
 	identity := r.Header.Get("Signer-Auth-Id")
 	if identity != "" && state.AuthID != "" && state.AuthID != identity {
 		return paymentFailure{403, "signer auth ID changed"}

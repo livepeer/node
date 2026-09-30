@@ -15,7 +15,7 @@ import (
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/livepeer/node/eth"
-	"github.com/livepeer/node/signercompat"
+	"github.com/livepeer/node/pm/wire"
 )
 
 type ChainSnapshot = eth.ChainSnapshot
@@ -94,10 +94,10 @@ func (e *Engine) MakeChallenge(ctx context.Context, runner, manifest string, sen
 		return Challenge{}, err
 	}
 	randHash := crypto.Keccak256Hash(random)
-	info := signercompat.OrchestratorInfo{Transcoder: service, Address: e.recipient.Bytes(), Price: signercompat.PriceInfo{PricePerUnit: price, UnitsPerPrice: 1},
-		TicketParams: signercompat.TicketParams{Recipient: e.recipient.Bytes(), FaceValue: e.faceValue.Bytes(), WinProb: e.winProb.Bytes(), RecipientRandHash: randHash.Bytes(), Seed: seed, ExpirationBlock: new(big.Int).Add(snapshot.Block, big.NewInt(40)).Bytes(), Expiration: signercompat.ExpirationParams{CreationRound: snapshot.Round.Int64(), CreationRoundBlockHash: snapshot.RoundHash.Bytes()}},
-		Auth:         signercompat.AuthToken{Token: token, SessionID: manifest, Expiration: time.Now().Add(time.Hour).Unix()}}
-	encoded := signercompat.EncodeOrchestratorInfo(info)
+	info := wire.OrchestratorInfo{Transcoder: service, Address: e.recipient.Bytes(), Price: wire.PriceInfo{PricePerUnit: price, UnitsPerPrice: 1},
+		TicketParams: wire.TicketParams{Recipient: e.recipient.Bytes(), FaceValue: e.faceValue.Bytes(), WinProb: e.winProb.Bytes(), RecipientRandHash: randHash.Bytes(), Seed: seed, ExpirationBlock: new(big.Int).Add(snapshot.Block, big.NewInt(40)).Bytes(), Expiration: wire.ExpirationParams{CreationRound: snapshot.Round.Int64(), CreationRoundBlockHash: snapshot.RoundHash.Bytes()}},
+		Auth:         wire.AuthToken{Token: token, SessionID: manifest, Expiration: time.Now().Add(time.Hour).Unix()}}
+	encoded := wire.EncodeOrchestratorInfo(info)
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	tx, err := e.store.db.BeginTx(ctx, nil)
@@ -125,12 +125,12 @@ func (e *Engine) MakeChallenge(ctx context.Context, runner, manifest string, sen
 	return Challenge{PaymentParams: base64.StdEncoding.EncodeToString(encoded), Orchestrator: service, ManifestID: manifest, PaymentURL: service + "/apps/" + runner + "/session/" + manifest + "/payment"}, nil
 }
 
-func (e *Engine) ChallengeInfo(manifest string) (signercompat.OrchestratorInfo, error) {
+func (e *Engine) ChallengeInfo(manifest string) (wire.OrchestratorInfo, error) {
 	var encoded []byte
 	if err := e.store.db.QueryRow("SELECT info FROM payment_challenges WHERE manifest=?", manifest).Scan(&encoded); err != nil {
-		return signercompat.OrchestratorInfo{}, err
+		return wire.OrchestratorInfo{}, err
 	}
-	return signercompat.DecodeOrchestratorInfo(encoded)
+	return wire.DecodeOrchestratorInfo(encoded)
 }
 
 func (e *Engine) ChallengeForManifest(runner, manifest, service string) (Challenge, error) {
@@ -138,7 +138,7 @@ func (e *Engine) ChallengeForManifest(runner, manifest, service string) (Challen
 	if err != nil {
 		return Challenge{}, err
 	}
-	return Challenge{PaymentParams: base64.StdEncoding.EncodeToString(signercompat.EncodeOrchestratorInfo(info)), Orchestrator: service, ManifestID: manifest, PaymentURL: service + "/apps/" + runner + "/session/" + manifest + "/payment"}, nil
+	return Challenge{PaymentParams: base64.StdEncoding.EncodeToString(wire.EncodeOrchestratorInfo(info)), Orchestrator: service, ManifestID: manifest, PaymentURL: service + "/apps/" + runner + "/session/" + manifest + "/payment"}, nil
 }
 
 func (e *Engine) RefreshChallenge(ctx context.Context, manifest string, sender ethcommon.Address, service string) (Challenge, error) {
@@ -150,7 +150,7 @@ func (e *Engine) RefreshChallenge(ctx context.Context, manifest string, sender e
 	if sender.Hex() != senderString {
 		return Challenge{}, ErrInvalidPayment
 	}
-	info, err := signercompat.DecodeOrchestratorInfo(encoded)
+	info, err := wire.DecodeOrchestratorInfo(encoded)
 	if err != nil {
 		return Challenge{}, err
 	}
@@ -162,7 +162,7 @@ func ManifestFromSegment(header string) (string, error) {
 	if err != nil {
 		return "", ErrInvalidPayment
 	}
-	segment, err := signercompat.DecodeSegData(data)
+	segment, err := wire.DecodeSegData(data)
 	if err != nil || segment.Auth.SessionID == "" || string(segment.ManifestID) != segment.Auth.SessionID {
 		return "", ErrInvalidPayment
 	}
@@ -174,22 +174,22 @@ var ErrInsufficientBalance = errors.New("insufficient payment balance")
 var ErrMissingChallenge = errors.New("payment challenge not found")
 var ErrFixedAlreadyCharged = errors.New("fixed-price session already charged")
 
-func decodeHeaders(paymentHeader, segmentHeader string) (signercompat.Payment, signercompat.SegData, error) {
+func decodeHeaders(paymentHeader, segmentHeader string) (wire.Payment, wire.SegData, error) {
 	paymentBytes, err := base64.StdEncoding.DecodeString(paymentHeader)
 	if err != nil {
-		return signercompat.Payment{}, signercompat.SegData{}, ErrInvalidPayment
+		return wire.Payment{}, wire.SegData{}, ErrInvalidPayment
 	}
 	segmentBytes, err := base64.StdEncoding.DecodeString(segmentHeader)
 	if err != nil {
-		return signercompat.Payment{}, signercompat.SegData{}, ErrInvalidPayment
+		return wire.Payment{}, wire.SegData{}, ErrInvalidPayment
 	}
-	payment, err := signercompat.DecodePayment(paymentBytes)
+	payment, err := wire.DecodePayment(paymentBytes)
 	if err != nil {
-		return signercompat.Payment{}, signercompat.SegData{}, ErrInvalidPayment
+		return wire.Payment{}, wire.SegData{}, ErrInvalidPayment
 	}
-	segment, err := signercompat.DecodeSegData(segmentBytes)
+	segment, err := wire.DecodeSegData(segmentBytes)
 	if err != nil {
-		return signercompat.Payment{}, signercompat.SegData{}, ErrInvalidPayment
+		return wire.Payment{}, wire.SegData{}, ErrInvalidPayment
 	}
 	return payment, segment, nil
 }
@@ -211,13 +211,13 @@ func (e *Engine) Receive(ctx context.Context, runner, manifest, paymentHeader, s
 	if err != nil {
 		return ethcommon.Address{}, nil, err
 	}
-	info, err := signercompat.DecodeOrchestratorInfo(encoded)
+	info, err := wire.DecodeOrchestratorInfo(encoded)
 	if err != nil {
 		return ethcommon.Address{}, nil, err
 	}
 	sender := ethcommon.BytesToAddress(payment.Sender)
 	if storedRunner != runner || sender.Hex() != senderString || !bytes.Equal(segment.Auth.Token, info.Auth.Token) || segment.Auth.Expiration != info.Auth.Expiration || time.Now().Unix() > info.Auth.Expiration ||
-		!bytes.Equal(signercompat.EncodeTicketParams(payment.TicketParams), signercompat.EncodeTicketParams(info.TicketParams)) ||
+		!bytes.Equal(wire.EncodeTicketParams(payment.TicketParams), wire.EncodeTicketParams(info.TicketParams)) ||
 		payment.Expiration.CreationRound != info.TicketParams.Expiration.CreationRound || !bytes.Equal(payment.Expiration.CreationRoundBlockHash, info.TicketParams.Expiration.CreationRoundBlockHash) ||
 		payment.ExpectedPrice != info.Price || len(payment.SenderParams) == 0 || len(payment.SenderParams) > 100 {
 		return ethcommon.Address{}, nil, ErrInvalidPayment
@@ -357,7 +357,7 @@ func (e *Engine) Charge(ctx context.Context, manifest string, now time.Time) err
 		}
 		return err
 	}
-	info, err := signercompat.DecodeOrchestratorInfo(encoded)
+	info, err := wire.DecodeOrchestratorInfo(encoded)
 	if err != nil {
 		return err
 	}
@@ -428,6 +428,6 @@ func (e *Engine) ChallengePrice(runner, manifest string) (int64, string, error) 
 	if err := e.store.db.QueryRow("SELECT info,unit FROM payment_challenges WHERE runner=? AND manifest=?", runner, manifest).Scan(&raw, &unit); err != nil {
 		return 0, "", err
 	}
-	info, err := signercompat.DecodeOrchestratorInfo(raw)
+	info, err := wire.DecodeOrchestratorInfo(raw)
 	return info.Price.PricePerUnit, unit, err
 }
