@@ -2,14 +2,32 @@ listen = "127.0.0.1:8937"
 metrics_listen = "127.0.0.1:8938"
 auth_token_file = "/run/secrets/livepeer-signer-auth-token"
 private_key_file = "/run/secrets/livepeer-signer-key"
-state_db = "/var/lib/livepeer/signer.sqlite"
 orchestrators = []
 discovery_grants = []
 behind_tls = false
 
-# Enable on-chain sender deposit and reserve validation together.
+# Required together for paid generation; without these, payment generation
+# returns 482 while identity signing and discovery remain available.
 # rpc_url_file = "/run/secrets/livepeer-signer-rpc-url"
 # rpc_grants = []
 # rpc_ca_file = "/etc/livepeer/signer-rpc-ca.pem"
 # chain_id = "42161"
 # controller_address = "0x0123456789abcdef0123456789abcdef01234567"
+# max_live_price_usd_per_second = "0.01"
+# max_fixed_price_usd = "1"
+# Exactly one conversion source is required with paid signing:
+# wei_per_usd = "500000000000000"
+# eth_usd_feed = "0x0123456789abcdef0123456789abcdef01234567"
+# price_max_age = "2h"
+
+# Exposure limits are independent of the requested work's maxPrice.
+max_ticket_ev = "3000000000000"
+max_batch_ev = "20000000000000"
+deposit_multiplier = 1
+
+# Optional per-payment authorization. URL and JSON header map are exact-byte
+# secret files. Example header file: {"Authorization":"Bearer credential"}
+# auth_webhook_file = "/run/secrets/livepeer-signer-auth-url"
+# auth_webhook_headers_file = "/run/secrets/livepeer-signer-auth-headers"
+# auth_webhook_grants = []
+# auth_webhook_ca_file = "/etc/livepeer/auth-ca.pem"

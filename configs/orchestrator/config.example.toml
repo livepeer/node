@@ -1,6 +1,7 @@
 listen = "127.0.0.1:8935"
 metrics_listen = "127.0.0.1:8936"
 service_url = "http://127.0.0.1:8935"
+# runner_service_url = "http://127.0.0.1:8935" # Runner-facing callbacks and trickle; defaults to service_url.
 bootstrap_secret_file = "/run/secrets/livepeer-runner-bootstrap"
 runner_config = "/etc/livepeer/runners.toml"
 heartbeat_interval = "5s"
@@ -11,6 +12,7 @@ session_proxy_grants = []
 # session_proxy_ca_file = "/etc/livepeer/proxy-ca.pem"
 health_grants = []
 # health_ca_file = "/etc/livepeer/health-ca.pem"
+# proxy_url_template = "https://{proxy}.apps.example" # Default: service_url/run/{proxy}.
 behind_tls = false
 # For direct HTTPS, set both files and change service_url to https://... .
 # tls_cert_file = "/etc/livepeer/tls/fullchain.pem"
@@ -18,7 +20,8 @@ behind_tls = false
 
 # To enable paid runners, configure every field in this block. Prices sent by
 # runners are USD per hour or per fixed request; wei_per_usd is an operator
-# supplied exchange rate used at registration time.
+# supplied fixed exchange rate. Alternatively configure eth_usd_feed alone;
+# choose an ETH/USD feed on the same payment chain and verify its address.
 # payment_db = "/var/lib/livepeer/orchestrator-payment.sqlite"
 # payment_key_file = "/run/secrets/livepeer-orchestrator-key"
 # payment_rpc_url_file = "/run/secrets/livepeer-payment-rpc-url"
@@ -27,5 +30,9 @@ behind_tls = false
 # payment_chain_id = "42161"
 # payment_controller_address = "0x0123456789abcdef0123456789abcdef01234567"
 # wei_per_usd = "1000000000000000"
-# ticket_face_value = "10000000000000000"
-# ticket_win_prob = "57896044618658097711785492504343953926634992332820282019728792003956564819968"
+# eth_usd_feed = "0xYOUR_VERIFIED_ETH_USD_FEED"
+# price_max_age = "2h"
+# Ticket EV is approximately 2e11 wei; a 100-ticket batch fits the signer
+# default 2e13 wei cap. Fund sufficient deposit and recipient-claimable reserve.
+# ticket_face_value = "400000000000"
+# ticket_win_prob = "57896044618658097711785492504343953926634992332820282019728792003956564819967"
