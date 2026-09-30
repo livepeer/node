@@ -99,12 +99,13 @@ type runner struct {
 }
 
 type session struct {
-	ctx     context.Context
-	cancel  context.CancelFunc
-	ID      string
-	Token   string
-	Proxies map[string]*url.URL
-	Created time.Time
+	PriceInfo priceInfo
+	ctx       context.Context
+	cancel    context.CancelFunc
+	ID        string
+	Token     string
+	Proxies   map[string]*url.URL
+	Created   time.Time
 }
 
 type Registry struct {
@@ -367,7 +368,7 @@ func (r *Registry) ReserveWithID(id, requestedID string) (string, string, string
 		return "", "", "", http.StatusInternalServerError, err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	item.Sessions[sessionID] = &session{ID: sessionID, Token: token, Created: time.Now(), Proxies: map[string]*url.URL{}, ctx: ctx, cancel: cancel}
+	item.Sessions[sessionID] = &session{ID: sessionID, Token: token, Created: time.Now(), Proxies: map[string]*url.URL{}, ctx: ctx, cancel: cancel, PriceInfo: item.PriceInfo}
 	if r.onEvent != nil {
 		r.onEvent(id, "reserved", sessionID)
 	}
@@ -401,7 +402,7 @@ func (r *Registry) PriceForSession(id, sid string) (priceInfo, int, error) {
 	if item == nil || item.Sessions[sid] == nil {
 		return priceInfo{}, http.StatusNotFound, errors.New("session not found")
 	}
-	return item.PriceInfo, http.StatusOK, nil
+	return item.Sessions[sid].PriceInfo, http.StatusOK, nil
 }
 
 func (r *Registry) PaidSessions() []string {
@@ -409,8 +410,8 @@ func (r *Registry) PaidSessions() []string {
 	defer r.mu.Unlock()
 	var ids []string
 	for _, item := range r.runners {
-		if item.PriceInfo.Price != "" {
-			for id := range item.Sessions {
+		for id, sess := range item.Sessions {
+			if sess.PriceInfo.Price != "" {
 				ids = append(ids, id)
 			}
 		}
