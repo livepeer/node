@@ -217,9 +217,11 @@ func TestGeneratedProxyHasSeparateDestinationGrant(t *testing.T) {
 	require.Equal(t, http.StatusOK, record.Code)
 	var created struct {
 		ProxyID string `json:"proxy_id"`
+		URL     string `json:"url"`
 	}
 	require.NoError(t, json.Unmarshal(record.Body.Bytes(), &created))
 	require.NotEmpty(t, created.ProxyID)
+	require.Equal(t, "http://orchestrator.example/run/"+created.ProxyID, created.URL)
 	record = httptest.NewRecorder()
 	srv.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/run/"+created.ProxyID, nil))
 	require.Equal(t, http.StatusBadGateway, record.Code)
@@ -228,6 +230,9 @@ func TestGeneratedProxyHasSeparateDestinationGrant(t *testing.T) {
 	srv = NewServer(registry, runnerPolicy, granted, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	record = httptest.NewRecorder()
 	srv.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/run/"+created.ProxyID, nil))
+	require.Equal(t, http.StatusOK, record.Code)
+	record = httptest.NewRecorder()
+	srv.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/proxy/"+created.ProxyID, nil))
 	require.Equal(t, http.StatusOK, record.Code)
 }
 

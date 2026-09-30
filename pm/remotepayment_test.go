@@ -29,3 +29,30 @@ func TestMakeRemoteBatchRejectsExcessiveMint(t *testing.T) {
 	_, _, err := MakeRemoteBatch(params, batchTestSigner{}, 0, big.NewRat(101, 1), big.NewRat(0, 1))
 	require.ErrorContains(t, err, "exceeds 100")
 }
+
+func TestRemoteBatchSizeMinimumTicketCredit(t *testing.T) {
+	params := TicketParams{FaceValue: big.NewInt(10), WinProb: new(big.Int).Sub(maxWinProb, big.NewInt(1))}
+	ev := ticketEV(params.FaceValue, params.WinProb)
+	count, err := RemoteBatchSize(params, big.NewRat(2, 1), big.NewRat(5, 1))
+	require.NoError(t, err)
+	require.Equal(t, 1, count)
+
+	// At the EV floor no new ticket is needed, even though the saved credit
+	// can still pay a smaller fee. This is the retained 482 behavior.
+	_, err = RemoteBatchSize(params, big.NewRat(2, 1), ev)
+	require.ErrorIs(t, err, ErrNoTickets)
+	count, err = RemoteBatchSize(params, big.NewRat(2, 1), big.NewRat(2, 1))
+	require.NoError(t, err)
+	require.Equal(t, 1, count)
+
+	// Once the fee exceeds EV, ticket count is the exact ceiling of shortfall/EV.
+	fee := new(big.Rat).Mul(ev, big.NewRat(3, 1))
+	count, err = RemoteBatchSize(params, fee, ev)
+	require.NoError(t, err)
+	require.Equal(t, 2, count)
+	_, err = RemoteBatchSize(params, fee, fee)
+	require.ErrorIs(t, err, ErrNoTickets)
+	count, err = RemoteBatchSize(params, fee, new(big.Rat).Sub(fee, big.NewRat(1, 1)))
+	require.NoError(t, err)
+	require.Equal(t, 1, count)
+}

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -17,9 +18,9 @@ import (
 )
 
 func TestRunnerFacingAddressKeepsPublicAndInternalURLsSeparate(t *testing.T) {
-	var controlHeader string
+	controlHeaders := make(chan string, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		controlHeader = r.Header.Get("Livepeer-Session-Control")
+		controlHeaders <- r.Header.Get("Livepeer-Session-Control")
 		_, _ = io.WriteString(w, "ok")
 	}))
 	defer upstream.Close()
@@ -63,6 +64,7 @@ func TestRunnerFacingAddressKeepsPublicAndInternalURLsSeparate(t *testing.T) {
 	w = httptest.NewRecorder()
 	s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, reservation.AppURL+"/hello", nil))
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	controlHeader := <-controlHeaders
 	require.Equal(t, "http://runner.internal/internal/runner/r/session/"+reservation.SessionID, controlHeader)
 	_, token, _, err := registry.sessionTarget("r", reservation.SessionID)
 	require.NoError(t, err)
@@ -114,7 +116,7 @@ func TestO2RKeepaliveRepeatsUntilShutdown(t *testing.T) {
 	defer func() { cancel(); <-done }()
 	client := &http.Client{Timeout: time.Second}
 	for seq := range 2 {
-		response, err := client.Get(server.URL + "/ai/trickle/" + registration.O2R.ChannelName + "/" + string(rune('0'+seq)))
+		response, err := client.Get(server.URL + "/ai/trickle/" + registration.O2R.ChannelName + "/" + strconv.Itoa(seq))
 		require.NoError(t, err)
 		require.Equal(t, http.StatusOK, response.StatusCode)
 		var message map[string]string
@@ -122,6 +124,12 @@ func TestO2RKeepaliveRepeatsUntilShutdown(t *testing.T) {
 		require.NoError(t, response.Body.Close())
 		require.Equal(t, map[string]string{"keep": "alive"}, message)
 	}
+	_, err = registry.Unregister(registration.RunnerID, registration.HeartbeatSecret)
+	require.NoError(t, err)
+	response, err := client.Get(server.URL + "/ai/trickle/" + registration.O2R.ChannelName + "/2")
+	require.NoError(t, err)
+	require.Equal(t, http.StatusNotFound, response.StatusCode)
+	require.NoError(t, response.Body.Close())
 }
 
 func TestRunnerServiceURLValidation(t *testing.T) {
