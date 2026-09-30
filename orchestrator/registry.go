@@ -109,6 +109,7 @@ type session struct {
 }
 
 type Registry struct {
+	runnerService string
 	proxyTemplate string
 	closed        bool
 	mu            sync.Mutex
@@ -170,7 +171,12 @@ func equalSecret(a, b string) bool {
 	return a != "" && b != "" && subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
-func validateHeartbeat(req heartbeatRequest) error {
+func validateHeartbeat(req *heartbeatRequest) error {
+	if req.Capacity == 0 {
+		req.Capacity = 1
+	}
+	req.PriceInfo.Unit = strings.ToLower(strings.TrimSpace(req.PriceInfo.Unit))
+	req.PriceInfo.Currency = strings.ToLower(strings.TrimSpace(req.PriceInfo.Currency))
 	if req.RunnerID != "" && !validRouteID(req.RunnerID) {
 		return errors.New("runner_id must contain only ASCII letters, digits, '-' or '_' and be at most 128 bytes")
 	}
@@ -207,7 +213,7 @@ func validRouteID(id string) bool {
 }
 
 func (r *Registry) Heartbeat(req heartbeatRequest, auth string) (heartbeatResponse, int, error) {
-	if err := validateHeartbeat(req); err != nil {
+	if err := validateHeartbeat(&req); err != nil {
 		return heartbeatResponse{}, http.StatusBadRequest, err
 	}
 	if err := r.normalizePrice(&req.PriceInfo); err != nil {
@@ -260,7 +266,7 @@ func (r *Registry) Heartbeat(req heartbeatRequest, auth string) (heartbeatRespon
 	for id := range current.Sessions {
 		ids = append(ids, id)
 	}
-	resp := heartbeatResponse{RunnerID: req.RunnerID, Orchestrator: r.service, HeartbeatInterval: r.interval.String(), HeartbeatTTL: r.ttl.String(), SessionIDs: ids}
+	resp := heartbeatResponse{RunnerID: req.RunnerID, Orchestrator: r.runnerServiceURL(), HeartbeatInterval: r.interval.String(), HeartbeatTTL: r.ttl.String(), SessionIDs: ids}
 	if initial {
 		resp.HeartbeatSecret = current.Credential
 	}
@@ -550,7 +556,7 @@ func (r *Registry) AddStatic(config StaticRunner) error {
 		return errors.New("static runner id must be a route-safe identifier")
 	}
 	req := heartbeatRequest{RunnerID: config.ID, Label: config.Label, Proxy: config.Proxy, RunnerURL: config.RunnerURL, Version: config.Version, Metadata: config.Metadata, GPU: config.GPU, App: config.App, Mode: config.Mode, Status: config.Status, Capacity: config.Capacity, PriceInfo: config.PriceInfo}
-	if err := validateHeartbeat(req); err != nil {
+	if err := validateHeartbeat(&req); err != nil {
 		return fmt.Errorf("static runner %s: %w", config.ID, err)
 	}
 	if err := r.normalizePrice(&req.PriceInfo); err != nil {
@@ -674,4 +680,11 @@ func (r *Registry) Close() {
 type sessionProxy struct {
 	target *url.URL
 	runner bool
+}
+
+func (r *Registry) runnerServiceURL() string {
+	if r.runnerService != "" {
+		return r.runnerService
+	}
+	return r.service
 }
