@@ -1,12 +1,12 @@
-// Package signercompat preserves the retained fields and field numbers of the
+// Package wire preserves the retained fields and field numbers of the
 // legacy unversioned remote-signer Protobuf envelopes. Unknown fields are
 // skipped so current Go and Python runner clients can send their full messages.
 package signercompat
 
 import (
 	"errors"
-	"fmt"
 	"math"
+	"unicode/utf8"
 
 	"google.golang.org/protobuf/encoding/protowire"
 )
@@ -66,7 +66,7 @@ func each(data []byte, fn func(protowire.Number, protowire.Type, []byte, uint64)
 	}
 	for len(data) > 0 {
 		number, wireType, n := protowire.ConsumeTag(data)
-		if n < 0 {
+		if n < 0 || number > protowire.MaxValidNumber {
 			return errors.New("invalid Protobuf tag")
 		}
 		data = data[n:]
@@ -99,19 +99,17 @@ func bytesField(number protowire.Number, value []byte) []byte {
 func intField(number protowire.Number, value uint64) []byte {
 	return protowire.AppendVarint(protowire.AppendTag(nil, number, protowire.VarintType), value)
 }
-func fieldBytes(want protowire.Type, got protowire.Type) error {
-	if got != want {
-		return fmt.Errorf("invalid Protobuf wire type: expected %d", want)
-	}
-	return nil
-}
-
 func DecodePrice(data []byte) (PriceInfo, error) {
 	var p PriceInfo
-	err := each(data, func(n protowire.Number, typ protowire.Type, _ []byte, v uint64) error {
+	err := p.decode(data)
+	return p, err
+}
+
+func (p *PriceInfo) decode(data []byte) error {
+	return each(data, func(n protowire.Number, typ protowire.Type, _ []byte, v uint64) error {
 		if n == 1 || n == 2 {
-			if err := fieldBytes(protowire.VarintType, typ); err != nil {
-				return err
+			if typ != protowire.VarintType {
+				return nil
 			}
 			if n == 1 {
 				p.PricePerUnit = int64(v)
@@ -121,7 +119,6 @@ func DecodePrice(data []byte) (PriceInfo, error) {
 		}
 		return nil
 	})
-	return p, err
 }
 func EncodePrice(p PriceInfo) []byte {
 	return append(intField(1, uint64(p.PricePerUnit)), intField(2, uint64(p.UnitsPerPrice))...)
@@ -129,22 +126,26 @@ func EncodePrice(p PriceInfo) []byte {
 
 func DecodeExpiration(data []byte) (ExpirationParams, error) {
 	var e ExpirationParams
-	err := each(data, func(n protowire.Number, typ protowire.Type, b []byte, v uint64) error {
+	err := e.decode(data)
+	return e, err
+}
+
+func (e *ExpirationParams) decode(data []byte) error {
+	return each(data, func(n protowire.Number, typ protowire.Type, b []byte, v uint64) error {
 		switch n {
 		case 1:
-			if err := fieldBytes(protowire.VarintType, typ); err != nil {
-				return err
+			if typ != protowire.VarintType {
+				return nil
 			}
 			e.CreationRound = int64(v)
 		case 2:
-			if err := fieldBytes(protowire.BytesType, typ); err != nil {
-				return err
+			if typ != protowire.BytesType {
+				return nil
 			}
 			e.CreationRoundBlockHash = append([]byte(nil), b...)
 		}
 		return nil
 	})
-	return e, err
 }
 func EncodeExpiration(e ExpirationParams) []byte {
 	return append(intField(1, uint64(e.CreationRound)), bytesField(2, e.CreationRoundBlockHash)...)
@@ -152,12 +153,17 @@ func EncodeExpiration(e ExpirationParams) []byte {
 
 func DecodeTicketParams(data []byte) (TicketParams, error) {
 	var p TicketParams
-	err := each(data, func(n protowire.Number, typ protowire.Type, b []byte, _ uint64) error {
+	err := p.decode(data)
+	return p, err
+}
+
+func (p *TicketParams) decode(data []byte) error {
+	return each(data, func(n protowire.Number, typ protowire.Type, b []byte, _ uint64) error {
 		if n < 1 || n > 7 {
 			return nil
 		}
-		if err := fieldBytes(protowire.BytesType, typ); err != nil {
-			return err
+		if typ != protowire.BytesType {
+			return nil
 		}
 		switch n {
 		case 1:
@@ -173,13 +179,10 @@ func DecodeTicketParams(data []byte) (TicketParams, error) {
 		case 6:
 			p.ExpirationBlock = append([]byte(nil), b...)
 		case 7:
-			var err error
-			p.Expiration, err = DecodeExpiration(b)
-			return err
+			return p.Expiration.decode(b)
 		}
 		return nil
 	})
-	return p, err
 }
 func EncodeTicketParams(p TicketParams) []byte {
 	var out []byte
@@ -191,26 +194,33 @@ func EncodeTicketParams(p TicketParams) []byte {
 
 func DecodeAuthToken(data []byte) (AuthToken, error) {
 	var a AuthToken
-	err := each(data, func(n protowire.Number, typ protowire.Type, b []byte, v uint64) error {
+	err := a.decode(data)
+	return a, err
+}
+
+func (a *AuthToken) decode(data []byte) error {
+	return each(data, func(n protowire.Number, typ protowire.Type, b []byte, v uint64) error {
 		switch n {
 		case 1, 2:
-			if err := fieldBytes(protowire.BytesType, typ); err != nil {
-				return err
+			if typ != protowire.BytesType {
+				return nil
 			}
 			if n == 1 {
 				a.Token = append([]byte(nil), b...)
 			} else {
+				if !utf8.Valid(b) {
+					return errors.New("invalid Protobuf UTF-8")
+				}
 				a.SessionID = string(b)
 			}
 		case 3:
-			if err := fieldBytes(protowire.VarintType, typ); err != nil {
-				return err
+			if typ != protowire.VarintType {
+				return nil
 			}
 			a.Expiration = int64(v)
 		}
 		return nil
 	})
-	return a, err
 }
 func EncodeAuthToken(a AuthToken) []byte {
 	out := append(bytesField(1, a.Token), bytesField(2, []byte(a.SessionID))...)
@@ -219,34 +229,35 @@ func EncodeAuthToken(a AuthToken) []byte {
 
 func DecodeOrchestratorInfo(data []byte) (OrchestratorInfo, error) {
 	var o OrchestratorInfo
-	err := each(data, func(n protowire.Number, typ protowire.Type, b []byte, _ uint64) error {
-		if n < 1 || n > 6 {
+	err := o.decode(data)
+	return o, err
+}
+
+func (o *OrchestratorInfo) decode(data []byte) error {
+	return each(data, func(n protowire.Number, typ protowire.Type, b []byte, _ uint64) error {
+		if n < 1 || n > 6 || n == 5 {
 			return nil
 		}
-		if err := fieldBytes(protowire.BytesType, typ); err != nil {
-			return err
+		if typ != protowire.BytesType {
+			return nil
 		}
 		switch n {
 		case 1:
+			if !utf8.Valid(b) {
+				return errors.New("invalid Protobuf UTF-8")
+			}
 			o.Transcoder = string(b)
 		case 2:
-			var err error
-			o.TicketParams, err = DecodeTicketParams(b)
-			return err
+			return o.TicketParams.decode(b)
 		case 3:
-			var err error
-			o.Price, err = DecodePrice(b)
-			return err
+			return o.Price.decode(b)
 		case 4:
 			o.Address = append([]byte(nil), b...)
 		case 6:
-			var err error
-			o.Auth, err = DecodeAuthToken(b)
-			return err
+			return o.Auth.decode(b)
 		}
 		return nil
 	})
-	return o, err
 }
 func EncodeOrchestratorInfo(o OrchestratorInfo) []byte {
 	var out []byte
@@ -259,39 +270,40 @@ func EncodeOrchestratorInfo(o OrchestratorInfo) []byte {
 
 func DecodePayment(data []byte) (Payment, error) {
 	var p Payment
-	err := each(data, func(n protowire.Number, typ protowire.Type, b []byte, _ uint64) error {
+	err := p.decode(data)
+	return p, err
+}
+
+func (p *Payment) decode(data []byte) error {
+	return each(data, func(n protowire.Number, typ protowire.Type, b []byte, _ uint64) error {
 		if n < 1 || n > 5 {
 			return nil
 		}
-		if err := fieldBytes(protowire.BytesType, typ); err != nil {
-			return err
+		if typ != protowire.BytesType {
+			return nil
 		}
 		switch n {
 		case 1:
-			var err error
-			p.TicketParams, err = DecodeTicketParams(b)
-			return err
+			return p.TicketParams.decode(b)
 		case 2:
 			p.Sender = append([]byte(nil), b...)
 		case 3:
-			var err error
-			p.Expiration, err = DecodeExpiration(b)
-			return err
+			return p.Expiration.decode(b)
 		case 4:
 			var sp TicketSenderParams
 			err := each(b, func(k protowire.Number, typ protowire.Type, b []byte, v uint64) error {
 				switch k {
 				case 1:
-					if err := fieldBytes(protowire.VarintType, typ); err != nil {
-						return err
+					if typ != protowire.VarintType {
+						return nil
 					}
 					if v > math.MaxUint32 {
 						return errors.New("sender nonce exceeds uint32")
 					}
 					sp.SenderNonce = uint32(v)
 				case 2:
-					if err := fieldBytes(protowire.BytesType, typ); err != nil {
-						return err
+					if typ != protowire.BytesType {
+						return nil
 					}
 					sp.Sig = append([]byte(nil), b...)
 				}
@@ -302,13 +314,10 @@ func DecodePayment(data []byte) (Payment, error) {
 			}
 			p.SenderParams = append(p.SenderParams, sp)
 		case 5:
-			var err error
-			p.ExpectedPrice, err = DecodePrice(b)
-			return err
+			return p.ExpectedPrice.decode(b)
 		}
 		return nil
 	})
-	return p, err
 }
 func EncodePayment(p Payment) []byte {
 	var out []byte
@@ -324,12 +333,17 @@ func EncodePayment(p Payment) []byte {
 
 func DecodeSegData(data []byte) (SegData, error) {
 	var s SegData
-	err := each(data, func(n protowire.Number, typ protowire.Type, b []byte, _ uint64) error {
+	err := s.decode(data)
+	return s, err
+}
+
+func (s *SegData) decode(data []byte) error {
+	return each(data, func(n protowire.Number, typ protowire.Type, b []byte, _ uint64) error {
 		if n != 1 && n != 3 && n != 5 && n != 8 {
 			return nil
 		}
-		if err := fieldBytes(protowire.BytesType, typ); err != nil {
-			return err
+		if typ != protowire.BytesType {
+			return nil
 		}
 		switch n {
 		case 1:
@@ -339,13 +353,10 @@ func DecodeSegData(data []byte) (SegData, error) {
 		case 5:
 			s.Signature = append([]byte(nil), b...)
 		case 8:
-			var err error
-			s.Auth, err = DecodeAuthToken(b)
-			return err
+			return s.Auth.decode(b)
 		}
 		return nil
 	})
-	return s, err
 }
 func EncodeSegData(s SegData) []byte {
 	var out []byte
