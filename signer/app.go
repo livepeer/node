@@ -101,12 +101,11 @@ func Serve(p Params) error {
 	if err != nil {
 		return err
 	}
-	store, err := openStateStore(p.StateDB)
+	service, err := NewService(key, p.AuthToken)
 	if err != nil {
 		return err
 	}
-	defer store.close()
-	service := NewService(key, store, p.AuthToken)
+	defer service.Close()
 	if p.RPCURL != "" {
 		rpc, err := eth.OpenRPC(p.RPCURL, p.RPCGrants, p.RPCCAFile)
 		if err != nil {

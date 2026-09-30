@@ -1,6 +1,8 @@
 package signer
 
 import (
+	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
@@ -11,6 +13,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -25,7 +28,6 @@ type signedState struct {
 	State []byte `json:"state"`
 	Sig   []byte `json:"sig"`
 }
-
 type paymentRequest struct {
 	State        signedState `json:"state"`
 	Orchestrator []byte      `json:"orchestrator"`
@@ -46,16 +48,24 @@ type Service struct {
 	authURL, authPolicy string
 	authHeaders         map[string]string
 	key                 *eth.Key
-	store               *stateStore
 	authToken           string
 	mux                 *http.ServeMux
 	discoveryURLs       []string
 	discoveryClient     *http.Client
 	paymentChain        pm.SenderChain
 	senderPolicy        pm.SenderPolicy
+	slots               chan struct{}
 }
 
 func (s *Service) SetPaymentChain(chain pm.SenderChain) { s.paymentChain = chain }
+
+func (s *Service) SetSenderPolicy(policy pm.SenderPolicy) error {
+	if err := policy.Validate(); err != nil {
+		return err
+	}
+	s.senderPolicy = policy
+	return nil
+}
 
 func (s *Service) SetDiscovery(orchestrators, grants []string, caFile string) error {
 	policy, err := destination.New("signer-discovery", grants)
@@ -82,18 +92,25 @@ func (s *Service) SetDiscovery(orchestrators, grants []string, caFile string) er
 	return nil
 }
 
-func OpenService(key *eth.Key, statePath, authToken string) (*Service, error) {
-	store, err := openStateStore(statePath)
-	if err != nil {
-		return nil, err
+func NewService(key *eth.Key, authToken string) (*Service, error) {
+	if key == nil {
+		return nil, errors.New("signer key is required")
 	}
-	return NewService(key, store, authToken), nil
+	return newService(key, authToken), nil
 }
 
-func (s *Service) Close() error { return s.store.close() }
+func (s *Service) Close() error {
+	if s.discoveryClient != nil {
+		s.discoveryClient.CloseIdleConnections()
+	}
+	if s.authClient != nil {
+		s.authClient.CloseIdleConnections()
+	}
+	return nil
+}
 
-func NewService(key *eth.Key, store *stateStore, authToken string) *Service {
-	s := &Service{key: key, store: store, authToken: authToken, mux: http.NewServeMux(), senderPolicy: pm.DefaultSenderPolicy()}
+func newService(key *eth.Key, authToken string) *Service {
+	s := &Service{key: key, authToken: authToken, mux: http.NewServeMux(), senderPolicy: pm.DefaultSenderPolicy(), slots: make(chan struct{}, 64)}
 	s.mux.HandleFunc("POST /sign-orchestrator-info", s.signInfo)
 	s.mux.HandleFunc("POST /generate-live-payment", s.generate)
 	s.mux.HandleFunc("GET /discover-orchestrators", s.discover)
@@ -101,10 +118,21 @@ func NewService(key *eth.Key, store *stateStore, authToken string) *Service {
 }
 func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if s.authToken != "" && subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte("Bearer "+s.authToken)) != 1 {
+		w.Header().Set("Connection", "close")
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	s.mux.ServeHTTP(w, r)
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(5 * time.Second))
+	select {
+	case s.slots <- struct{}{}:
+		defer func() { <-s.slots }()
+	default:
+		signerError(w, http.StatusServiceUnavailable, "signer busy")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	s.mux.ServeHTTP(w, r.WithContext(ctx))
 }
 func signerError(w http.ResponseWriter, status int, reason string) {
 	w.Header().Set("Content-Type", "application/json")
@@ -159,6 +187,7 @@ func (s *Service) discover(w http.ResponseWriter, r *http.Request) {
 	}
 	appFilter := r.URL.Query()["app"]
 	gpuFilter := r.URL.Query()["gpu"]
+	available := false
 	result := make([]discoveredOrchestrator, 0, len(s.discoveryURLs))
 	for _, endpoint := range s.discoveryURLs {
 		u, err := url.Parse(endpoint)
@@ -194,6 +223,7 @@ func (s *Service) discover(w http.ResponseWriter, r *http.Request) {
 		if decodeErr != nil {
 			continue
 		}
+		available = true
 		for _, entry := range entries {
 			if _, err := destination.ValidateURL(entry.Address); err != nil {
 				continue
@@ -204,13 +234,7 @@ func (s *Service) discover(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 				if len(appFilter) > 0 {
-					match := false
-					for _, app := range appFilter {
-						if runner.App == app {
-							match = true
-							break
-						}
-					}
+					match := slices.Contains(appFilter, runner.App)
 					if !match {
 						continue
 					}
@@ -220,13 +244,7 @@ func (s *Service) discover(w http.ResponseWriter, r *http.Request) {
 					if runner.GPU != nil {
 						name = strings.TrimSpace(runner.GPU.Name)
 					}
-					match := false
-					for _, gpu := range gpuFilter {
-						if name == gpu {
-							match = true
-							break
-						}
-					}
+					match := slices.Contains(gpuFilter, name)
 					if !match {
 						continue
 					}
@@ -238,7 +256,7 @@ func (s *Service) discover(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if len(result) == 0 {
+	if !available {
 		signerError(w, http.StatusServiceUnavailable, "orchestrator discovery unavailable")
 		return
 	}
@@ -267,11 +285,11 @@ func checkMaxPrice(req paymentRequest, price signercompat.PriceInfo) error {
 		return nil
 	}
 	ceiling, ok := new(big.Rat).SetString(req.MaxPrice.Price.String())
-	if !ok || ceiling.Sign() <= 0 || req.MaxPrice.Currency != "wei" {
+	if !ok || ceiling.Sign() <= 0 || strings.ToLower(strings.TrimSpace(req.MaxPrice.Currency)) != "wei" {
 		return invalid("maxPrice requires a positive wei price")
 	}
 	unit := map[string]string{"live": "seconds", "fixed": "fixed"}[req.Type]
-	if req.MaxPrice.Unit != unit {
+	if strings.ToLower(strings.TrimSpace(req.MaxPrice.Unit)) != unit {
 		return invalid("maxPrice unit does not match payment type")
 	}
 	actual := new(big.Rat).SetFrac64(price.PricePerUnit, price.UnitsPerPrice)
@@ -305,13 +323,13 @@ func (s *Service) generate(w http.ResponseWriter, r *http.Request) {
 		signerError(w, 400, "invalid orchestrator Protobuf")
 		return
 	}
-	if len(info.Address) != 20 || info.Price.PricePerUnit <= 0 || info.Price.UnitsPerPrice <= 0 || len(info.TicketParams.Recipient) != 20 || len(info.TicketParams.RecipientRandHash) != 32 || info.Auth.SessionID == "" {
+	if !bytes.Equal(info.Address, info.TicketParams.Recipient) || len(info.Auth.Token) == 0 || len(info.TicketParams.Expiration.CreationRoundBlockHash) != 32 || len(info.Address) != 20 || info.Price.PricePerUnit <= 0 || info.Price.UnitsPerPrice <= 0 || len(info.TicketParams.Recipient) != 20 || len(info.TicketParams.RecipientRandHash) != 32 || info.Auth.SessionID == "" {
 		signerError(w, 400, "incomplete or expired orchestrator payment params")
 		return
 	}
-	if info.Auth.Expiration <= time.Now().Unix() {
+	if info.Auth.Expiration <= time.Now().Add(time.Minute).Unix() {
 		w.Header().Set("Livepeer-Orchestrator-URL", info.Transcoder)
-		signerError(w, 480, "refresh session for remote signer")
+		signerError(w, 480, "refresh expired orchestrator authentication")
 		return
 	}
 	if req.ManifestID == "" {
@@ -322,8 +340,7 @@ func (s *Service) generate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := checkMaxPrice(req, info.Price); err != nil {
-		var f paymentFailure
-		if errors.As(err, &f) {
+		if f, ok := errors.AsType[paymentFailure](err); ok {
 			signerError(w, f.status, f.reason)
 		} else {
 			signerError(w, 400, err.Error())
@@ -355,21 +372,15 @@ func (s *Service) generate(w http.ResponseWriter, r *http.Request) {
 		}
 		state = paymentState{StateID: id, OrchestratorAddress: address, App: req.App, Type: req.Type, ManifestID: req.ManifestID, InitialPricePerUnit: info.Price.PricePerUnit, InitialPixelsPerUnit: info.Price.UnitsPerPrice}
 	}
-
 	if state.InitialPricePerUnit <= 0 || state.InitialPixelsPerUnit <= 0 || new(big.Rat).SetFrac64(info.Price.PricePerUnit, info.Price.UnitsPerPrice).Cmp(new(big.Rat).SetFrac64(state.InitialPricePerUnit, state.InitialPixelsPerUnit)) > 0 {
 		signerError(w, 481, "orchestrator price exceeds initial session price")
 		return
 	}
-	if err := s.authorizePayment(r, req, info.Price, &state); err != nil {
-		var f paymentFailure
-		if errors.As(err, &f) {
-			signerError(w, f.status, f.reason)
-		} else {
-			signerError(w, 500, "payment authorization failed")
-		}
+	if identity := r.Header.Get("Signer-Auth-Id"); identity != "" && state.AuthID != "" && identity != state.AuthID {
+		signerError(w, 403, "signer auth ID changed")
 		return
 	}
-	response, err := s.store.apply(state.StateID, oldSequence, body, func() ([]byte, error) { return s.makePayment(r.Context(), req, info, state, oldSequence) })
+	draft, err := s.makePayment(r.Context(), req, info, state, oldSequence)
 	if err != nil {
 		var f paymentFailure
 		switch {
@@ -378,13 +389,49 @@ func (s *Service) generate(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Livepeer-Orchestrator-URL", info.Transcoder)
 			}
 			signerError(w, f.status, f.reason)
-		case errors.Is(err, errStateConflict):
-			signerError(w, 409, err.Error())
 		default:
 			signerError(w, 500, "payment generation failed")
 		}
 		return
 	}
+	if err := s.authorizePayment(r, req, info.Price, &draft.State); err != nil {
+		if f, ok := errors.AsType[paymentFailure](err); ok {
+			signerError(w, f.status, f.reason)
+		} else {
+			signerError(w, 500, "payment authorization failed")
+		}
+		return
+	}
+	stateBytes, err := json.Marshal(draft.State)
+	if err != nil {
+		signerError(w, 500, "payment state encoding failed")
+		return
+	}
+	stateSig, err := s.key.SignMessage(stateBytes)
+	if err != nil {
+		signerError(w, 500, "payment state signing failed")
+		return
+	}
+	response, err := json.Marshal(paymentResponse{Payment: draft.Payment, SegCreds: draft.SegCreds, State: signedState{State: stateBytes, Sig: stateSig}})
+	if err != nil {
+		signerError(w, 500, "payment response encoding failed")
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(response)
+}
+
+func (s *Service) makePayment(ctx context.Context, req paymentRequest, info signercompat.OrchestratorInfo, state paymentState, oldSequence int64) (paymentDraft, error) {
+	payment, err := (remoteSender{Signer: s.key, Chain: s.paymentChain, Policy: s.senderPolicy}).Generate(ctx, req.Type, req.ManifestID, info, state, oldSequence)
+	if err != nil {
+		switch {
+		case errors.Is(err, pm.ErrRefreshRequired):
+			return paymentDraft{}, paymentFailure{480, err.Error()}
+		case errors.Is(err, pm.ErrNoTickets), errors.Is(err, pm.ErrSenderUnavailable):
+			return paymentDraft{}, paymentFailure{482, err.Error()}
+		default:
+			return paymentDraft{}, invalid(err.Error())
+		}
+	}
+	return payment, nil
 }

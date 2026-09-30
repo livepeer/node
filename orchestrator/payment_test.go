@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -32,10 +33,13 @@ type paymentTestChain struct{}
 func (paymentTestChain) Snapshot(context.Context) (pm.ChainSnapshot, error) {
 	return pm.ChainSnapshot{Block: big.NewInt(50), Round: big.NewInt(5), RoundHash: ethcommon.HexToHash("0x1234")}, nil
 }
-func (paymentTestChain) ValidateSender(context.Context, ethcommon.Address, *big.Int) error {
-	return nil
+func (c paymentTestChain) SenderInfo(ctx context.Context, _, _ ethcommon.Address) (eth.SenderInfo, error) {
+	snapshot, err := c.Snapshot(ctx)
+	return eth.SenderInfo{Snapshot: snapshot, Deposit: big.NewInt(1000000000), Reserve: big.NewInt(1000000000), WithdrawRound: new(big.Int)}, err
 }
-func (paymentTestChain) IsActive(context.Context, ethcommon.Address) (bool, error) { return true, nil }
+func (paymentTestChain) IsActiveAt(context.Context, ethcommon.Address, pm.ChainSnapshot) (bool, error) {
+	return true, nil
+}
 
 func paymentTestKey(t *testing.T) *eth.Key {
 	t.Helper()
@@ -57,7 +61,7 @@ func TestPaidFixedSessionWithRemoteSigner(t *testing.T) {
 	require.NoError(t, err)
 	defer store.Close()
 	max := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
-	engine, err := pm.NewEngine(store, paymentTestChain{}, recipient.Address(), big.NewInt(10), new(big.Int).Sub(max, big.NewInt(1)))
+	engine, err := pm.NewEngine(store, paymentTestChain{}, recipient.Address(), big.NewInt(11), new(big.Int).Sub(max, big.NewInt(1)))
 	require.NoError(t, err)
 	registry := NewRegistry("bootstrap", "http://127.0.0.1:8935", time.Second, 30*time.Second)
 	registry.SetWeiPerUSD(big.NewRat(10, 1))
@@ -69,7 +73,7 @@ func TestPaidFixedSessionWithRemoteSigner(t *testing.T) {
 	require.NoError(t, err)
 	server := NewServer(registry, policy, policy, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	server.SetPayment(engine)
-	signerService, err := signer.OpenService(payer, filepath.Join(t.TempDir(), "signer.sqlite"), "")
+	signerService, err := signer.NewService(payer, "")
 	require.NoError(t, err)
 	defer signerService.Close()
 	signerService.SetPaymentChain(paymentTestChain{})
@@ -93,6 +97,10 @@ func TestPaidFixedSessionWithRemoteSigner(t *testing.T) {
 		SegCreds string `json:"segCreds"`
 	}
 	require.NoError(t, json.Unmarshal(signed.Body.Bytes(), &payment))
+	// A quote already issued to the payer remains valid when a heartbeat
+	// changes the advertised price before the reservation is paid.
+	_, _, err = registry.Heartbeat(heartbeatRequest{RunnerID: "runner1", RunnerURL: "http://127.0.0.1:9000", App: "demo", Mode: "persistent", Capacity: 1, PriceInfo: priceInfo{Price: "2", Currency: "usd", Unit: "fixed"}}, resp.HeartbeatSecret)
+	require.NoError(t, err)
 	paid := httptest.NewRequest(http.MethodPost, reserveURL, nil)
 	paid.Header.Set("Livepeer-Payment", payment.Payment)
 	paid.Header.Set("Livepeer-Segment", payment.SegCreds)
@@ -102,9 +110,12 @@ func TestPaidFixedSessionWithRemoteSigner(t *testing.T) {
 	var reservation map[string]string
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &reservation))
 	require.Equal(t, challenge.ManifestID, reservation["session_id"])
+	pinned, _, err := registry.PriceForSession("runner1", challenge.ManifestID)
+	require.NoError(t, err)
+	require.Equal(t, "10", pinned.Price.String())
 	balance, err := engine.Balance(challenge.ManifestID)
 	require.NoError(t, err)
-	require.Zero(t, balance.Sign())
+	require.True(t, balance.Sign() >= 0 && balance.Cmp(big.NewRat(1, 1)) < 0)
 	count, err := store.WinningTicketCount(payer.Address(), 0)
 	require.NoError(t, err)
 	require.Equal(t, 1, count)
@@ -140,7 +151,7 @@ func TestPinnedPythonPaidSingleShot(t *testing.T) {
 	require.NoError(t, err)
 	defer store.Close()
 	max := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
-	engine, err := pm.NewEngine(store, paymentTestChain{}, recipient.Address(), big.NewInt(10), new(big.Int).Sub(max, big.NewInt(1)))
+	engine, err := pm.NewEngine(store, paymentTestChain{}, recipient.Address(), big.NewInt(11), new(big.Int).Sub(max, big.NewInt(1)))
 	require.NoError(t, err)
 	registry := NewRegistry("", "http://127.0.0.1:0", time.Second, 30*time.Second)
 	registry.SetWeiPerUSD(big.NewRat(10, 1))
@@ -154,7 +165,7 @@ func TestPinnedPythonPaidSingleShot(t *testing.T) {
 	defer orch.Close()
 	registry.service = "http://" + orch.Listener.Addr().String()
 	orch.Start()
-	signerService, err := signer.OpenService(payer, filepath.Join(t.TempDir(), "signer.sqlite"), "")
+	signerService, err := signer.NewService(payer, "")
 	require.NoError(t, err)
 	defer signerService.Close()
 	signerService.SetPaymentChain(paymentTestChain{})
@@ -185,7 +196,7 @@ func TestPinnedPythonSignerDiscovery(t *testing.T) {
 	defer orch.Close()
 	registry.service = "http://" + orch.Listener.Addr().String()
 	orch.Start()
-	signerService, err := signer.OpenService(paymentTestKey(t), filepath.Join(t.TempDir(), "signer.sqlite"), "")
+	signerService, err := signer.NewService(paymentTestKey(t), "")
 	require.NoError(t, err)
 	defer signerService.Close()
 	signerService.SetPaymentChain(paymentTestChain{})
@@ -222,6 +233,13 @@ func pinnedPythonSDK(t *testing.T) (python, export, root string) {
 	revision, err := exec.Command("git", "-C", sdkDir, "rev-parse", "HEAD").Output()
 	require.NoError(t, err)
 	require.Equal(t, "44df06157fcdb864e37d971e8caba86b2a7dc92e", strings.TrimSpace(string(revision)))
+	t.Attr("python_sdk_revision", strings.TrimSpace(string(revision)))
+	t.Setenv("PYTHONDONTWRITEBYTECODE", "1")
+	if os.Getenv("PYTHON_RUNNER_USE_WORKING_TREE") == "1" {
+		t.Attr("python_sdk_tree", "working-copy")
+		return python, sdkDir, root
+	}
+	t.Attr("python_sdk_tree", "committed")
 	export = t.TempDir()
 	archive := exec.Command("git", "-C", sdkDir, "archive", "HEAD")
 	tar := exec.Command("tar", "-xf", "-", "-C", export)
@@ -234,11 +252,70 @@ func pinnedPythonSDK(t *testing.T) (python, export, root string) {
 	return
 }
 
-func (c paymentTestChain) SenderInfo(ctx context.Context, _, _ ethcommon.Address) (eth.SenderInfo, error) {
+type advancingPaymentChain struct{ block atomic.Int64 }
+
+func (c *advancingPaymentChain) Snapshot(context.Context) (pm.ChainSnapshot, error) {
+	return pm.ChainSnapshot{Block: big.NewInt(c.block.Load()), Round: big.NewInt(5), RoundHash: ethcommon.HexToHash("0x1234")}, nil
+}
+func (c *advancingPaymentChain) SenderInfo(ctx context.Context, _, _ ethcommon.Address) (eth.SenderInfo, error) {
 	snapshot, err := c.Snapshot(ctx)
 	return eth.SenderInfo{Snapshot: snapshot, Deposit: big.NewInt(1000000000), Reserve: big.NewInt(1000000000), WithdrawRound: new(big.Int)}, err
 }
-
-func (paymentTestChain) IsActiveAt(context.Context, ethcommon.Address, pm.ChainSnapshot) (bool, error) {
+func (c *advancingPaymentChain) IsActiveAt(context.Context, ethcommon.Address, pm.ChainSnapshot) (bool, error) {
 	return true, nil
+}
+
+func TestPinnedPythonSustainedPaymentRefresh(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Python SDK integration")
+	}
+	python, export, root := pinnedPythonSDK(t)
+	chain := new(advancingPaymentChain)
+	chain.block.Store(50)
+	payer, recipient := paymentTestKey(t), paymentTestKey(t)
+	store, err := pm.OpenSQLite(filepath.Join(t.TempDir(), "payments.sqlite"))
+	require.NoError(t, err)
+	defer store.Close()
+	max := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
+	engine, err := pm.NewEngine(store, chain, recipient.Address(), big.NewInt(20), new(big.Int).Add(new(big.Int).Quo(max, big.NewInt(2)), big.NewInt(1)))
+	require.NoError(t, err)
+	registry := NewRegistry("", "http://127.0.0.1:0", time.Second, time.Minute)
+	registry.SetWeiPerUSD(big.NewRat(360000, 1))
+	require.NoError(t, registry.AddStatic(StaticRunner{ID: "live", RunnerURL: "https://runner.example", App: "refresh-test", Mode: "persistent", PriceInfo: priceInfo{Price: "1", Currency: "usd", Unit: "hour"}}))
+	policy, err := destination.New("runner", nil)
+	require.NoError(t, err)
+	app := NewServer(registry, policy, policy, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	defer app.Close()
+	app.SetPayment(engine)
+	var refreshes atomic.Int32
+	orch := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/test/advance" {
+			chain.block.Add(40)
+			w.WriteHeader(200)
+			return
+		}
+		if r.URL.Path == "/refresh-payment" {
+			refreshes.Add(1)
+		}
+		app.ServeHTTP(w, r)
+	}))
+	registry.service = "http://" + orch.Listener.Addr().String()
+	orch.Start()
+	defer orch.Close()
+	service, err := signer.NewService(payer, "")
+	require.NoError(t, err)
+	defer service.Close()
+	service.SetPaymentChain(chain)
+	signed := httptest.NewServer(service)
+	defer signed.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, python, filepath.Join(root, "cmd", "livepeer", "testdata", "python_payment_refresh.py"), orch.URL, signed.URL)
+	cmd.Env = append(os.Environ(), "PYTHONPATH="+filepath.Join(export, "src"), "PYTHONDONTWRITEBYTECODE=1")
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(output))
+	require.Contains(t, string(output), "signed state preserved")
+	require.Equal(t, int32(3), refreshes.Load())
+	_, sessions := registry.Counts()
+	require.Zero(t, sessions)
 }

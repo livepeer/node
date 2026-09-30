@@ -26,6 +26,16 @@ import (
 
 type unavailableSender struct{}
 
+func (unavailableSender) SenderInfo(context.Context, ethcommon.Address, ethcommon.Address) (eth.SenderInfo, error) {
+	return eth.SenderInfo{}, errors.New("sender has no deposit")
+}
+
+type fundedSender struct{}
+
+func (fundedSender) SenderInfo(context.Context, ethcommon.Address, ethcommon.Address) (eth.SenderInfo, error) {
+	return eth.SenderInfo{Snapshot: eth.ChainSnapshot{Block: big.NewInt(50), Round: big.NewInt(5)}, Deposit: new(big.Int).Exp(big.NewInt(10), big.NewInt(20), nil), Reserve: new(big.Int).Exp(big.NewInt(10), big.NewInt(20), nil), WithdrawRound: new(big.Int)}, nil
+}
+
 func testService(t *testing.T) (*Service, signercompat.OrchestratorInfo) {
 	t.Helper()
 	private, err := crypto.GenerateKey()
@@ -34,14 +44,11 @@ func testService(t *testing.T) (*Service, signercompat.OrchestratorInfo) {
 	require.NoError(t, os.WriteFile(keyFile, []byte(hex.EncodeToString(crypto.FromECDSA(private))), 0600))
 	key, err := eth.OpenKeyFile(keyFile)
 	require.NoError(t, err)
-	store, err := openStateStore(filepath.Join(t.TempDir(), "state.sqlite"))
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = store.close() })
 	max := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
 	info := signercompat.OrchestratorInfo{Transcoder: "https://orch.example.com", Address: ethcommon.HexToAddress("0x1234").Bytes(), Price: signercompat.PriceInfo{PricePerUnit: 10, UnitsPerPrice: 1},
 		TicketParams: signercompat.TicketParams{Recipient: ethcommon.HexToAddress("0x1234").Bytes(), FaceValue: big.NewInt(20).Bytes(), WinProb: new(big.Int).Add(new(big.Int).Quo(max, big.NewInt(2)), big.NewInt(1)).Bytes(), RecipientRandHash: crypto.Keccak256(make([]byte, 32)), Seed: big.NewInt(1).Bytes(), ExpirationBlock: big.NewInt(500).Bytes(), Expiration: signercompat.ExpirationParams{CreationRound: 4, CreationRoundBlockHash: ethcommon.HexToHash("0x1234").Bytes()}},
 		Auth:         signercompat.AuthToken{Token: []byte("token"), SessionID: "manifest-1", Expiration: time.Now().Add(time.Hour).Unix()}}
-	service := NewService(key, store, "")
+	service := newService(key, "")
 	service.SetPaymentChain(fundedSender{})
 	return service, info
 }
@@ -57,7 +64,7 @@ func postPayment(t *testing.T, s *Service, request map[string]any) *httptest.Res
 
 // Adapted from go-livepeer/server/remote_signer_test.go's fixed/live payment,
 // signed-state, price ceiling and unsupported-type cases.
-func TestFixedPaymentAndSignedStateReplay(t *testing.T) {
+func TestFixedPaymentAndSignedStateContinuation(t *testing.T) {
 	s, info := testService(t)
 	request := map[string]any{"orchestrator": base64.StdEncoding.EncodeToString(signercompat.EncodeOrchestratorInfo(info)), "type": "fixed", "ManifestID": "manifest-1"}
 	w := postPayment(t, s, request)
@@ -86,7 +93,9 @@ func TestFixedPaymentAndSignedStateReplay(t *testing.T) {
 	require.NotEqual(t, first.State.State, second.State.State)
 	replay := postPayment(t, s, request)
 	require.Equal(t, 200, replay.Code, replay.Body.String())
-	require.JSONEq(t, w.Body.String(), replay.Body.String())
+	var replayed paymentResponse
+	require.NoError(t, json.Unmarshal(replay.Body.Bytes(), &replayed))
+	require.True(t, (pm.DefaultSigVerifier{}).Verify(s.key.Address(), replayed.State.State, replayed.State.Sig))
 	request["app"] = "changed"
 	w = postPayment(t, s, request)
 	require.Equal(t, 400, w.Code)
@@ -120,6 +129,28 @@ func TestSignerChecksConfiguredSenderAndAuth(t *testing.T) {
 	require.Equal(t, 482, w.Code)
 }
 
+func TestSignerReturns482AtTicketEVFloor(t *testing.T) {
+	s, info := testService(t)
+	request := map[string]any{"orchestrator": signercompat.EncodeOrchestratorInfo(info), "type": "fixed"}
+	response := postPayment(t, s, request)
+	require.Equal(t, 200, response.Code, response.Body.String())
+	var first paymentResponse
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &first))
+	var state paymentState
+	require.NoError(t, json.Unmarshal(first.State.State, &state))
+	maxWinProb := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
+	ev := new(big.Rat).SetFrac(new(big.Int).Mul(new(big.Int).SetBytes(info.TicketParams.FaceValue), new(big.Int).SetBytes(info.TicketParams.WinProb)), maxWinProb)
+	state.Balance = ev.RatString()
+	data, err := json.Marshal(state)
+	require.NoError(t, err)
+	sig, err := s.key.SignMessage(data)
+	require.NoError(t, err)
+	request["state"] = signedState{State: data, Sig: sig}
+	response = postPayment(t, s, request)
+	require.Equal(t, 482, response.Code, response.Body.String())
+	require.NotContains(t, response.Body.String(), "payment")
+}
+
 func TestSignerDiscoveryPreservesLiveRunnerEntries(t *testing.T) {
 	s, _ := testService(t)
 	orchestrator := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -140,28 +171,6 @@ func TestSignerDiscoveryPreservesLiveRunnerEntries(t *testing.T) {
 	require.Equal(t, "H100", result[0].Runners[0].GPU.Name)
 	w = httptest.NewRecorder()
 	s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/discover-orchestrators?app=retained&gpu=L40S", nil))
-	require.Equal(t, http.StatusServiceUnavailable, w.Code)
-}
-
-func TestSignerStateFilePermissions(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state.sqlite")
-	store, err := openStateStore(path)
-	require.NoError(t, err)
-	require.NoError(t, store.close())
-	info, err := os.Stat(path)
-	require.NoError(t, err)
-	require.Equal(t, os.FileMode(0600), info.Mode().Perm())
-	require.NoError(t, os.Chmod(path, 0644))
-	_, err = openStateStore(path)
-	require.ErrorContains(t, err, "owner-only")
-}
-
-func (unavailableSender) SenderInfo(context.Context, ethcommon.Address, ethcommon.Address) (eth.SenderInfo, error) {
-	return eth.SenderInfo{}, errors.New("sender has no deposit")
-}
-
-type fundedSender struct{}
-
-func (fundedSender) SenderInfo(context.Context, ethcommon.Address, ethcommon.Address) (eth.SenderInfo, error) {
-	return eth.SenderInfo{Snapshot: eth.ChainSnapshot{Block: big.NewInt(50), Round: big.NewInt(5)}, Deposit: new(big.Int).Exp(big.NewInt(10), big.NewInt(20), nil), Reserve: new(big.Int).Exp(big.NewInt(10), big.NewInt(20), nil), WithdrawRound: new(big.Int)}, nil
+	require.Equal(t, http.StatusOK, w.Code)
+	require.JSONEq(t, "[]", w.Body.String())
 }
