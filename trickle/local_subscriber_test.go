@@ -40,6 +40,7 @@ func TestLocalSubscriber_OverrunSeq(t *testing.T) {
 	td, err = sub.Read()
 	require.Nil(err)
 	data, err = io.ReadAll(td.Reader)
+	require.Nil(err)
 	require.Equal("def", string(data))
 
 	// Push data beyond the server's buffer
@@ -48,13 +49,14 @@ func TestLocalSubscriber_OverrunSeq(t *testing.T) {
 	}
 
 	// sub is out of the server's segment window now
-	td, err = sub.Read()
-	require.Equal("seq not found", err.Error())
+	_, err = sub.Read()
+	require.EqualError(err, "seq not found")
 
 	sub.SetSeq(-2)
 	td, err = sub.Read()
 	require.Nil(err)
 	data, err = io.ReadAll(td.Reader)
+	require.Nil(err)
 	require.Equal("next write 5", string(data))
 
 	require.Nil(pub.Write(bytes.NewReader([]byte("ghi"))))
@@ -73,12 +75,14 @@ func TestLocalSubscriber_OverrunSeq(t *testing.T) {
 	require.Nil(pub.Write(bytes.NewReader([]byte("mno"))))
 
 	data, err = io.ReadAll(td.Reader)
+	require.Nil(err)
 	require.Equal("jkl", string(data))
 	require.Nil(err)
 
 	td, err = sub.Read()
 	require.Nil(err)
 	data, err = io.ReadAll(td.Reader)
+	require.Nil(err)
 	require.Equal("mno", string(data))
 	require.Nil(err)
 

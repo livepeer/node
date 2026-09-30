@@ -98,6 +98,7 @@ type Changefeed struct {
 
 const maxSegmentsPerStream = 5
 
+//lint:ignore ST1012 Preserve the public go-livepeer trickle API.
 var FirstByteTimeout = errors.New("pending read timeout")
 var ErrSegmentTooLarge = errors.New("segment exceeds maximum size")
 
@@ -277,7 +278,7 @@ func (s *Stream) close() {
 func (sm *Server) closeStream(streamName string) error {
 	stream, exists := sm.getStream(streamName)
 	if !exists {
-		return errors.New("Invalid stream")
+		return errors.New("invalid stream")
 	}
 
 	// TODO there is a bit of an issue around session reuse

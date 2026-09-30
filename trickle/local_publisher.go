@@ -42,14 +42,14 @@ func (c *TrickleLocalPublisher) Write(data io.Reader) error {
 	segment, exists := stream.getForWrite(seq)
 	if exists {
 		c.mu.Unlock()
-		return errors.New("Entry already exists for this sequence")
+		return errors.New("entry already exists for this sequence")
 	}
 
 	// before we begin - let's pre-create the next segment
 	nextSeq := c.seq + 1
 	if _, exists = stream.getForWrite(nextSeq); exists {
 		c.mu.Unlock()
-		return errors.New("Next entry already exists in this sequence")
+		return errors.New("next entry already exists in this sequence")
 	}
 	c.seq = nextSeq
 	c.mu.Unlock()

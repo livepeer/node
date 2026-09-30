@@ -16,7 +16,7 @@ type SequenceStart int
 
 const (
 	Current SequenceStart = -2
-	Next                  = -1
+	Next    SequenceStart = -1
 )
 
 // TrickleSubscriberConfig holds all NewTrickleSubscriber inputs.
@@ -43,7 +43,8 @@ type TrickleSubscriberConfig struct {
 	Start *SequenceStart
 }
 
-var EOS = errors.New("End of stream")
+//lint:ignore ST1012 Preserve the public go-livepeer trickle API.
+var EOS = errors.New("end of stream")
 
 type SequenceNonexistent struct {
 	Latest int
@@ -56,7 +57,7 @@ func (e *SequenceNonexistent) Error() string {
 
 const preconnectRefreshTimeout = 20 * time.Second
 
-var preconnectTimeoutErr = errors.New("preconnect timed out")
+var errPreconnectTimeout = errors.New("preconnect timed out")
 
 // TrickleSubscriber represents a trickle streaming reader that always fetches from index -1
 type TrickleSubscriber struct {
@@ -188,7 +189,7 @@ func (c *TrickleSubscriber) preconnect() (*http.Response, error) {
 		go func() {
 			resp, err := c.connect(ctx)
 			if err != nil {
-				if errors.Is(err, preconnectTimeoutErr) {
+				if errors.Is(err, errPreconnectTimeout) {
 					// cancelled as part of a preconnect refresh, so ignore
 					return
 				}
@@ -215,7 +216,7 @@ func (c *TrickleSubscriber) preconnect() (*http.Response, error) {
 		case <-time.After(preconnectRefreshTimeout):
 			// Use a custom error for the timeout to avoid clashes with parent cancellations
 			// Not doing so could lead to a deadlock due to runConnect returning nothing
-			cancel(preconnectTimeoutErr)
+			cancel(errPreconnectTimeout)
 			ctx, cancel = context.WithCancelCause(c.ctx)
 			runConnect(ctx)
 		}
@@ -246,7 +247,7 @@ func (c *TrickleSubscriber) Read() (*http.Response, error) {
 	hitMaxPreconnects := c.preconnectErrorCount > 5
 	if hitMaxPreconnects {
 		slog.Error("Hit max preconnect error", "url", c.url, "idx", c.idx)
-		return nil, fmt.Errorf("Hit max preconnects")
+		return nil, fmt.Errorf("hit max preconnects")
 	}
 
 	// Get the reader to use for the current segment

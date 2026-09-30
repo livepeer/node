@@ -11,6 +11,7 @@ import (
 	"time"
 )
 
+//lint:ignore ST1012 Preserve the public go-livepeer trickle API.
 var StreamNotFoundErr = errors.New("stream not found")
 
 // TricklePublisher represents a trickle streaming client
@@ -154,7 +155,7 @@ func (c *TricklePublisher) Close() error {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("Failed to delete stream: %v - %s", resp.Status, string(body))
+		return fmt.Errorf("failed to delete stream: %v - %s", resp.Status, string(body))
 	}
 
 	// Close any pending writers

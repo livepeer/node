@@ -600,6 +600,7 @@ func TestTrickle_Reset(t *testing.T) {
 	}()
 
 	t1, err := pub.Next()
+	require.Nil(err)
 	r1, w1 := io.Pipe()
 	wg.Add(1)
 	go func() {
@@ -653,6 +654,7 @@ func TestTrickle_Reset(t *testing.T) {
 	resp2, err := sub.Read()
 	require.Nil(err)
 	data, err := io.ReadAll(resp2.Body)
+	require.Nil(err)
 	defer resp2.Body.Close()
 	require.Equal("HelloGoodbyWorld", string(data))
 
@@ -754,6 +756,7 @@ func TestTrickle_EmptySegment(t *testing.T) {
 	sub.SetSeq(0)
 
 	resp, err := sub.Read()
+	require.Nil(err)
 	defer resp.Body.Close()
 
 	require.Equal(http.StatusOK, resp.StatusCode)
