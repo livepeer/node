@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -50,6 +51,10 @@ func testService(t *testing.T) (*Service, signercompat.OrchestratorInfo) {
 		Auth:         signercompat.AuthToken{Token: []byte("token"), SessionID: "manifest-1", Expiration: time.Now().Add(time.Hour).Unix()}}
 	service := newService(key, "")
 	service.SetPaymentChain(fundedSender{})
+	prices, err := newPricePolicy("1000000000000", "1000000000000")
+	require.NoError(t, err)
+	require.NoError(t, prices.setRate(big.NewRat(1, 1), time.Time{}))
+	service.pricePolicy = prices
 	return service, info
 }
 
@@ -127,6 +132,68 @@ func TestSignerChecksConfiguredSenderAndAuth(t *testing.T) {
 	w = httptest.NewRecorder()
 	s.ServeHTTP(w, r)
 	require.Equal(t, 482, w.Code)
+}
+
+func TestSignedStateMovesBetweenIndependentSigners(t *testing.T) {
+	_, info := testService(t)
+	private, err := crypto.GenerateKey()
+	require.NoError(t, err)
+	keyFile := filepath.Join(t.TempDir(), "shared-key")
+	require.NoError(t, os.WriteFile(keyFile, []byte(hex.EncodeToString(crypto.FromECDSA(private))), 0600))
+	var calls atomic.Int32
+	webhook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		var body struct{ State paymentState }
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		require.NotEmpty(t, body.State.Balance)
+		require.NotZero(t, body.State.SenderNonce)
+		require.False(t, body.State.LastUpdate.IsZero())
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": 200, "expiry": time.Now().Add(time.Hour).Unix(), "auth_id": "replica-user"})
+	}))
+	defer webhook.Close()
+	var replicas [2]*Service
+	for i := range replicas {
+		key, err := eth.OpenKeyFile(keyFile)
+		require.NoError(t, err)
+		replicas[i] = newService(key, "")
+		content, err := newPricePolicy("1000", "1000")
+		require.NoError(t, err)
+		require.NoError(t, content.setRate(big.NewRat(1, 1), time.Time{}))
+		replicas[i].pricePolicy = content
+		replicas[i].SetPaymentChain(fundedSender{})
+		require.NoError(t, replicas[i].SetAuthWebhook(webhook.URL, []string{strings.TrimPrefix(webhook.URL, "http://")}, "", nil))
+	}
+	for _, kind := range []string{"fixed", "live"} {
+		t.Run(kind, func(t *testing.T) {
+			request := map[string]any{"orchestrator": base64.StdEncoding.EncodeToString(signercompat.EncodeOrchestratorInfo(info)), "type": kind}
+			var previous paymentState
+			for i := range 3 {
+				if i == 2 {
+					refreshed := info
+					refreshed.TicketParams.RecipientRandHash = crypto.Keccak256([]byte(kind + "-refreshed"))
+					request["orchestrator"] = base64.StdEncoding.EncodeToString(signercompat.EncodeOrchestratorInfo(refreshed))
+				}
+				response := postPayment(t, replicas[i%2], request)
+				require.Equal(t, 200, response.Code, response.Body.String())
+				var payment paymentResponse
+				require.NoError(t, json.Unmarshal(response.Body.Bytes(), &payment))
+				require.NotEmpty(t, payment.Payment)
+				var state paymentState
+				require.NoError(t, json.Unmarshal(payment.State.State, &state))
+				require.Equal(t, uint64(i), state.SequenceNumber)
+				require.Equal(t, "replica-user", state.AuthID)
+				if i > 0 {
+					require.Equal(t, previous.StateID, state.StateID)
+				}
+				if i == 2 {
+					require.NotEqual(t, previous.PMSessionID, state.PMSessionID)
+				}
+				previous = state
+				request["state"] = payment.State
+			}
+		})
+	}
+	require.Equal(t, int32(2), calls.Load(), "webhook authorization is cached in signed state across replicas")
 }
 
 func TestSignerReturns482AtTicketEVFloor(t *testing.T) {

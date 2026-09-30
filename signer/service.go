@@ -54,6 +54,7 @@ type Service struct {
 	discoveryClient     *http.Client
 	paymentChain        pm.SenderChain
 	senderPolicy        pm.SenderPolicy
+	pricePolicy         *pricePolicy
 	slots               chan struct{}
 }
 
@@ -346,6 +347,13 @@ func (s *Service) generate(w http.ResponseWriter, r *http.Request) {
 			signerError(w, 400, err.Error())
 		}
 		return
+	}
+	if s.pricePolicy != nil {
+		if err := s.pricePolicy.check(req.Type, info.Price); err != nil {
+			f := err.(paymentFailure)
+			signerError(w, f.status, f.reason)
+			return
+		}
 	}
 	address := ethcommon.BytesToAddress(info.Address)
 	var state paymentState

@@ -2,19 +2,24 @@ package signer
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"math/big"
 	"net"
 	"net/http"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/BurntSushi/toml"
+	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/j0sh/boa/pkg/boa"
 	"github.com/livepeer/node/destination"
 	"github.com/livepeer/node/eth"
+	"github.com/livepeer/node/pm"
 	"github.com/livepeer/node/version"
 	"github.com/spf13/cobra"
 )
@@ -25,27 +30,71 @@ func init() {
 }
 
 type Params struct {
-	ConfigFile      string   `name:"config" configfile:"true" file:"true" optional:"true" toml:"-"`
-	Listen          string   `name:"listen" default:"127.0.0.1:8937" toml:"listen"`
-	MetricsListen   string   `name:"metrics-listen" default:"127.0.0.1:8938" toml:"metrics_listen"`
-	RPCURL          string   `name:"rpc-url" secret:"true" optional:"true" toml:"rpc_url"`
-	RPCURLFile      string   `name:"rpc-url-file" secretfor:"RPCURL" toml:"rpc_url_file"`
-	RPCGrants       []string `name:"rpc-grants" optional:"true" toml:"rpc_grants"`
-	RPCCAFile       string   `name:"rpc-ca-file" optional:"true" file:"true" toml:"rpc_ca_file"`
-	ChainID         string   `name:"chain-id" optional:"true" toml:"chain_id"`
-	Controller      string   `name:"controller-address" optional:"true" toml:"controller_address"`
-	AuthToken       string   `name:"auth-token" secret:"true" optional:"true" toml:"auth_token"`
-	AuthTokenFile   string   `name:"auth-token-file" secretfor:"AuthToken" toml:"auth_token_file"`
-	KeyFile         string   `name:"private-key-file" file:"true" optional:"true" toml:"private_key_file"`
-	StateDB         string   `name:"state-db" default:"signer.sqlite" toml:"state_db"`
-	Orchestrators   []string `name:"orchestrators" optional:"true" toml:"orchestrators"`
-	DiscoveryGrants []string `name:"discovery-grants" optional:"true" toml:"discovery_grants"`
-	DiscoveryCAFile string   `name:"discovery-ca-file" optional:"true" file:"true" toml:"discovery_ca_file"`
-	BehindTLS       bool     `name:"behind-tls" optional:"true" toml:"behind_tls"`
-	PrintConfig     bool     `name:"print-config" optional:"true" boa:"noconfig" toml:"-"`
+	AuthWebhookHeadersFile   string        `name:"auth-webhook-headers-file" secretfor:"AuthWebhookHeaders" toml:"auth_webhook_headers_file"`
+	AuthWebhook              string        `name:"auth-webhook" optional:"true" secret:"true" toml:"auth_webhook"`
+	AuthWebhookFile          string        `name:"auth-webhook-file" secretfor:"AuthWebhook" toml:"auth_webhook_file"`
+	AuthWebhookGrants        []string      `name:"auth-webhook-grants" optional:"true" toml:"auth_webhook_grants"`
+	AuthWebhookCAFile        string        `name:"auth-webhook-ca-file" optional:"true" file:"true" toml:"auth_webhook_ca_file"`
+	AuthWebhookHeaders       string        `name:"auth-webhook-headers" optional:"true" secret:"true" toml:"auth_webhook_headers"`
+	MaxTicketEV              string        `name:"max-ticket-ev" default:"3000000000000" toml:"max_ticket_ev" descr:"Maximum expected ticket value in wei"`
+	MaxBatchEV               string        `name:"max-batch-ev" default:"20000000000000" toml:"max_batch_ev" descr:"Maximum expected batch value in wei"`
+	DepositMultiplier        int64         `name:"deposit-multiplier" default:"1" toml:"deposit_multiplier" descr:"Maximum face value is deposit divided by this value"`
+	MaxLivePriceUSDPerSecond string        `name:"max-live-price-usd-per-second" optional:"true" toml:"max_live_price_usd_per_second"`
+	MaxFixedPriceUSD         string        `name:"max-fixed-price-usd" optional:"true" toml:"max_fixed_price_usd"`
+	WeiPerUSD                string        `name:"wei-per-usd" optional:"true" toml:"wei_per_usd"`
+	ETHUSDFeed               string        `name:"eth-usd-feed" optional:"true" toml:"eth_usd_feed"`
+	PriceMaxAge              time.Duration `name:"price-max-age" default:"2h" toml:"price_max_age"`
+	ConfigFile               string        `name:"config" configfile:"true" file:"true" optional:"true" toml:"-"`
+	Listen                   string        `name:"listen" default:"127.0.0.1:8937" toml:"listen"`
+	MetricsListen            string        `name:"metrics-listen" default:"127.0.0.1:8938" toml:"metrics_listen"`
+	RPCURL                   string        `name:"rpc-url" secret:"true" optional:"true" toml:"rpc_url"`
+	RPCURLFile               string        `name:"rpc-url-file" secretfor:"RPCURL" toml:"rpc_url_file"`
+	RPCGrants                []string      `name:"rpc-grants" optional:"true" toml:"rpc_grants"`
+	RPCCAFile                string        `name:"rpc-ca-file" optional:"true" file:"true" toml:"rpc_ca_file"`
+	ChainID                  string        `name:"chain-id" optional:"true" toml:"chain_id"`
+	Controller               string        `name:"controller-address" optional:"true" toml:"controller_address"`
+	AuthToken                string        `name:"auth-token" secret:"true" optional:"true" toml:"auth_token"`
+	AuthTokenFile            string        `name:"auth-token-file" secretfor:"AuthToken" toml:"auth_token_file"`
+	KeyFile                  string        `name:"private-key-file" file:"true" optional:"true" toml:"private_key_file"`
+	Orchestrators            []string      `name:"orchestrators" optional:"true" toml:"orchestrators"`
+	DiscoveryGrants          []string      `name:"discovery-grants" optional:"true" toml:"discovery_grants"`
+	DiscoveryCAFile          string        `name:"discovery-ca-file" optional:"true" file:"true" toml:"discovery_ca_file"`
+	BehindTLS                bool          `name:"behind-tls" optional:"true" toml:"behind_tls"`
+	PrintConfig              bool          `name:"print-config" optional:"true" boa:"noconfig" toml:"-"`
+}
+
+func (p Params) senderPolicy() (pm.SenderPolicy, error) {
+	policy := pm.DefaultSenderPolicy()
+	if p.MaxTicketEV != "" {
+		policy.MaxTicketEV, _ = new(big.Rat).SetString(p.MaxTicketEV)
+	}
+	if p.MaxBatchEV != "" {
+		policy.MaxBatchEV, _ = new(big.Rat).SetString(p.MaxBatchEV)
+	}
+	if p.DepositMultiplier != 0 {
+		policy.DepositMultiplier = p.DepositMultiplier
+	}
+	return policy, policy.Validate()
+}
+
+func (p Params) webhookHeaders() (map[string]string, error) {
+	var headers map[string]string
+	if p.AuthWebhookHeaders != "" && json.Unmarshal([]byte(p.AuthWebhookHeaders), &headers) != nil {
+		return nil, errors.New("auth-webhook-headers must contain a JSON string map")
+	}
+	return headers, nil
 }
 
 func (p Params) Validate() error {
+	if _, err := p.webhookHeaders(); err != nil {
+		return err
+	}
+	if p.AuthWebhook == "" && (len(p.AuthWebhookGrants) > 0 || p.AuthWebhookCAFile != "" || p.AuthWebhookHeaders != "") {
+		return errors.New("auth-webhook is required with webhook options")
+	}
+	if _, err := p.senderPolicy(); err != nil {
+		return err
+	}
 	host, _, err := net.SplitHostPort(p.Listen)
 	if err != nil {
 		return errors.New("listen must be host:port")
@@ -68,9 +117,27 @@ func (p Params) Validate() error {
 	if p.KeyFile == "" {
 		return errors.New("private-key-file is required")
 	}
-	if p.RPCURL != "" || p.ChainID != "" || p.Controller != "" || len(p.RPCGrants) > 0 || p.RPCCAFile != "" {
+	paid := p.RPCURL != "" || p.ChainID != "" || p.Controller != "" || len(p.RPCGrants) > 0 || p.RPCCAFile != ""
+	if !paid && (p.MaxLivePriceUSDPerSecond != "" || p.MaxFixedPriceUSD != "" || p.WeiPerUSD != "" || p.ETHUSDFeed != "") {
+		return errors.New("signer price settings require paid RPC configuration")
+	}
+	if paid {
 		if p.RPCURL == "" || p.ChainID == "" || !eth.ValidAddress(p.Controller) {
 			return errors.New("RPC URL, chain ID and controller address must be configured together")
+		}
+		if _, err := newPricePolicy(p.MaxLivePriceUSDPerSecond, p.MaxFixedPriceUSD); err != nil {
+			return err
+		}
+		if (p.WeiPerUSD == "") == (p.ETHUSDFeed == "") {
+			return errors.New("paid signer requires exactly one wei-per-usd or eth-usd-feed source")
+		}
+		if p.WeiPerUSD != "" {
+			rate, ok := new(big.Rat).SetString(p.WeiPerUSD)
+			if !ok || rate.Sign() <= 0 {
+				return errors.New("wei-per-usd must be positive")
+			}
+		} else if !eth.ValidAddress(p.ETHUSDFeed) || p.PriceMaxAge <= 0 {
+			return errors.New("eth-usd-feed requires a valid address and positive price-max-age")
 		}
 		id, ok := new(big.Int).SetString(p.ChainID, 10)
 		if !ok || id.Sign() <= 0 {
@@ -87,32 +154,36 @@ func (p Params) Validate() error {
 			return err
 		}
 	}
-	if p.StateDB == "" {
-		return errors.New("state-db is required")
-	}
 	return nil
 }
 
 func Serve(p Params) error {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+	return serve(ctx, p)
+}
+
+func serve(parent context.Context, p Params) error {
 	if err := p.Validate(); err != nil {
 		return err
 	}
+	ctx, stop := context.WithCancel(parent)
+	defer stop()
 	key, err := eth.OpenKeyFile(p.KeyFile)
 	if err != nil {
 		return err
 	}
-	service, err := NewService(key, p.AuthToken)
-	if err != nil {
-		return err
-	}
+	service := newService(key, p.AuthToken)
 	defer service.Close()
+	service.senderPolicy, _ = p.senderPolicy()
+	var feedContracts *eth.Contracts
 	if p.RPCURL != "" {
 		rpc, err := eth.OpenRPC(p.RPCURL, p.RPCGrants, p.RPCCAFile)
 		if err != nil {
 			return err
 		}
 		chainID, _ := new(big.Int).SetString(p.ChainID, 10)
-		if err := rpc.CheckChainID(context.Background(), chainID); err != nil {
+		if err := rpc.CheckChainID(ctx, chainID); err != nil {
 			return err
 		}
 		contracts, err := eth.OpenContracts(rpc, p.Controller)
@@ -120,6 +191,29 @@ func Serve(p Params) error {
 			return err
 		}
 		service.SetPaymentChain(eth.PaymentChain{Contracts: contracts})
+		policy, _ := newPricePolicy(p.MaxLivePriceUSDPerSecond, p.MaxFixedPriceUSD)
+		if p.ETHUSDFeed != "" {
+			rate, until, err := contracts.WeiPerUSD(ctx, ethcommon.HexToAddress(p.ETHUSDFeed), p.PriceMaxAge)
+			if err != nil {
+				slog.Error("signer price feed unavailable at startup", "error", err)
+			} else if err := policy.setRate(rate, until); err != nil {
+				slog.Error("signer price feed invalid at startup", "error", err)
+			}
+			feedContracts = contracts
+		} else {
+			rate, _ := new(big.Rat).SetString(p.WeiPerUSD)
+			if err := policy.setRate(rate, time.Time{}); err != nil {
+				return err
+			}
+		}
+		service.pricePolicy = policy
+	}
+	headers, err := p.webhookHeaders()
+	if err != nil {
+		return err
+	}
+	if err := service.SetAuthWebhook(p.AuthWebhook, p.AuthWebhookGrants, p.AuthWebhookCAFile, headers); err != nil {
+		return err
 	}
 	if err := service.SetDiscovery(p.Orchestrators, p.DiscoveryGrants, p.DiscoveryCAFile); err != nil {
 		return err
@@ -140,6 +234,10 @@ func Serve(p Params) error {
 		_, _ = io.WriteString(w, "ok\n")
 	})
 	metricsMux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) {
+		if service.pricePolicy != nil && !service.pricePolicy.ready() {
+			http.Error(w, "signer USD conversion rate unavailable", http.StatusServiceUnavailable)
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, "ready\n")
 	})
@@ -147,13 +245,19 @@ func Serve(p Params) error {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 		_, _ = io.WriteString(w, "livepeer_signer_up 1\n")
 	})
-	srv := &http.Server{Handler: service, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10}
-	metricsServer := &http.Server{Handler: metricsMux, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10}
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
-	defer stop()
+	srv := &http.Server{BaseContext: func(net.Listener) context.Context { return ctx }, Handler: service, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10, MaxHeaderValueCount: 128}
+	metricsServer := &http.Server{Handler: metricsMux, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10, MaxHeaderValueCount: 128}
 	errCh := make(chan error, 2)
-	go func() { errCh <- srv.Serve(listener) }()
-	go func() { errCh <- metricsServer.Serve(metricsListener) }()
+	var workers sync.WaitGroup
+	if feedContracts != nil {
+		workers.Go(func() {
+			refreshPriceFeed(ctx, 30*time.Second, service.pricePolicy, func(readCtx context.Context) (*big.Rat, time.Time, error) {
+				return feedContracts.WeiPerUSD(readCtx, ethcommon.HexToAddress(p.ETHUSDFeed), p.PriceMaxAge)
+			})
+		})
+	}
+	workers.Go(func() { errCh <- srv.Serve(listener) })
+	workers.Go(func() { errCh <- metricsServer.Serve(metricsListener) })
 	select {
 	case <-ctx.Done():
 	case err = <-errCh:
@@ -161,10 +265,18 @@ func Serve(p Params) error {
 			err = nil
 		}
 	}
+	stop()
 	shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	_ = srv.Shutdown(shutdown)
-	_ = metricsServer.Shutdown(shutdown)
+	if shutdownErr := srv.Shutdown(shutdown); shutdownErr != nil {
+		err = errors.Join(err, shutdownErr)
+		_ = srv.Close()
+	}
+	if shutdownErr := metricsServer.Shutdown(shutdown); shutdownErr != nil {
+		err = errors.Join(err, shutdownErr)
+		_ = metricsServer.Close()
+	}
+	workers.Wait()
 	return err
 }
 
@@ -185,7 +297,7 @@ func Root(out, errOut io.Writer) *cobra.Command {
 					return err
 				}
 				safe := map[string]any{}
-				for _, key := range []string{"listen", "metrics_listen", "behind_tls", "discovery_grants", "rpc_grants", "chain_id", "controller_address"} {
+				for _, key := range []string{"listen", "metrics_listen", "behind_tls", "discovery_grants", "rpc_grants", "chain_id", "controller_address", "max_ticket_ev", "max_batch_ev", "deposit_multiplier", "max_live_price_usd_per_second", "max_fixed_price_usd", "wei_per_usd", "eth_usd_feed", "price_max_age", "auth_webhook_grants"} {
 					if value, ok := values[key]; ok {
 						safe[key] = value
 					}
