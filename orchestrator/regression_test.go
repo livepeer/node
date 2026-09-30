@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/livepeer/node/destination"
@@ -117,4 +118,32 @@ func TestRegressionStaticSessionChannelsReleased(t *testing.T) {
 	s.channels["owned"] = &channel{runnerID: "static", sessionID: sid, parts: map[int][]byte{}, wakeup: make(chan struct{})}
 	reg.ReleaseBySession(sid)
 	require.Empty(t, s.channels, "static runners have no O2R channel, but session channels must still be removed")
+}
+
+func TestRegressionTrickleNextDeliversNextPublishedPart(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		_, s := reviewServer(t, "http://127.0.0.1:1")
+		s.channels["test"] = &channel{mime: "application/octet-stream", parts: map[int][]byte{}, latest: -1, wakeup: make(chan struct{})}
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		done := make(chan struct{})
+		w := httptest.NewRecorder()
+		go func() {
+			s.ServeHTTP(w, httptest.NewRequest("GET", "/ai/trickle/test/-1", nil).WithContext(ctx))
+			close(done)
+		}()
+		synctest.Wait()
+		pub := httptest.NewRecorder()
+		s.ServeHTTP(pub, httptest.NewRequest("POST", "/ai/trickle/test/0", strings.NewReader("first")))
+		require.Equal(t, 200, pub.Code)
+		synctest.Wait()
+		select {
+		case <-done:
+			require.Equal(t, "first", w.Body.String())
+		default:
+			t.Error("GET -1 skipped the part just published and is still waiting")
+			cancel()
+			synctest.Wait()
+		}
+	})
 }

@@ -528,15 +528,16 @@ func (s *Server) trickle(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
+	s.mu.Lock()
+	requested := seq
+	if requested == -2 {
+		requested = max(ch.latest, 0)
+	} else if requested == -1 {
+		requested = ch.latest + 1
+	}
+	s.mu.Unlock()
 	for {
 		s.mu.Lock()
-		requested := seq
-		if requested == -2 {
-			requested = ch.latest
-		}
-		if requested == -1 {
-			requested = ch.latest + 1
-		}
 		data, ok := ch.parts[requested]
 		closed := ch.closed
 		latest := ch.latest
