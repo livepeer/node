@@ -30,16 +30,7 @@ func RedeemPending(ctx context.Context, store *SQLiteStore, chain eth.PaymentCha
 		if ticket == nil {
 			continue
 		}
-		if ticket.ParamsExpirationBlock.Cmp(currentBlock) <= 0 {
-			if err := store.ClaimRedemption(ticket); err != nil {
-				failures = append(failures, err)
-				continue
-			}
-			expired := fmt.Errorf("ticket expired before redemption submission")
-			if err := store.RecordRedemptionError(ticket, expired); err != nil {
-				failures = append(failures, err)
-			}
-			failures = append(failures, fmt.Errorf("sender %s: %w", sender.Hex(), expired))
+		if ticket.ParamsExpirationBlock.Cmp(currentBlock) > 0 {
 			continue
 		}
 		if err := store.ClaimRedemption(ticket); err != nil {
