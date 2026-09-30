@@ -2,10 +2,12 @@ package orchestrator
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"math/big"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
@@ -83,7 +85,7 @@ func (s *Server) reservePaid(w http.ResponseWriter, r *http.Request) bool {
 		fail(w, http.StatusBadRequest, "runner is not persistent")
 		return true
 	}
-	price, status, err := s.registry.PriceForRunner(runnerID)
+	price, status, err := s.reservationPrice(r, runnerID)
 	if err != nil {
 		fail(w, status, err.Error())
 		return true
@@ -100,7 +102,7 @@ func (s *Server) reservePaid(w http.ResponseWriter, r *http.Request) bool {
 		fail(w, 403, "invalid segment credentials")
 		return true
 	}
-	id, appURL, controlURL, status, err := s.registry.ReserveWithID(runnerID, manifest)
+	id, appURL, controlURL, status, err := s.registry.reserveWithPrice(runnerID, manifest, &price)
 	if err != nil {
 		fail(w, status, err.Error())
 		return true
@@ -112,6 +114,10 @@ func (s *Server) reservePaid(w http.ResponseWriter, r *http.Request) bool {
 	if err := s.payment.Charge(r.Context(), id, time.Now()); err != nil {
 		s.registry.ReleaseBySession(id)
 		fail(w, 402, "insufficient payment balance")
+		return true
+	}
+	if !s.registry.activateSession(runnerID, id) {
+		fail(w, 404, "session ended during payment")
 		return true
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"session_id": id, "app_url": appURL, "control_url": controlURL})
@@ -129,7 +135,7 @@ func (s *Server) proxyPaidSingleShot(w http.ResponseWriter, r *http.Request) boo
 		fail(w, http.StatusBadRequest, "runner is not single-shot")
 		return true
 	}
-	price, status, err := s.registry.PriceForRunner(runnerID)
+	price, status, err := s.reservationPrice(r, runnerID)
 	if err != nil {
 		fail(w, status, err.Error())
 		return true
@@ -146,7 +152,7 @@ func (s *Server) proxyPaidSingleShot(w http.ResponseWriter, r *http.Request) boo
 		fail(w, 403, "invalid segment credentials")
 		return true
 	}
-	id, _, _, status, err := s.registry.ReserveWithID(runnerID, manifest)
+	id, _, _, status, err := s.registry.reserveWithPrice(runnerID, manifest, &price)
 	if err != nil {
 		fail(w, status, err.Error())
 		return true
@@ -159,12 +165,16 @@ func (s *Server) proxyPaidSingleShot(w http.ResponseWriter, r *http.Request) boo
 		fail(w, 402, "insufficient payment balance")
 		return true
 	}
+	if !s.registry.activateSession(runnerID, id) {
+		fail(w, 404, "session ended during payment")
+		return true
+	}
 	target, token, status, err := s.registry.sessionTarget(runnerID, id)
 	if err != nil {
 		fail(w, status, err.Error())
 		return true
 	}
-	control := s.registry.service + "/runner/" + url.PathEscape(runnerID) + "/session/" + url.PathEscape(id)
+	control := s.registry.runnerServiceURL() + "/runner/" + url.PathEscape(runnerID) + "/session/" + url.PathEscape(id)
 	s.proxy(w, r, s.runnerPolicy, target, r.PathValue("app_path"), runnerID, id, token, control)
 	return true
 }
@@ -226,6 +236,21 @@ func (s *Server) ChargePaidSessions(ctx context.Context) {
 			s.registry.ReleaseBySession(id)
 		}
 	}
+}
+
+func (s *Server) reservationPrice(r *http.Request, runnerID string) (priceInfo, int, error) {
+	if s.payment != nil && r.Header.Get("Livepeer-Payment") != "" && r.Header.Get("Livepeer-Segment") != "" {
+		manifest, err := pm.ManifestFromSegment(r.Header.Get("Livepeer-Segment"))
+		if err != nil {
+			return priceInfo{}, 403, err
+		}
+		price, unit, err := s.payment.ChallengePrice(runnerID, manifest)
+		if err != nil {
+			return priceInfo{}, 403, pm.ErrMissingChallenge
+		}
+		return priceInfo{Price: json.Number(strconv.FormatInt(price, 10)), Currency: "wei", Unit: unit}, 200, nil
+	}
+	return s.registry.PriceForRunner(runnerID)
 }
 
 func (s *Server) RedeemWinningTickets(ctx context.Context, store *pm.SQLiteStore, chain eth.PaymentChain, key *eth.Key, chainID *big.Int) {

@@ -389,3 +389,15 @@ func (e *Engine) Balance(manifest string) (*big.Rat, error) {
 type SenderChain interface {
 	SenderInfo(context.Context, ethcommon.Address, ethcommon.Address) (eth.SenderInfo, error)
 }
+
+// ChallengePrice returns the agreed quote for a pending reservation, scoped to
+// its runner. Updating the runner/feed must not change a previously issued quote.
+func (e *Engine) ChallengePrice(runner, manifest string) (int64, string, error) {
+	var raw []byte
+	var unit string
+	if err := e.store.db.QueryRow("SELECT info,unit FROM payment_challenges WHERE runner=? AND manifest=?", runner, manifest).Scan(&raw, &unit); err != nil {
+		return 0, "", err
+	}
+	info, err := signercompat.DecodeOrchestratorInfo(raw)
+	return info.Price.PricePerUnit, unit, err
+}

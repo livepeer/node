@@ -101,13 +101,14 @@ type runner struct {
 }
 
 type session struct {
-	PriceInfo priceInfo
-	ctx       context.Context
-	cancel    context.CancelFunc
+	pending   bool
 	ID        string
 	Token     string
 	Proxies   map[string]sessionProxy
 	Created   time.Time
+	PriceInfo priceInfo
+	ctx       context.Context
+	cancel    context.CancelFunc
 }
 
 type Registry struct {
@@ -335,51 +336,7 @@ func (r *Registry) Reserve(id string) (string, string, string, int, error) {
 }
 
 func (r *Registry) ReserveWithID(id, requestedID string) (string, string, string, int, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	item := r.runners[id]
-	if item == nil || !r.usable(item) {
-		return "", "", "", http.StatusNotFound, errors.New("runner unavailable")
-	}
-	if item.Mode != "persistent" && !(item.Mode == "single-shot" && requestedID != "") {
-		return "", "", "", http.StatusBadRequest, errors.New("only persistent runners have sessions")
-	}
-	if len(item.Sessions) >= item.Capacity {
-		return "", "", "", http.StatusConflict, errors.New("runner at capacity")
-	}
-	sessionID := requestedID
-	if sessionID == "" {
-		var err error
-		sessionID, err = randomID()
-		if err != nil {
-			return "", "", "", http.StatusInternalServerError, err
-		}
-	}
-	if !validRouteID(sessionID) || item.Sessions[sessionID] != nil {
-		return "", "", "", http.StatusConflict, errors.New("session already exists or invalid")
-	}
-	token, err := randomID()
-	if err != nil {
-		return "", "", "", http.StatusInternalServerError, err
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	item.Sessions[sessionID] = &session{ID: sessionID, Token: token, Created: time.Now(), Proxies: map[string]sessionProxy{}, ctx: ctx, cancel: cancel, PriceInfo: item.PriceInfo}
-	appURL := r.appURL(id, item.Mode, sessionID)
-	if item.Proxy && item.Mode == "persistent" {
-		target, _ := url.Parse(item.RunnerURL)
-		proxyID, err := randomID()
-		if err != nil {
-			cancel()
-			delete(item.Sessions, sessionID)
-			return "", "", "", http.StatusInternalServerError, err
-		}
-		item.Sessions[sessionID].Proxies[proxyID] = sessionProxy{target: target, runner: true}
-		appURL = r.proxyURL(proxyID)
-	}
-	if r.onEvent != nil {
-		r.onEvent(id, "reserved", sessionID)
-	}
-	return sessionID, appURL, r.service + "/apps/" + url.PathEscape(id) + "/session/" + url.PathEscape(sessionID), http.StatusOK, nil
+	return r.reserveWithPrice(id, requestedID, nil)
 }
 
 func (r *Registry) PriceForRunner(id string) (priceInfo, int, error) {
@@ -409,7 +366,7 @@ func (r *Registry) PriceForSession(id, sid string) (priceInfo, int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	item := r.runners[id]
-	if item == nil || item.Sessions[sid] == nil {
+	if item == nil || item.Sessions[sid] == nil || item.Sessions[sid].pending {
 		return priceInfo{}, http.StatusNotFound, errors.New("session not found")
 	}
 	return item.Sessions[sid].PriceInfo, http.StatusOK, nil
@@ -421,7 +378,7 @@ func (r *Registry) PaidSessions() []string {
 	var ids []string
 	for _, item := range r.runners {
 		for id, sess := range item.Sessions {
-			if sess.PriceInfo.Price != "" {
+			if !sess.pending && sess.PriceInfo.Price != "" {
 				ids = append(ids, id)
 			}
 		}
@@ -458,7 +415,7 @@ func (r *Registry) sessionTarget(id, sid string) (*url.URL, string, int, error) 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	item := r.runners[id]
-	if item == nil || !r.usable(item) || item.Sessions[sid] == nil {
+	if item == nil || !r.usable(item) || item.Sessions[sid] == nil || item.Sessions[sid].pending {
 		return nil, "", http.StatusNotFound, errors.New("session not found")
 	}
 	target, err := destination.ValidateURL(item.RunnerURL)
@@ -472,7 +429,7 @@ func (r *Registry) validSessionToken(id, sid, token string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	item := r.runners[id]
-	return item != nil && item.Sessions[sid] != nil && equalSecret(item.Sessions[sid].Token, token)
+	return item != nil && item.Sessions[sid] != nil && !item.Sessions[sid].pending && equalSecret(item.Sessions[sid].Token, token)
 }
 
 func (r *Registry) addProxy(id, sid, token string, target *url.URL) (string, error) {
@@ -742,4 +699,76 @@ func normalizePriceAt(price *priceInfo, rate *big.Rat) error {
 	usdString := strings.TrimRight(strings.TrimRight(usd.FloatString(36), "0"), ".")
 	*price = priceInfo{Price: json.Number(wei.String()), PriceUSD: json.Number(usdString), Currency: "wei", Unit: unit}
 	return nil
+}
+
+func (r *Registry) reserveWithPrice(id, requestedID string, agreed *priceInfo) (string, string, string, int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	item := r.runners[id]
+	if item == nil || !r.usable(item) {
+		return "", "", "", http.StatusNotFound, errors.New("runner unavailable")
+	}
+	if agreed == nil && !r.priceAvailable(item) {
+		return "", "", "", http.StatusServiceUnavailable, errors.New("runner price unavailable")
+	}
+	if item.Mode != "persistent" && !(item.Mode == "single-shot" && requestedID != "") {
+		return "", "", "", http.StatusBadRequest, errors.New("only persistent runners have sessions")
+	}
+	if len(item.Sessions) >= item.Capacity {
+		return "", "", "", http.StatusConflict, errors.New("runner at capacity")
+	}
+	sessionID := requestedID
+	if sessionID == "" {
+		var err error
+		sessionID, err = randomID()
+		if err != nil {
+			return "", "", "", http.StatusInternalServerError, err
+		}
+	}
+	if !validRouteID(sessionID) || item.Sessions[sessionID] != nil {
+		return "", "", "", http.StatusConflict, errors.New("session already exists or invalid")
+	}
+	token, err := randomID()
+	if err != nil {
+		return "", "", "", http.StatusInternalServerError, err
+	}
+	price := item.PriceInfo
+	if agreed != nil {
+		price = *agreed
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	item.Sessions[sessionID] = &session{pending: agreed != nil, ID: sessionID, Token: token, Created: time.Now(), Proxies: map[string]sessionProxy{}, PriceInfo: price, ctx: ctx, cancel: cancel}
+	appURL := r.appURL(id, item.Mode, sessionID)
+	if item.Proxy && item.Mode == "persistent" {
+		target, _ := url.Parse(item.RunnerURL)
+		proxyID, err := randomID()
+		if err != nil {
+			cancel()
+			delete(item.Sessions, sessionID)
+			return "", "", "", http.StatusInternalServerError, err
+		}
+		item.Sessions[sessionID].Proxies[proxyID] = sessionProxy{target: target, runner: true}
+		appURL = r.proxyURL(proxyID)
+	}
+	if agreed == nil && r.onEvent != nil {
+		r.onEvent(id, "reserved", sessionID)
+	}
+	return sessionID, appURL, r.service + "/apps/" + url.PathEscape(id) + "/session/" + url.PathEscape(sessionID), http.StatusOK, nil
+}
+
+func (r *Registry) activateSession(id, sid string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	item := r.runners[id]
+	if item == nil || !r.usable(item) || item.Sessions[sid] == nil {
+		return false
+	}
+	sess := item.Sessions[sid]
+	if sess.pending {
+		sess.pending = false
+		if r.onEvent != nil {
+			r.onEvent(id, "reserved", sid)
+		}
+	}
+	return true
 }
