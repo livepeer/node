@@ -108,3 +108,13 @@ func TestRegressionSessionPricePinnedAcrossHeartbeat(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "1", quote.Price.String(), "existing session must retain its 1-wei price")
 }
+
+func TestRegressionStaticSessionChannelsReleased(t *testing.T) {
+	reg, s := reviewServer(t, "http://127.0.0.1:1")
+	require.NoError(t, reg.AddStatic(StaticRunner{ID: "static", RunnerURL: "http://127.0.0.1:1", App: "a", Capacity: 1}))
+	sid, _, _, _, err := reg.Reserve("static")
+	require.NoError(t, err)
+	s.channels["owned"] = &channel{runnerID: "static", sessionID: sid, parts: map[int][]byte{}, wakeup: make(chan struct{})}
+	reg.ReleaseBySession(sid)
+	require.Empty(t, s.channels, "static runners have no O2R channel, but session channels must still be removed")
+}

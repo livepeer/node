@@ -593,7 +593,9 @@ func (r *Registry) CheckStaticHealth(client *http.Client) {
 		if item := r.runners[id]; item != nil && item.Static {
 			item.Healthy = healthy
 			if !healthy {
-				item.Sessions = map[string]*session{}
+				for sid := range item.Sessions {
+					r.releaseLocked(id, sid)
+				}
 			}
 		}
 		r.mu.Unlock()

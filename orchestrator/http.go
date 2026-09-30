@@ -149,10 +149,9 @@ func (s *Server) emitSessionEvent(runnerID, event, sid string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	ch := s.channels[s.o2r[runnerID]]
-	if ch == nil || ch.closed {
-		return
+	if ch != nil && !ch.closed {
+		_ = s.storePart(ch, ch.latest+1, data)
 	}
-	_ = s.storePart(ch, ch.latest+1, data)
 	if event == "released" {
 		for id, owned := range s.channels {
 			if owned.runnerID == runnerID && owned.sessionID == sid && !owned.closed {
