@@ -27,17 +27,13 @@ type signedState struct {
 }
 
 type paymentRequest struct {
-	State        signedState `json:"state,omitempty"`
+	State        signedState `json:"state"`
 	Orchestrator []byte      `json:"orchestrator"`
 	ManifestID   string
-	App          string `json:"app,omitempty"`
-	Type         string `json:"type"`
-	MaxPrice     *struct {
-		Price    json.Number `json:"price"`
-		Currency string      `json:"currency"`
-		Unit     string      `json:"unit"`
-	} `json:"maxPrice,omitempty"`
-	Capabilities []byte `json:"capabilities,omitempty"`
+	App          string    `json:"app,omitempty"`
+	Type         string    `json:"type"`
+	MaxPrice     *maxPrice `json:"maxPrice,omitempty"`
+	Capabilities []byte    `json:"capabilities,omitempty"`
 }
 type paymentResponse struct {
 	Payment  string      `json:"payment"`
@@ -46,14 +42,17 @@ type paymentResponse struct {
 }
 
 type Service struct {
-	key             *eth.Key
-	store           *stateStore
-	authToken       string
-	mux             *http.ServeMux
-	discoveryURLs   []string
-	discoveryClient *http.Client
-	paymentChain    pm.SenderChain
-	senderPolicy    pm.SenderPolicy
+	authClient          *http.Client
+	authURL, authPolicy string
+	authHeaders         map[string]string
+	key                 *eth.Key
+	store               *stateStore
+	authToken           string
+	mux                 *http.ServeMux
+	discoveryURLs       []string
+	discoveryClient     *http.Client
+	paymentChain        pm.SenderChain
+	senderPolicy        pm.SenderPolicy
 }
 
 func (s *Service) SetPaymentChain(chain pm.SenderChain) { s.paymentChain = chain }
@@ -359,6 +358,15 @@ func (s *Service) generate(w http.ResponseWriter, r *http.Request) {
 
 	if state.InitialPricePerUnit <= 0 || state.InitialPixelsPerUnit <= 0 || new(big.Rat).SetFrac64(info.Price.PricePerUnit, info.Price.UnitsPerPrice).Cmp(new(big.Rat).SetFrac64(state.InitialPricePerUnit, state.InitialPixelsPerUnit)) > 0 {
 		signerError(w, 481, "orchestrator price exceeds initial session price")
+		return
+	}
+	if err := s.authorizePayment(r, req, info.Price, &state); err != nil {
+		var f paymentFailure
+		if errors.As(err, &f) {
+			signerError(w, f.status, f.reason)
+		} else {
+			signerError(w, 500, "payment authorization failed")
+		}
 		return
 	}
 	response, err := s.store.apply(state.StateID, oldSequence, body, func() ([]byte, error) { return s.makePayment(r.Context(), req, info, state, oldSequence) })

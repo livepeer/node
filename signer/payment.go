@@ -22,6 +22,8 @@ type paymentState struct {
 	OrchestratorAddress  ethcommon.Address
 	App                  string
 	AuthExpiry           int64
+	AuthPolicy           string
+	AuthMaxPrice         string
 	SenderNonce          uint32
 	Balance              string
 	InitialPricePerUnit  int64
