@@ -192,7 +192,7 @@ func (c *Contracts) WaitReceipt(ctx context.Context, hash ethcommon.Hash) (uint6
 				return 0, errors.New("invalid transaction receipt")
 			}
 			status, err := ParseHexQuantity(receipt.Status)
-			if err != nil || status.Uint64() != 1 {
+			if err != nil || !status.IsUint64() || status.Uint64() != 1 {
 				return 0, errors.New("transaction reverted")
 			}
 			block, err := ParseHexQuantity(receipt.BlockNumber)

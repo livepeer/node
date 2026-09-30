@@ -281,27 +281,13 @@ func executeAction(ctx context.Context, p Params, out io.Writer, command string)
 				return err
 			}
 			result := map[string]any{"command": "stake bond", "contract": "livepeerToken", "method": "approve", "simulation": plan, "submitted": false, "next_step": "bond after approval confirms"}
-			if p.Submit {
-				hash, err := contracts.Submit(ctx, plan, key, chainID)
-				if err != nil {
-					return err
-				}
-				result["transaction_hash"] = hash.Hex()
-				result["submitted"] = true
-				waitCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
-				block, err := contracts.WaitReceipt(waitCtx, hash)
-				cancel()
-				if err != nil {
-					return err
-				}
-				result["confirmed_block"] = block
-			}
-			if err := formatResult(out, p.Output, result); err != nil {
+			if err := submitPlan(ctx, p, out, contracts, key, chainID, plan, result); err != nil {
 				return err
 			}
-			if !p.Submit {
+			if !p.Submit || !p.Wait {
 				return nil
 			}
+
 		}
 	}
 	for _, a := range actions {
@@ -318,24 +304,7 @@ func executeAction(ctx context.Context, p Params, out io.Writer, command string)
 			return err
 		}
 		result := map[string]any{"command": command, "contract": a.Contract, "method": a.Method, "simulation": plan, "submitted": false}
-		if p.Submit {
-			hash, err := contracts.Submit(ctx, plan, key, chainID)
-			if err != nil {
-				return err
-			}
-			result["transaction_hash"] = hash.Hex()
-			result["submitted"] = true
-			if p.Wait {
-				waitCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
-				block, err := contracts.WaitReceipt(waitCtx, hash)
-				cancel()
-				if err != nil {
-					return err
-				}
-				result["confirmed_block"] = block
-			}
-		}
-		if err := formatResult(out, p.Output, result); err != nil {
+		if err := submitPlan(ctx, p, out, contracts, key, chainID, plan, result); err != nil {
 			return err
 		}
 	}
@@ -354,4 +323,36 @@ func addContractCommands(_ any, add func(string, string, func(context.Context, P
 		name := cmd
 		add(name, "Simulate or explicitly submit "+name, func(ctx context.Context, p Params, out io.Writer) error { return executeAction(ctx, p, out, name) })
 	}
+}
+
+// Emit a submission record before any wait. Even an uncertain send carries the
+// locally computed hash, so operators can reconcile it without signing again.
+func submitPlan(ctx context.Context, p Params, out io.Writer, contracts *eth.Contracts, key *eth.Key, chainID *big.Int, plan eth.TransactionPlan, result map[string]any) error {
+	if !p.Submit {
+		return formatResult(out, p.Output, result)
+	}
+	hash, sendErr := contracts.Submit(ctx, plan, key, chainID)
+	if hash != (ethcommon.Hash{}) {
+		result["transaction_hash"] = hash.Hex()
+	}
+	result["submitted"] = sendErr == nil
+	if sendErr != nil {
+		result["submission_error"] = sendErr.Error()
+	}
+	if err := formatResult(out, p.Output, result); err != nil {
+		return errors.Join(err, sendErr)
+	}
+	if sendErr != nil {
+		return fmt.Errorf("transaction %s: %w", hash.Hex(), sendErr)
+	}
+	if !p.Wait {
+		return nil
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	defer cancel()
+	block, err := contracts.WaitReceipt(waitCtx, hash)
+	if err != nil {
+		return fmt.Errorf("transaction %s receipt: %w", hash.Hex(), err)
+	}
+	return formatResult(out, p.Output, map[string]any{"transaction_hash": hash.Hex(), "confirmed_block": block})
 }
