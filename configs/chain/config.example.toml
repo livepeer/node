@@ -1,10 +1,10 @@
-rpc_url_file = "/run/secrets/livepeer-chain-rpc-url"
-rpc_grants = []
-# rpc_ca_file = "/etc/livepeer/rpc-ca.pem"
-chain_id = "1"
-# sender = "0x0123456789abcdef0123456789abcdef01234567"
-# controller_address = "0x0123456789abcdef0123456789abcdef01234567"
-# private_key_file = "/run/secrets/livepeer-chain-key"
-# submit = false
-# wait = false
-output = "json"
+RPCURLFile = "/run/secrets/livepeer-chain-rpc-url"
+# ChainID = 42161 # Optional expected RPC chain ID
+# Sender = "0x0123456789abcdef0123456789abcdef01234567"
+# Controller = "0xD8E8328501E9645d16Cf49539efC04f734606ee4" # Arbitrum mainnet default
+# KeyFile = "/run/secrets/livepeer-chain-key"
+
+# Action inputs and output controls must be provided on the command line.
+# Example dry run:
+# livepeer chain --config /path/to/chain.toml --output json ticketbroker fund --amount 1000000000000000000 --reserve 0
+# Add --submit to broadcast, --wait for a receipt, or --quiet to suppress output.
