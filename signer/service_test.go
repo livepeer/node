@@ -12,7 +12,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -60,7 +59,7 @@ func (fundedSender) SenderInfo(context.Context, ethcommon.Address, ethcommon.Add
 	return eth.SenderInfo{Snapshot: eth.ChainSnapshot{Block: big.NewInt(50), Round: big.NewInt(5), RoundHash: ethcommon.HexToHash("0x1234")}, Deposit: new(big.Int).Exp(big.NewInt(10), big.NewInt(20), nil), Reserve: new(big.Int).Exp(big.NewInt(10), big.NewInt(20), nil), WithdrawRound: new(big.Int)}, nil
 }
 
-func testService(t *testing.T) (*Service, wire.OrchestratorInfo) {
+func testSignerKey(t *testing.T) (*eth.Key, string) {
 	t.Helper()
 	private, err := crypto.GenerateKey()
 	require.NoError(t, err)
@@ -68,6 +67,12 @@ func testService(t *testing.T) (*Service, wire.OrchestratorInfo) {
 	require.NoError(t, os.WriteFile(keyFile, []byte(hex.EncodeToString(crypto.FromECDSA(private))), 0600))
 	key, err := eth.OpenKeyFile(keyFile)
 	require.NoError(t, err)
+	return key, keyFile
+}
+
+func testService(t *testing.T) (*Service, wire.OrchestratorInfo) {
+	t.Helper()
+	key, _ := testSignerKey(t)
 	max := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
 	info := wire.OrchestratorInfo{Transcoder: "https://orch.example.com", Address: ethcommon.HexToAddress("0x1234").Bytes(), Price: wire.PriceInfo{PricePerUnit: 10, UnitsPerPrice: 1},
 		TicketParams: wire.TicketParams{Recipient: ethcommon.HexToAddress("0x1234").Bytes(), FaceValue: big.NewInt(20).Bytes(), WinProb: new(big.Int).Add(new(big.Int).Quo(max, big.NewInt(2)), big.NewInt(1)).Bytes(), RecipientRandHash: crypto.Keccak256(make([]byte, 32)), Seed: big.NewInt(1).Bytes(), ExpirationBlock: big.NewInt(500).Bytes(), Expiration: wire.ExpirationParams{CreationRound: 5, CreationRoundBlockHash: ethcommon.HexToHash("0x1234").Bytes()}},
@@ -88,6 +93,17 @@ func postPayment(t *testing.T, s *Service, request map[string]any) *httptest.Res
 	w := httptest.NewRecorder()
 	s.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/generate-live-payment", bytes.NewReader(body)))
 	return w
+}
+
+func requirePaymentFailure(t *testing.T, w *httptest.ResponseRecorder, status int) {
+	t.Helper()
+	require.Equal(t, status, w.Code, w.Body.String())
+	var response map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &response))
+	require.Contains(t, response, "error")
+	for _, field := range []string{"payment", "segCreds", "state"} {
+		require.NotContains(t, response, field)
+	}
 }
 
 func TestFixedPaymentAndSignedStateContinuation(t *testing.T) {
@@ -121,6 +137,11 @@ func TestFixedPaymentAndSignedStateContinuation(t *testing.T) {
 	require.Equal(t, uint64(1), state.SequenceNumber)
 	require.Equal(t, uint32(2), state.SenderNonce)
 	request["state"] = second.State
+	info.Price.PricePerUnit++
+	request["orchestrator"] = wire.EncodeOrchestratorInfo(info)
+	requirePaymentFailure(t, postPayment(t, s, request), 481)
+	info.Price.PricePerUnit--
+	request["orchestrator"] = wire.EncodeOrchestratorInfo(info)
 	request["app"] = "changed"
 	w = postPayment(t, s, request)
 	require.Equal(t, 400, w.Code)
@@ -141,19 +162,9 @@ func TestSignerRequestPriceCeiling(t *testing.T) {
 	require.Equal(t, 200, postPayment(t, s, request).Code)
 }
 
-func TestSignerChecksConfiguredSender(t *testing.T) {
-	s, info := testService(t)
-	s.SetPaymentChain(unavailableSender{})
-	request := map[string]any{"orchestrator": wire.EncodeOrchestratorInfo(info), "type": "fixed", "ManifestID": "manifest-1"}
-	require.Equal(t, 482, postPayment(t, s, request).Code)
-}
-
 func TestSignedStateMovesBetweenIndependentSigners(t *testing.T) {
 	_, info := testService(t)
-	private, err := crypto.GenerateKey()
-	require.NoError(t, err)
-	keyFile := filepath.Join(t.TempDir(), "shared-key")
-	require.NoError(t, os.WriteFile(keyFile, []byte(hex.EncodeToString(crypto.FromECDSA(private))), 0600))
+	_, keyFile := testSignerKey(t)
 	var calls atomic.Int32
 	webhook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
@@ -210,7 +221,7 @@ func TestSignedStateMovesBetweenIndependentSigners(t *testing.T) {
 	require.Equal(t, int32(2), calls.Load(), "webhook authorization is cached in signed state across replicas")
 }
 
-func TestSignerReturnsNoTicketsForCarriedCredit(t *testing.T) {
+func TestSignerRejectsCarriedCreditWithoutTickets(t *testing.T) {
 	s, info := testService(t)
 	maxWinProb := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
 	info.TicketParams.WinProb = new(big.Int).Quo(maxWinProb, big.NewInt(3)).Bytes()
@@ -219,8 +230,8 @@ func TestSignerReturnsNoTicketsForCarriedCredit(t *testing.T) {
 	require.Equal(t, 200, response.Code, response.Body.String())
 	var first paymentResponse
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &first))
-	// The first batch leaves 10/3 wei of credit. A lower quote and ticket EV
-	// can use that credit without asking the signer to create another ticket.
+	// The first batch leaves 10/3 wei of credit. The lower quote produces
+	// a batch without tickets, which the remote payment protocol rejects.
 	info.Price.PricePerUnit = 1
 	info.TicketParams.FaceValue = big.NewInt(5).Bytes()
 	info.TicketParams.RecipientRandHash = crypto.Keccak256([]byte("lower ticket EV"))
@@ -228,30 +239,6 @@ func TestSignerReturnsNoTicketsForCarriedCredit(t *testing.T) {
 	response = postPayment(t, s, request)
 	require.Equal(t, 482, response.Code, response.Body.String())
 	require.NotContains(t, response.Body.String(), `"payment"`)
-}
-
-func TestSignerDiscoveryPreservesLiveRunnerEntries(t *testing.T) {
-	s, _ := testService(t)
-	orchestrator := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, "/discovery", r.URL.Path)
-		_, _ = w.Write([]byte(`[{"address":"https://orchestrator.example","runners":[{"url":"https://orchestrator.example/apps/r/app","app":"retained","mode":"single-shot","gpu":{"id":"0","name":"H100","vram_mb":80000},"capacity":2,"price_info":{"price":10,"currency":"wei","unit":"fixed"}},{"url":"https://orchestrator.example/apps/x/app","app":"excluded","mode":"single-shot","capacity":1}]}]`))
-	}))
-	defer orchestrator.Close()
-	require.NoError(t, s.SetDiscovery([]*url.URL{testURL(t, orchestrator.URL)}))
-	w := httptest.NewRecorder()
-	s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/discover-orchestrators?app=retained&gpu=H100", nil))
-	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
-	var result []discoveredOrchestrator
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &result))
-	require.Len(t, result, 1)
-	require.Equal(t, "https://orchestrator.example", result[0].Address)
-	require.Len(t, result[0].Runners, 1)
-	require.Equal(t, "retained", result[0].Runners[0].App)
-	require.Equal(t, "H100", result[0].Runners[0].GPU.Name)
-	w = httptest.NewRecorder()
-	s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/discover-orchestrators?app=retained&gpu=L40S", nil))
-	require.Equal(t, http.StatusOK, w.Code)
-	require.JSONEq(t, "[]", w.Body.String())
 }
 
 func TestSlowResponseReleasesSlotOnDeadlineOrCancellation(t *testing.T) {

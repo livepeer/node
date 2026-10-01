@@ -143,7 +143,7 @@ func TestAccountingRateCapturedBeforeAuthorization(t *testing.T) {
 }
 
 func TestRejectedPaymentsEmitNoEvent(t *testing.T) {
-	for _, rejection := range []string{"invalid", "price", "refresh", "funds", "authorization"} {
+	for rejection, status := range map[string]int{"invalid": 400, "price": 481, "refresh": 480, "funds": 482, "authorization": 403} {
 		t.Run(rejection, func(t *testing.T) {
 			s, info := testService(t)
 			s.events = eventSinkFunc(func(context.Context, signingEvent) error { t.Fatal("rejected payment emitted an event"); return nil })
@@ -165,20 +165,27 @@ func TestRejectedPaymentsEmitNoEvent(t *testing.T) {
 				defer webhook.Close()
 				require.NoError(t, s.SetAuthWebhook(testURL(t, webhook.URL), nil))
 			}
-			require.GreaterOrEqual(t, postPayment(t, s, request).Code, 400)
+			requirePaymentFailure(t, postPayment(t, s, request), status)
 		})
 	}
 }
 
-type interruptedWriter struct{ *httptest.ResponseRecorder }
+type interruptedWriter struct {
+	*httptest.ResponseRecorder
+	beforeWrite func()
+}
 
-func (w interruptedWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
+func (w interruptedWriter) Write([]byte) (int, error) { w.beforeWrite(); return 0, io.ErrClosedPipe }
 
 func TestEventPersistedBeforeResponseAndSurvivesInterruptedWrite(t *testing.T) {
 	s, info := testService(t)
 	p := testKafkaProducer(t, 1<<20)
 	s.events = p
-	w := interruptedWriter{httptest.NewRecorder()}
+	w := interruptedWriter{httptest.NewRecorder(), func() {
+		events, err := p.outbox.pending(t.Context())
+		require.NoError(t, err)
+		require.Len(t, events, 1, "event must be durable before attempting the response write")
+	}}
 	body, err := json.Marshal(map[string]any{"type": "fixed", "orchestrator": wire.EncodeOrchestratorInfo(info)})
 	require.NoError(t, err)
 	s.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/generate-live-payment", bytes.NewReader(body)))
@@ -189,9 +196,7 @@ func TestEventPersistedBeforeResponseAndSurvivesInterruptedWrite(t *testing.T) {
 	// Storage failure must withhold payment, credentials, and signed state.
 	require.NoError(t, p.outbox.Close())
 	response := postPayment(t, s, map[string]any{"type": "fixed", "orchestrator": wire.EncodeOrchestratorInfo(info)})
-	require.Equal(t, 503, response.Code)
-	require.NotContains(t, response.Body.String(), "segCreds")
-	require.NotContains(t, response.Body.String(), "\"state\"")
+	requirePaymentFailure(t, response, 503)
 	require.Equal(t, uint64(1), p.enqueueFailures.Load())
 }
 

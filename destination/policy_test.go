@@ -11,14 +11,22 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
 
 func TestPublic(t *testing.T) {
-	for _, raw := range []string{"127.0.0.1", "10.1.1.1", "169.254.169.254", "100.64.1.1", "192.168.1.1", "192.88.99.1", "::1", "fc00::1", "fe80::1", "2001:db8::1", "2002::1"} {
+	p, err := New("runner", nil)
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel() // An enforcement regression must not open outbound connections.
+	for _, raw := range []string{"127.0.0.1", "10.1.1.1", "169.254.169.254", "100.64.1.1", "192.168.1.1", "192.88.99.1", "::1", "fc00::1", "fe80::1", "2001:db8::1", "2002::1", "::ffff:127.0.0.1"} {
 		require.False(t, Public(netip.MustParseAddr(raw)), raw)
+		_, err := p.DialContext(ctx, "tcp", net.JoinHostPort(raw, "443"))
+		require.ErrorContains(t, err, "denied address", raw)
 	}
 	for _, raw := range []string{"8.8.8.8", "2606:4700:4700::1111"} {
 		require.True(t, Public(netip.MustParseAddr(raw)), raw)
@@ -26,34 +34,70 @@ func TestPublic(t *testing.T) {
 }
 
 func TestRedirectChecksDestinationAndDropsAuthorization(t *testing.T) {
-	var receivedAuthorization string
-	final := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		receivedAuthorization = r.Header.Get("Authorization")
+	headers := make(chan http.Header, 1)
+	var connections atomic.Int32
+	var requests atomic.Int32
+	final := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		headers <- r.Header.Clone()
 		w.WriteHeader(http.StatusOK)
 	}))
+	final.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			connections.Add(1)
+		}
+	}
+	final.Start()
 	defer final.Close()
+	credentialURL := strings.Replace(final.URL, "http://", "http://user:password@", 1)
 	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, final.URL, http.StatusFound)
+		requests.Add(1)
+		target := credentialURL
+		if r.URL.Path == "/loop" {
+			target = r.URL.String()
+		}
+		http.Redirect(w, r, target, http.StatusFound)
 	}))
 	defer redirect.Close()
-	first, err := url.Parse(redirect.URL)
-	require.NoError(t, err)
-	second, err := url.Parse(final.URL)
-	require.NoError(t, err)
-	policy, err := New("runner", []string{first.Host})
+	policy, err := New("runner", []string{redirect.URL})
 	require.NoError(t, err)
 	request, err := http.NewRequest(http.MethodGet, redirect.URL, nil)
 	require.NoError(t, err)
 	request.Header.Set("Authorization", "private-token")
-	_, err = policy.Client().Do(request)
+	request.Header.Set("Proxy-Authorization", "private-proxy-token")
+	client := policy.Client()
+	client.Timeout = time.Second
+	defer client.CloseIdleConnections()
+	_, err = client.Do(request)
 	require.ErrorContains(t, err, "denied address")
-	policy, err = New("runner", []string{first.Host, second.Host})
+	for _, name := range []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"} {
+		t.Setenv(name, final.URL)
+	}
+	t.Setenv("NO_PROXY", "")
+	t.Setenv("no_proxy", "")
+	for _, address := range []string{"http://10.1.2.3", "https://10.1.2.3"} {
+		_, err = client.Get(address)
+		require.ErrorContains(t, err, "denied address")
+	}
+	require.Zero(t, connections.Load(), "redirect and proxy targets must remain unconnected")
+	policy, err = New("runner", []string{redirect.URL, final.URL})
 	require.NoError(t, err)
-	response, err := policy.Client().Do(request)
+	client = policy.Client()
+	defer client.CloseIdleConnections()
+	response, err := client.Do(request)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, response.StatusCode)
 	require.NoError(t, response.Body.Close())
-	require.Empty(t, receivedAuthorization)
+	received := <-headers
+	require.Empty(t, received.Get("Authorization"))
+	require.Empty(t, received.Get("Proxy-Authorization"))
+	require.Nil(t, response.Request.URL.User)
+	requests.Store(0)
+	response, err = client.Get(redirect.URL + "/loop")
+	require.ErrorContains(t, err, "too many redirects")
+	if response != nil {
+		_ = response.Body.Close()
+	}
+	require.Equal(t, int32(10), requests.Load())
 }
 
 func TestCustomCAIsScopedAndVerified(t *testing.T) {
@@ -81,24 +125,64 @@ func TestCustomCAIsScopedAndVerified(t *testing.T) {
 	require.NotContains(t, err.Error(), "missing")
 }
 
-func TestGrantRequiresExactValidPort(t *testing.T) {
-	for _, raw := range []string{"localhost", "localhost:0", "localhost:65536", "localhost:abc", ":443", "localhost:443/path"} {
-		_, err := New("runner", []string{raw})
-		require.Error(t, err, raw)
+func TestGrants(t *testing.T) {
+	for raw, address := range map[string]string{
+		"orch.internal": "orch.internal:443", "localhost": "localhost:443", "//orch.internal": "orch.internal:443",
+		"https://orch.internal": "orch.internal:443", "http://orch.internal": "orch.internal:80",
+		"127.0.0.1:8935": "127.0.0.1:8935", "http://orch.internal:443": "orch.internal:443",
+		"https://orch.internal:00443": "orch.internal:00443",
+		"[fe80::1%en0]:8935":          "[fe80::1%en0]:8935", "https://[fe80::1%25en0]:8935": "[fe80::1%en0]:8935",
+		"[::1]": "[::1]:443", "http://[::1]": "[::1]:80", "https://[::1]:8935": "[::1]:8935",
+	} {
+		p, err := New("discovery", []string{raw})
+		require.NoError(t, err, raw)
+		require.Contains(t, p.Grants, address)
 	}
-	_, err := New("runner", []string{"127.0.0.1:443"})
-	require.NoError(t, err)
+	for _, raw := range []string{"", "ftp://orch", ":443", "orch:", "orch:0", "orch:65536", "orch:abc", "::1", "[bad]", "one,two", "*.internal", "https://user:password@orch", "orch/", "orch/path", "orch?", "orch?x=y", "orch#fragment"} {
+		_, err := New("discovery", []string{raw})
+		require.Error(t, err, raw)
+		require.NotContains(t, err.Error(), "password")
+	}
 }
 
-func TestMixedDNSDeniedBeforeDial(t *testing.T) {
+func TestDNSAnswersRespectGrants(t *testing.T) {
 	p, err := New("runner", nil)
 	require.NoError(t, err)
-	p.Lookup = func(context.Context, string) ([]net.IPAddr, error) {
-		return []net.IPAddr{{IP: net.ParseIP("8.8.8.8")}, {IP: net.ParseIP("127.0.0.1")}}, nil
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	for _, ips := range [][]net.IPAddr{
+		{{IP: net.ParseIP("127.0.0.1")}}, {{IP: net.ParseIP("fc00::1")}},
+		{{IP: net.ParseIP("8.8.8.8")}, {IP: net.ParseIP("10.1.1.1")}},
+	} {
+		p.Lookup = func(context.Context, string) ([]net.IPAddr, error) { return ips, nil }
+		_, err := p.DialContext(ctx, "tcp", "orch.example:443")
+		require.ErrorContains(t, err, "denied address")
 	}
-	_, err = p.DialContext(context.Background(), "tcp", "runner.example:443")
+	granted, err := New("runner", []string{"orch.example:443"})
+	require.NoError(t, err)
+	granted.Lookup = p.Lookup
+	_, err = granted.DialContext(ctx, "tcp", "orch.example:443")
+	require.ErrorIs(t, err, context.Canceled, "the exact hostname grant permits these DNS answers")
+}
+
+func TestDialContextRechecksDNSOnEachConnection(t *testing.T) {
+	p, err := New("signer-discovery", nil)
+	require.NoError(t, err)
+	lookups := 0
+	p.Lookup = func(context.Context, string) ([]net.IPAddr, error) {
+		lookups++
+		if lookups == 1 {
+			return []net.IPAddr{{IP: net.ParseIP("8.8.8.8")}}, nil
+		}
+		return []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}, nil
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel() // Permit the public address through policy without connecting to it.
+	_, err = p.DialContext(ctx, "tcp", "orch.example:443")
+	require.ErrorIs(t, err, context.Canceled)
+	_, err = p.DialContext(ctx, "tcp", "orch.example:443")
 	require.ErrorContains(t, err, "denied address")
-	require.True(t, strings.Contains(err.Error(), "runner"))
+	require.Equal(t, 2, lookups)
 }
 
 func TestValidateRequiredURL(t *testing.T) {

@@ -4,10 +4,11 @@ Listen = "127.0.0.1:8937"
 MetricsListen = "127.0.0.1:8938"
 KeyFile = "/run/secrets/livepeer-signer-key"
 # Raw Ethereum key: 64 hex digits, optional 0x prefix, owner-only permissions.
+# Discovery sources and grants for private destinations; see docs/signer.md.
 Orchestrators = []
-# Add orchestrator discovery URLs to make runners discoverable through the signer.
+DiscoveryGrants = []
 
-# On-chain configuration is required, including for identity and discovery.
+# The signer requires an on-chain connection at startup.
 # The RPC URL is an exact-byte secret file (omit a trailing newline).
 RPCURLFile = "/run/secrets/livepeer-signer-rpc-url"
 # Optional assertion against eth_chainId; omitted means use the RPC's chain.
@@ -27,7 +28,7 @@ ETHUSDMaxAge = "2h"
 
 # A stale/unavailable feed makes /readyz and payment generation return 503.
 # The signer retries every 30 seconds and resumes when it observes a fresh rate.
-# Identity signing and discovery remain available while the feed is stale.
+# /sign-orchestrator-info and discovery remain available while the feed is stale.
 
 # Expected value (EV) limits are in wei and independent of work's maxPrice.
 MaxTicketEV = "3000000000000"

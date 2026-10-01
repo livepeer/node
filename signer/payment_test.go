@@ -2,15 +2,12 @@ package signer
 
 import (
 	"context"
-	"encoding/hex"
 	"math/big"
-	"os"
 	"path/filepath"
 	"sync"
 	"testing"
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/livepeer/node/eth"
 	"github.com/livepeer/node/pm"
 	"github.com/stretchr/testify/require"
@@ -30,12 +27,7 @@ func (c collateralChain) SenderInfo(ctx context.Context, _, _ ethcommon.Address)
 }
 
 func TestRecipientReservesWinningLiabilityAcrossConcurrentSessions(t *testing.T) {
-	private, err := crypto.GenerateKey()
-	require.NoError(t, err)
-	path := filepath.Join(t.TempDir(), "key")
-	require.NoError(t, os.WriteFile(path, []byte(hex.EncodeToString(crypto.FromECDSA(private))), 0600))
-	key, err := eth.OpenKeyFile(path)
-	require.NoError(t, err)
+	key, _ := testSignerKey(t)
 	store, err := pm.OpenSQLite(filepath.Join(t.TempDir(), "recipient.sqlite"))
 	require.NoError(t, err)
 	defer store.Close()

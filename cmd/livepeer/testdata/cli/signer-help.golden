@@ -29,6 +29,7 @@ Flags:
       --controller-address string          Livepeer Controller (Arbitrum mainnet) (env: LIVEPEER_SIGNER_CONTROLLER_ADDRESS) (default "0xd8e8328501e9645d16cf49539efc04f734606ee4")
   -p, --private-key-file string             (env: LIVEPEER_SIGNER_PRIVATE_KEY_FILE, required)
   -o, --orchestrators strings               (env: LIVEPEER_SIGNER_ORCHESTRATORS)
+      --discovery-grants strings           Private discovery host[:port] grants (env: LIVEPEER_SIGNER_DISCOVERY_GRANTS)
   -h, --help                               help for livepeer-signer
   -v, --version                            version for livepeer-signer
 

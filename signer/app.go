@@ -52,6 +52,7 @@ type Params struct {
 	Controller             ethcommon.Address    `name:"controller-address" required:"true" default:"0xD8E8328501E9645d16Cf49539efC04f734606ee4" descr:"Livepeer Controller (Arbitrum mainnet)"`
 	KeyFile                string               `name:"private-key-file" file:"true" required:"true"`
 	Orchestrators          []boa.Text[*url.URL] `name:"orchestrators" optional:"true"`
+	DiscoveryGrants        []string             `name:"discovery-grants" optional:"true" descr:"Private discovery host[:port] grants"`
 }
 
 func (p Params) senderPolicy() (pm.SenderPolicy, error) {
@@ -116,6 +117,9 @@ func (p Params) Validate() error {
 			return err
 		}
 	}
+	if _, err := destination.New("signer-discovery", p.DiscoveryGrants); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -172,7 +176,7 @@ func serve(parent context.Context, p Params) error {
 			return err
 		}
 	}
-	if err := service.SetDiscovery(p.discoveryURLs()); err != nil {
+	if err := service.SetDiscovery(p.discoveryURLs(), p.DiscoveryGrants...); err != nil {
 		return err
 	}
 	producer, err := openKafkaProducer(ctx, p.Kafka, key.Address().Hex())

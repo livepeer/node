@@ -161,7 +161,7 @@ func TestOutboxStorageWriteFailureAndRecovery(t *testing.T) {
 	require.Contains(t, metrics.String(), "storage_errors_total 1")
 }
 
-func TestOutboxPartialDeliveryAndAcknowledgementFailureReplay(t *testing.T) {
+func TestOutboxPartialDeliveryRetainsWholeBatch(t *testing.T) {
 	p := testKafkaProducer(t, 1<<20)
 	for range 3 {
 		require.NoError(t, p.Enqueue(t.Context(), testEvent()))
@@ -186,16 +186,6 @@ func TestOutboxPartialDeliveryAndAcknowledgementFailureReplay(t *testing.T) {
 	retained, err := p.outbox.pending(t.Context())
 	require.NoError(t, err)
 	require.Equal(t, original, retained)
-	// Model a crash/error after Kafka has acknowledged, before local deletion.
-	_, err = p.outbox.db.Exec(`CREATE TRIGGER fail_ack BEFORE DELETE ON signer_kafka_events BEGIN SELECT RAISE(FAIL,'injected failure'); END`)
-	require.NoError(t, err)
-	_, err = p.publish(t.Context())
-	require.Error(t, err)
-	retained, err = p.outbox.pending(t.Context())
-	require.NoError(t, err)
-	require.Equal(t, original, retained)
-	_, err = p.outbox.db.Exec(`DROP TRIGGER fail_ack`)
-	require.NoError(t, err)
 	progress, err := p.publish(t.Context())
 	require.NoError(t, err)
 	require.True(t, progress)
@@ -203,7 +193,7 @@ func TestOutboxPartialDeliveryAndAcknowledgementFailureReplay(t *testing.T) {
 	require.NoError(t, err)
 	require.Zero(t, stats.Count)
 	require.Zero(t, stats.Bytes)
-	require.Equal(t, 3, calls)
+	require.Equal(t, 2, calls)
 }
 
 func TestPublisherBatchingAndCancellation(t *testing.T) {

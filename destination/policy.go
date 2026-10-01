@@ -67,13 +67,32 @@ type Policy struct {
 	caPool  *x509.CertPool
 }
 
+// New accepts host[:port] or HTTP(S) grant URLs. An omitted scheme defaults
+// to HTTPS; schemes select default ports, while grants still match host:port.
 func New(purpose string, grants []string) (Policy, error) {
 	p := Policy{Purpose: purpose, Grants: map[string]struct{}{}}
 	for _, raw := range grants {
-		host, port, err := net.SplitHostPort(raw)
+		if !strings.Contains(raw, "://") {
+			// Bare host:port grants carry literal IPv6 zone identifiers.
+			raw = "https://" + strings.ReplaceAll(strings.TrimPrefix(raw, "//"), "%", "%25")
+		}
+		u, err := url.Parse(raw)
+		if err != nil || ValidateURL(u) != nil || u.User != nil || u.Path != "" ||
+			u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.ContainsAny(u.Host, ",*") {
+			return Policy{}, fmt.Errorf("invalid %s destination grant: expected host[:port] or HTTP(S) URL without credentials, path, query or fragment", purpose)
+		}
+		address := u.Host
+		if u.Port() == "" && !strings.HasSuffix(u.Host, ":") {
+			port := "443"
+			if u.Scheme == "http" {
+				port = "80"
+			}
+			address += ":" + port
+		}
+		host, port, err := net.SplitHostPort(address)
 		portNumber, portErr := strconv.Atoi(port)
-		if err != nil || host == "" || portErr != nil || portNumber < 1 || portNumber > 65535 || strings.ContainsAny(host, "/@") {
-			return Policy{}, fmt.Errorf("invalid %s destination grant: expected exact host:port", purpose)
+		if err != nil || host == "" || portErr != nil || portNumber < 1 || portNumber > 65535 {
+			return Policy{}, fmt.Errorf("invalid %s destination grant: expected a port between 1 and 65535", purpose)
 		}
 		p.Grants[strings.ToLower(net.JoinHostPort(host, port))] = struct{}{}
 	}

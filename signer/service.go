@@ -79,7 +79,14 @@ func validateDiscoveryURL(endpoint *url.URL) error {
 	return nil
 }
 
-func (s *Service) SetDiscovery(orchestrators []*url.URL) error {
+// SetDiscovery configures discovery sources. Private destinations, including
+// redirect targets, require an exact host:port grant for discovery. Grant URLs
+// default to HTTPS; the scheme supplies an omitted port, not a scheme restriction.
+func (s *Service) SetDiscovery(orchestrators []*url.URL, grants ...string) error {
+	policy, err := destination.New("signer-discovery", grants)
+	if err != nil {
+		return err
+	}
 	urls := make([]*url.URL, 0, len(orchestrators))
 	for _, candidate := range orchestrators {
 		if err := validateDiscoveryURL(candidate); err != nil {
@@ -89,8 +96,14 @@ func (s *Service) SetDiscovery(orchestrators []*url.URL) error {
 		parsed.Path = strings.TrimRight(parsed.Path, "/") + "/discovery"
 		urls = append(urls, parsed)
 	}
-	s.discoveryClient = &http.Client{Transport: http.DefaultTransport.(*http.Transport).Clone(), Timeout: 5 * time.Second}
+	client := policy.Client()
+	client.Timeout = 5 * time.Second
+	previous := s.discoveryClient
+	s.discoveryClient = client
 	s.discoveryURLs = urls
+	if previous != nil {
+		previous.CloseIdleConnections()
+	}
 	return nil
 }
 

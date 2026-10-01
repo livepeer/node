@@ -161,22 +161,7 @@ func TestOptionalKafkaBoaConfiguration(t *testing.T) {
 			for name, value := range test.env {
 				t.Setenv("LIVEPEER_SIGNER_KAFKA_"+name, value)
 			}
-			p := validParams(t)
-			p.KeyFile = filepath.Join(t.TempDir(), "key")
-			require.NoError(t, os.WriteFile(p.KeyFile, []byte("key"), 0600))
-			args := append([]string(nil), test.args...)
-			if test.config != "" {
-				configPath := filepath.Join(t.TempDir(), "signer.toml")
-				require.NoError(t, os.WriteFile(configPath, []byte(test.config), 0600))
-				args = append(args, "--config", configPath)
-			}
-			cmd := boa.Cmd[Params]{Params: &p, RawArgs: args, RejectUnknown: true,
-				ParamEnrich: boa.ParamEnricherCombine(boa.ParamEnricherDefault, boa.ParamEnricherEnv, boa.ParamEnricherEnvPrefix("LIVEPEER_SIGNER")),
-			}
-			err := cmd.Validate()
-			if err == nil {
-				err = p.Validate()
-			}
+			p, err := loadSignerParams(t, test.args, test.config)
 			if test.want != "" {
 				require.ErrorContains(t, err, test.want)
 				return

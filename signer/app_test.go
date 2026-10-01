@@ -22,6 +22,7 @@ import (
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/j0sh/boa/pkg/boa"
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 )
 
@@ -58,6 +59,7 @@ func TestSignerConfigurationValidation(t *testing.T) {
 		{"metrics", func(p *Params) { p.MetricsListen = netip.MustParseAddrPort("0.0.0.0:8938") }, "loopback"},
 		{"zero deposit multiplier", func(p *Params) { p.DepositMultiplier = 0 }, "deposit multiplier"},
 		{"headers without webhook", func(p *Params) { p.AuthWebhookHeaders = Headers{"Authorization": {"Bearer token"}} }, "webhook URL"},
+		{"invalid discovery grant", func(p *Params) { p.DiscoveryGrants = []string{"ftp://localhost"} }, "signer-discovery destination grant"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			p := validParams(t)
@@ -89,6 +91,7 @@ MaxHourlyPrice = "36"
 MaxFixedPrice = "1/2"
 MaxTicketEV = "3000000000000"
 Orchestrators = ["http://localhost:8935"]
+DiscoveryGrants = ["localhost:8935"]
 `, keyFile, rpcFile, webhookFile, headersFile)
 	configFile := filepath.Join(folder, "signer.toml")
 	require.NoError(t, os.WriteFile(configFile, []byte(config), 0600))
@@ -107,7 +110,58 @@ Orchestrators = ["http://localhost:8935"]
 	require.Equal(t, big.NewRat(1, 2), p.MaxFixedPrice)
 	require.Equal(t, time.Hour, p.ETHUSDMaxAge)
 	require.Equal(t, "http://localhost:8935", p.Orchestrators[0].Value.String())
+	require.Equal(t, []string{"localhost:8935"}, p.DiscoveryGrants)
 	require.NoError(t, p.Validate())
+}
+
+func loadSignerParams(t *testing.T, args []string, config string) (Params, error) {
+	t.Helper()
+	p := validParams(t)
+	p.KeyFile = filepath.Join(t.TempDir(), "key")
+	require.NoError(t, os.WriteFile(p.KeyFile, []byte("key"), 0600))
+	args = append([]string(nil), args...)
+	if config != "" {
+		path := filepath.Join(t.TempDir(), "signer.toml")
+		require.NoError(t, os.WriteFile(path, []byte(config), 0600))
+		args = append(args, "--config", path)
+	}
+	cmd := boa.Cmd[Params]{Params: &p, RawArgs: args, RejectUnknown: true,
+		ParamEnrich: boa.ParamEnricherCombine(boa.ParamEnricherDefault, boa.ParamEnricherEnv, boa.ParamEnricherEnvPrefix("LIVEPEER_SIGNER")),
+		RunFuncE:    func(p *Params, _ *cobra.Command, _ []string) error { return p.Validate() },
+	}
+	err := cmd.RunArgsE(args)
+	return p, err
+}
+
+func TestSignerDiscoveryGrantConfiguration(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		args   []string
+		env    string
+		config string
+		want   []string
+		bad    bool
+	}{
+		{name: "omitted"},
+		{name: "CLI", args: []string{"--discovery-grants", "localhost:8935,[::1]:8935"}, want: []string{"localhost:8935", "[::1]:8935"}},
+		{name: "environment", env: "localhost:8935,[::1]:8935", want: []string{"localhost:8935", "[::1]:8935"}},
+		{name: "TOML", config: "DiscoveryGrants = ['localhost:8935', '[::1]:8935']\n", want: []string{"localhost:8935", "[::1]:8935"}},
+		{name: "default ports", args: []string{"--discovery-grants", "orch.internal,http://localhost"}, want: []string{"orch.internal", "http://localhost"}},
+		{name: "invalid CLI", args: []string{"--discovery-grants", "ftp://localhost"}, bad: true},
+		{name: "invalid environment", env: "localhost:0", bad: true},
+		{name: "invalid TOML", config: "DiscoveryGrants = ['localhost:65536']\n", bad: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("LIVEPEER_SIGNER_DISCOVERY_GRANTS", test.env)
+			p, err := loadSignerParams(t, test.args, test.config)
+			if test.bad {
+				require.ErrorContains(t, err, "signer-discovery destination grant")
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, test.want, p.DiscoveryGrants)
+		})
+	}
 }
 
 func TestSignerReadiness(t *testing.T) {
@@ -117,10 +171,8 @@ func TestSignerReadiness(t *testing.T) {
 			if !fixedRate {
 				p.WeiPerUSD, p.ETHUSDMaxAge = nil, time.Hour
 			}
-			key, err := crypto.GenerateKey()
-			require.NoError(t, err)
-			p.KeyFile = filepath.Join(t.TempDir(), "key")
-			require.NoError(t, os.WriteFile(p.KeyFile, []byte(hex.EncodeToString(crypto.FromECDSA(key))), 0600))
+			key, keyFile := testSignerKey(t)
+			p.KeyFile = keyFile
 			var failure atomic.Int32
 			rpc := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				var req struct {
@@ -187,7 +239,7 @@ func TestSignerReadiness(t *testing.T) {
 				p.Kafka = &KafkaConfig{Broker: kafkaBrokerURL(t, "kafka://127.0.0.1:1"), Topic: "signing", OutboxDB: filepath.Join(t.TempDir(), "events.sqlite"), OutboxMaxBytes: int64(len(eventBytes))}
 				brokerAddress, err := p.Kafka.brokerAddress()
 				require.NoError(t, err)
-				outbox, err = openEventOutbox(t.Context(), p.Kafka.OutboxDB, outboxBinding{crypto.PubkeyToAddress(key.PublicKey).Hex(), brokerAddress, p.Kafka.Topic}, p.Kafka.OutboxMaxBytes)
+				outbox, err = openEventOutbox(t.Context(), p.Kafka.OutboxDB, outboxBinding{key.Address().Hex(), brokerAddress, p.Kafka.Topic}, p.Kafka.OutboxMaxBytes)
 				require.NoError(t, err)
 				defer func() { require.NoError(t, outbox.Close()) }()
 			}
@@ -227,7 +279,7 @@ func TestSignerReadiness(t *testing.T) {
 				require.Equal(t, want, get("/readyz"))
 				require.Equal(t, 200, get("/healthz"))
 			}
-			_, err = outbox.enqueue(t.Context(), testEvent())
+			_, err := outbox.enqueue(t.Context(), testEvent())
 			require.NoError(t, err)
 			require.Equal(t, 503, get("/readyz"), "a full outbox must make the signer unready")
 			response, err := client.Get("http://" + p.MetricsListen.String() + "/metrics")

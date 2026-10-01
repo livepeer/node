@@ -31,6 +31,16 @@ Printed configuration also omits secret file paths and the static runner file
 path. Chain action inputs, transaction switches, `--output`, and `--print-config`
 must be supplied on the command line.
 
+## Destination grants
+
+Grants permit connections to local, private, or other restricted addresses;
+public destinations need none. Each grant matches a hostname and port for one
+purpose, such as runner traffic or signer discovery, including redirects.
+
+Grants use `host[:port]`, optionally prefixed with `http://` or `https://`.
+The scheme defaults to HTTPS; omitted ports default to 443 for HTTPS or 80 for
+HTTP.
+
 ## Credential files
 
 RPC URLs, bootstrap credentials, authorization webhook URLs and headers, and
