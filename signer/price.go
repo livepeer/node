@@ -5,7 +5,6 @@ import (
 	"errors"
 	"log/slog"
 	"math/big"
-	"strings"
 	"sync"
 	"time"
 
@@ -21,16 +20,17 @@ type pricePolicy struct {
 	validUntil              time.Time
 }
 
-func newPricePolicy(liveUSD, fixedUSD string) (*pricePolicy, error) {
-	live, ok := new(big.Rat).SetString(strings.TrimSpace(liveUSD))
-	if !ok || live.Sign() <= 0 {
-		return nil, errors.New("max-live-price-usd-per-second must be positive")
+func newPricePolicy(hourlyUSD, fixedUSD *big.Rat) (*pricePolicy, error) {
+	if hourlyUSD == nil || hourlyUSD.Sign() <= 0 {
+		return nil, errors.New("max-hourly-price must be positive")
 	}
-	fixed, ok := new(big.Rat).SetString(strings.TrimSpace(fixedUSD))
-	if !ok || fixed.Sign() <= 0 {
-		return nil, errors.New("max-fixed-price-usd must be positive")
+	if fixedUSD == nil || fixedUSD.Sign() <= 0 {
+		return nil, errors.New("max-fixed-price must be positive")
 	}
-	return &pricePolicy{maxLiveUSD: live, maxFixedUSD: fixed}, nil
+	return &pricePolicy{
+		maxLiveUSD:  new(big.Rat).Quo(hourlyUSD, big.NewRat(3600, 1)),
+		maxFixedUSD: new(big.Rat).Set(fixedUSD),
+	}, nil
 }
 
 func (p *pricePolicy) setRate(rate *big.Rat, until time.Time) error {

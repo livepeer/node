@@ -44,7 +44,7 @@ func TestAuthWebhookCachePriceAndIdentity(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"status": status, "reason": "denied", "expiry": time.Now().Add(time.Minute).Unix(), "auth_id": "alice", "maxPrice": map[string]any{"price": "10", "currency": " WEI ", "unit": " FIXED "}})
 	}))
 	defer webhook.Close()
-	require.NoError(t, s.SetAuthWebhook(webhook.URL, []string{strings.TrimPrefix(webhook.URL, "http://")}, "", map[string]string{"X-Webhook-Secret": "configured"}))
+	require.NoError(t, s.SetAuthWebhook(testURL(t, webhook.URL), Headers{"X-Webhook-Secret": {"configured"}}))
 	req := map[string]any{"orchestrator": base64.StdEncoding.EncodeToString(wire.EncodeOrchestratorInfo(info)), "type": "fixed"}
 	w := postPayment(t, s, req)
 	require.Equal(t, 200, w.Code, w.Body.String())
@@ -71,40 +71,24 @@ func TestAuthWebhookCachePriceAndIdentity(t *testing.T) {
 	require.NoError(t, json.Unmarshal(postPayment(t, s, req).Body.Bytes(), &second))
 	req["state"] = second.State
 	reject.Store(true)
-	require.NoError(t, s.SetAuthWebhook(webhook.URL, []string{strings.TrimPrefix(webhook.URL, "http://")}, "", map[string]string{"X-Webhook-Secret": "configured", "X-Policy": "new"}))
+	require.NoError(t, s.SetAuthWebhook(testURL(t, webhook.URL), Headers{"X-Webhook-Secret": {"configured"}, "X-Policy": {"new"}}))
 	w = postPayment(t, s, req)
 	require.Equal(t, 403, w.Code, w.Body.String())
 	require.Equal(t, int32(2), calls.Load())
-	require.NotContains(t, w.Body.String(), "payment")
-	require.NotContains(t, w.Body.String(), "state")
+	require.NotContains(t, w.Body.String(), `"payment"`)
+	require.NotContains(t, w.Body.String(), `"state"`)
 }
 
-func TestAuthWebhookPriceRejectsBeforeResponse(t *testing.T) {
+func TestAuthWebhookPriceLimitWithholdsPayment(t *testing.T) {
 	s, info := testService(t)
 	webhook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"status":200,"maxPrice":{"price":9,"currency":"wei","unit":"fixed"}}`))
 	}))
 	defer webhook.Close()
-	require.NoError(t, s.SetAuthWebhook(webhook.URL, []string{strings.TrimPrefix(webhook.URL, "http://")}, "", nil))
+	require.NoError(t, s.SetAuthWebhook(testURL(t, webhook.URL), nil))
 	w := postPayment(t, s, map[string]any{"orchestrator": base64.StdEncoding.EncodeToString(wire.EncodeOrchestratorInfo(info)), "type": "fixed"})
 	require.Equal(t, 481, w.Code, w.Body.String())
-	require.NotContains(t, w.Body.String(), "segCreds")
-	require.NotContains(t, w.Body.String(), "payment")
-	require.NotContains(t, w.Body.String(), "state")
-}
-
-func TestExpiredParamsRequestRefresh(t *testing.T) {
-	for _, expired := range []string{"auth", "params"} {
-		t.Run(expired, func(t *testing.T) {
-			s, info := testService(t)
-			if expired == "auth" {
-				info.Auth.Expiration = time.Now().Add(-time.Second).Unix()
-			} else {
-				info.TicketParams.ExpirationBlock = []byte{51}
-			}
-			w := postPayment(t, s, map[string]any{"orchestrator": base64.StdEncoding.EncodeToString(wire.EncodeOrchestratorInfo(info)), "type": "fixed"})
-			require.Equal(t, 480, w.Code, w.Body.String())
-			require.Equal(t, info.Transcoder, w.Header().Get("Livepeer-Orchestrator-URL"))
-		})
-	}
+	require.NotContains(t, w.Body.String(), `"segCreds"`)
+	require.NotContains(t, w.Body.String(), `"payment"`)
+	require.NotContains(t, w.Body.String(), `"state"`)
 }

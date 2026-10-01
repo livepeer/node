@@ -75,7 +75,8 @@ func (s remoteSender) Generate(ctx context.Context, paymentType, manifest string
 	if err != nil {
 		return paymentDraft{}, fmt.Errorf("%w: chain observation failed", pm.ErrSenderUnavailable)
 	}
-	if funds.Snapshot.Block == nil || funds.Snapshot.Round == nil || params.ExpirationBlock.Cmp(new(big.Int).Add(funds.Snapshot.Block, big.NewInt(1))) <= 0 || params.ExpirationParams.CreationRound < funds.Snapshot.Round.Int64()-2 || params.ExpirationParams.CreationRound > funds.Snapshot.Round.Int64() {
+	// Refresh older rounds rather than trusting caller-provided historical hashes.
+	if funds.Snapshot.Block == nil || funds.Snapshot.Round == nil || params.ExpirationBlock.Cmp(new(big.Int).Add(funds.Snapshot.Block, big.NewInt(1))) <= 0 || params.ExpirationParams.CreationRound != funds.Snapshot.Round.Int64() || funds.Snapshot.RoundHash == (ethcommon.Hash{}) || params.ExpirationParams.CreationRoundBlockHash != funds.Snapshot.RoundHash {
 		return paymentDraft{}, pm.ErrRefreshRequired
 	}
 	if state.PMSessionID != params.RecipientRandHash.Hex() {

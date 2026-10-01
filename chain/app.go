@@ -51,7 +51,7 @@ func (p Params) Validate() error {
 	if p.RPCURL == "" {
 		return errors.New("rpc-url or rpc-url-file is required")
 	}
-	_, err := destination.ValidateURL(p.RPCURL)
+	_, err := destination.ParseURL(p.RPCURL)
 	if err != nil {
 		return errors.New("invalid RPC URL")
 	}

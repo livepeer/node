@@ -85,7 +85,7 @@ func buildActions(command string, p Params) ([]action, error) {
 			result = append(result, action{"bondingManager", "transcoder", []any{cut, share}, zero})
 		}
 		if p.ServiceURI != "" {
-			if u, err := destination.ValidateURL(p.ServiceURI); err != nil || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+			if u, err := destination.ParseURL(p.ServiceURI); err != nil || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 				return nil, errors.New("service-uri must be an absolute HTTP or HTTPS URL")
 			}
 			result = append(result, action{"serviceRegistry", "setServiceURI", []any{p.ServiceURI}, zero})

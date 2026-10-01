@@ -4,38 +4,28 @@ Usage:
   livepeer-signer [flags]
 
 Flags:
-  -a, --auth-webhook-headers-file string        (env: LIVEPEER_SIGNER_AUTH_WEBHOOK_HEADERS_FILE)
-      --auth-webhook-file string                (env: LIVEPEER_SIGNER_AUTH_WEBHOOK_FILE)
-      --auth-webhook-grants strings             (env: LIVEPEER_SIGNER_AUTH_WEBHOOK_GRANTS)
-      --auth-webhook-ca-file string             (env: LIVEPEER_SIGNER_AUTH_WEBHOOK_CA_FILE)
-  -m, --max-ticket-ev string                   Maximum expected ticket value in wei (env: LIVEPEER_SIGNER_MAX_TICKET_EV) (default "3000000000000")
-      --max-batch-ev string                    Maximum expected batch value in wei (env: LIVEPEER_SIGNER_MAX_BATCH_EV) (default "20000000000000")
-  -d, --deposit-multiplier int                 Maximum face value is deposit divided by this value (env: LIVEPEER_SIGNER_DEPOSIT_MULTIPLIER) (default 1)
-      --max-live-price-usd-per-second string    (env: LIVEPEER_SIGNER_MAX_LIVE_PRICE_USD_PER_SECOND)
-      --max-fixed-price-usd string              (env: LIVEPEER_SIGNER_MAX_FIXED_PRICE_USD)
-  -w, --wei-per-usd string                      (env: LIVEPEER_SIGNER_WEI_PER_USD)
-  -e, --eth-usd-feed string                     (env: LIVEPEER_SIGNER_ETH_USD_FEED)
-  -p, --price-max-age duration                  (env: LIVEPEER_SIGNER_PRICE_MAX_AGE) (default 2h0m0s)
-  -c, --config string                           (env: LIVEPEER_SIGNER_CONFIG)
-  -l, --listen string                           (env: LIVEPEER_SIGNER_LISTEN) (default "127.0.0.1:8937")
-      --metrics-listen string                   (env: LIVEPEER_SIGNER_METRICS_LISTEN) (default "127.0.0.1:8938")
-      --rpc-url-file string                     (env: LIVEPEER_SIGNER_RPC_URL_FILE)
-      --rpc-grants strings                      (env: LIVEPEER_SIGNER_RPC_GRANTS)
-      --rpc-ca-file string                      (env: LIVEPEER_SIGNER_RPC_CA_FILE)
-      --chain-id string                         (env: LIVEPEER_SIGNER_CHAIN_ID)
-      --controller-address string               (env: LIVEPEER_SIGNER_CONTROLLER_ADDRESS)
-      --auth-token-file string                  (env: LIVEPEER_SIGNER_AUTH_TOKEN_FILE)
-      --private-key-file string                 (env: LIVEPEER_SIGNER_PRIVATE_KEY_FILE)
-  -o, --orchestrators strings                   (env: LIVEPEER_SIGNER_ORCHESTRATORS)
-      --discovery-grants strings                (env: LIVEPEER_SIGNER_DISCOVERY_GRANTS)
-      --discovery-ca-file string                (env: LIVEPEER_SIGNER_DISCOVERY_CA_FILE)
-  -b, --behind-tls                              (env: LIVEPEER_SIGNER_BEHIND_TLS)
-      --print-config                            (env: LIVEPEER_SIGNER_PRINT_CONFIG)
-  -h, --help                                   help for livepeer-signer
-  -v, --version                                version for livepeer-signer
+  -a, --auth-webhook-headers-file string    (env: LIVEPEER_SIGNER_AUTH_WEBHOOK_HEADERS_FILE)
+      --auth-webhook-file string            (env: LIVEPEER_SIGNER_AUTH_WEBHOOK_FILE)
+  -m, --max-ticket-ev string               Maximum expected ticket value in wei (env: LIVEPEER_SIGNER_MAX_TICKET_EV) (default "3000000000000")
+      --max-batch-ev string                Maximum expected batch value in wei (env: LIVEPEER_SIGNER_MAX_BATCH_EV) (default "20000000000000")
+  -d, --deposit-multiplier int             Maximum face value is deposit divided by this value (env: LIVEPEER_SIGNER_DEPOSIT_MULTIPLIER) (default 1)
+      --max-hourly-price string            Maximum live price in USD per hour (env: LIVEPEER_SIGNER_MAX_HOURLY_PRICE, required)
+      --max-fixed-price string             Maximum fixed request price in USD (env: LIVEPEER_SIGNER_MAX_FIXED_PRICE, required)
+  -w, --wei-per-usd string                 Fixed wei per USD conversion, mostly for testing (env: LIVEPEER_SIGNER_WEI_PER_USD)
+  -e, --eth-usd-feed string                ETH/USD oracle address (Arbitrum mainnet) (env: LIVEPEER_SIGNER_ETH_USD_FEED) (default "0x639fe6ab55c921f74e7fac1ee960c0b6293ba612")
+      --eth-usd-max-age duration           Maximum age of the ETH/USD oracle observation (env: LIVEPEER_SIGNER_ETH_USD_MAX_AGE) (default 2h0m0s)
+  -c, --config string                       (env: LIVEPEER_SIGNER_CONFIG)
+  -l, --listen string                       (env: LIVEPEER_SIGNER_LISTEN) (default "127.0.0.1:8937")
+      --metrics-listen string               (env: LIVEPEER_SIGNER_METRICS_LISTEN) (default "127.0.0.1:8938")
+      --rpc-url-file string                 (env: LIVEPEER_SIGNER_RPC_URL_FILE)
+      --chain-id uint                      Optional expected RPC chain ID (env: LIVEPEER_SIGNER_CHAIN_ID)
+      --controller-address string          Livepeer Controller (Arbitrum mainnet) (env: LIVEPEER_SIGNER_CONTROLLER_ADDRESS) (default "0xd8e8328501e9645d16cf49539efc04f734606ee4")
+  -p, --private-key-file string             (env: LIVEPEER_SIGNER_PRIVATE_KEY_FILE, required)
+  -o, --orchestrators strings               (env: LIVEPEER_SIGNER_ORCHESTRATORS)
+  -h, --help                               help for livepeer-signer
+  -v, --version                            version for livepeer-signer
 
 Environment Variables:
   LIVEPEER_SIGNER_AUTH_WEBHOOK
   LIVEPEER_SIGNER_AUTH_WEBHOOK_HEADERS
   LIVEPEER_SIGNER_RPC_URL
-  LIVEPEER_SIGNER_AUTH_TOKEN

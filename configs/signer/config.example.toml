@@ -1,33 +1,44 @@
-listen = "127.0.0.1:8937"
-metrics_listen = "127.0.0.1:8938"
-auth_token_file = "/run/secrets/livepeer-signer-auth-token"
-private_key_file = "/run/secrets/livepeer-signer-key"
-orchestrators = []
-discovery_grants = []
-behind_tls = false
+# Signer TOML keys use the implicit Go field names; CLI flags use kebab-case.
+Listen = "127.0.0.1:8937"
+MetricsListen = "127.0.0.1:8938"
+KeyFile = "/run/secrets/livepeer-signer-key"
+Orchestrators = []
 
-# Required together for paid generation; without these, payment generation
-# returns 482 while identity signing and discovery remain available.
-# rpc_url_file = "/run/secrets/livepeer-signer-rpc-url"
-# rpc_grants = []
-# rpc_ca_file = "/etc/livepeer/signer-rpc-ca.pem"
-# chain_id = "42161"
-# controller_address = "0x0123456789abcdef0123456789abcdef01234567"
-# max_live_price_usd_per_second = "0.01"
-# max_fixed_price_usd = "1"
-# Exactly one conversion source is required with paid signing:
-# wei_per_usd = "500000000000000"
-# eth_usd_feed = "0x0123456789abcdef0123456789abcdef01234567"
-# price_max_age = "2h"
+# On-chain configuration is required, including for identity and discovery.
+# The RPC URL is an exact-byte secret file (omit a trailing newline).
+RPCURLFile = "/run/secrets/livepeer-signer-rpc-url"
+# Optional assertion against eth_chainId; omitted means use the RPC's chain.
+# ChainID = 42161
+# Defaults match go-livepeer on Arbitrum mainnet; override for another chain.
+# Controller = "0xD8E8328501E9645d16Cf49539efC04f734606ee4"
+
+# USD is implicit. Live quotes are compared with MaxHourlyPrice / 3600.
+MaxHourlyPrice = "36"
+MaxFixedPrice = "1"
+
+# The default feed is ETH/USD on Arbitrum mainnet.
+# ETHUSDFeed = "0x639Fe6ab55C921f74e7fac1ee960C0B6293ba612"
+ETHUSDMaxAge = "2h"
+# WeiPerUSD = "500000000000000" # Fixed conversion, mostly for testing.
+# WeiPerUSD overrides the feed for testing. Fixed rates never expire or refresh.
+
+# A stale/unavailable feed makes /readyz and payment generation return 503.
+# The signer retries every 30 seconds and resumes when it observes a fresh rate.
+# Identity signing and discovery remain available while the feed is stale.
 
 # Exposure limits are independent of the requested work's maxPrice.
-max_ticket_ev = "3000000000000"
-max_batch_ev = "20000000000000"
-deposit_multiplier = 1
+MaxTicketEV = "3000000000000"
+MaxBatchEV = "20000000000000"
+DepositMultiplier = 1
 
-# Optional per-payment authorization. URL and JSON header map are exact-byte
-# secret files. Example header file: {"Authorization":"Bearer credential"}
-# auth_webhook_file = "/run/secrets/livepeer-signer-auth-url"
-# auth_webhook_headers_file = "/run/secrets/livepeer-signer-auth-headers"
-# auth_webhook_grants = []
-# auth_webhook_ca_file = "/etc/livepeer/auth-ca.pem"
+# Run alongside a clearinghouse for authorization and cumulative spending limits;
+# see README.md for the clearinghouse-batteries accounting integration requirements.
+# Signed state is a bearer credential. Authorization caching is generally discouraged;
+# the webhook should omit expiry or return zero to authorize every payment.
+# Tickets are generated and signed before authorization to identify the actual payment.
+# Both webhook values are secret files.
+# Header syntax matches go-livepeer: Authorization: Bearer credential,X-Key: key
+# Quote an entire entry using CSV syntax if its value contains commas:
+# "X-List: a,b",Authorization: Bearer credential
+# AuthWebhookFile = "/run/secrets/livepeer-signer-auth-url"
+# AuthWebhookHeadersFile = "/run/secrets/livepeer-signer-auth-headers"

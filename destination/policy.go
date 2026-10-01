@@ -106,14 +106,25 @@ func (p Policy) granted(addr string) bool {
 	return ok
 }
 
-// ValidateURL checks URL syntax only. Address policy is intentionally applied
-// again at every connection after DNS resolution, including redirects.
-func ValidateURL(raw string) (*url.URL, error) {
+// ParseURL parses a string at an input boundary and validates the destination.
+func ParseURL(raw string) (*url.URL, error) {
 	u, err := url.Parse(raw)
-	if err != nil || u == nil || u.Hostname() == "" || (u.Scheme != "http" && u.Scheme != "https") {
+	if err != nil {
 		return nil, errors.New("destination must be an absolute HTTP or HTTPS URL")
 	}
+	if err := ValidateURL(u); err != nil {
+		return nil, err
+	}
 	return u, nil
+}
+
+// ValidateURL checks a required URL, including nil and empty values. Address
+// policy, where used, is applied at every connection after DNS resolution.
+func ValidateURL(u *url.URL) error {
+	if u == nil || u.Hostname() == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return errors.New("destination must be an absolute HTTP or HTTPS URL")
+	}
+	return nil
 }
 
 func (p Policy) DialContext(ctx context.Context, network, address string) (net.Conn, error) {

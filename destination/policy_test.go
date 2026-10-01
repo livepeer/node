@@ -100,3 +100,12 @@ func TestMixedDNSDeniedBeforeDial(t *testing.T) {
 	require.ErrorContains(t, err, "denied address")
 	require.True(t, strings.Contains(err.Error(), "runner"))
 }
+
+func TestValidateRequiredURL(t *testing.T) {
+	for _, endpoint := range []*url.URL{nil, {}, {Scheme: "https"}, {Host: "example.com"}, {Scheme: "ftp", Host: "example.com"}} {
+		require.Error(t, ValidateURL(endpoint))
+	}
+	require.NoError(t, ValidateURL(&url.URL{Scheme: "https", Host: "example.com"}))
+	_, err := ParseURL("")
+	require.Error(t, err)
+}

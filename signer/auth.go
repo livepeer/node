@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/livepeer/node/destination"
@@ -20,31 +21,32 @@ type maxPrice struct {
 	Unit     string      `json:"unit"`
 }
 
-func (s *Service) SetAuthWebhook(endpoint string, grants []string, caFile string, headers map[string]string) error {
-	if endpoint == "" {
-		return nil
-	}
-	u, err := destination.ValidateURL(endpoint)
-	if err != nil || u.User != nil || u.Fragment != "" {
+func validateAuthWebhook(endpoint *url.URL) error {
+	if err := destination.ValidateURL(endpoint); err != nil {
 		return errors.New("invalid signer auth webhook URL")
 	}
-	policy, err := destination.New("signer-auth-webhook", grants)
-	if err != nil {
+	if endpoint.User != nil || endpoint.Fragment != "" {
+		return errors.New("invalid signer auth webhook URL")
+	}
+	return nil
+}
+
+func (s *Service) SetAuthWebhook(endpoint *url.URL, headers Headers) error {
+	if err := validateAuthWebhook(endpoint); err != nil {
 		return err
 	}
-	policy, err = policy.WithCAFile(caFile)
-	if err != nil {
+	if _, err := headers.MarshalText(); err != nil {
 		return err
 	}
-	s.authClient = policy.Client()
-	s.authClient.Timeout = 5 * time.Second
+	s.authClient = &http.Client{Transport: http.DefaultTransport.(*http.Transport).Clone(), Timeout: 5 * time.Second}
 	// Authentication is one explicit call, including when a target redirects.
 	s.authClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	s.authURL, s.authHeaders = endpoint, headers
+	copyURL := *endpoint
+	s.authURL, s.authHeaders = &copyURL, Headers(http.Header(headers).Clone())
 	encoded, _ := json.Marshal(struct {
 		URL     string
-		Headers map[string]string
-	}{endpoint, headers})
+		Headers Headers
+	}{endpoint.String(), s.authHeaders})
 	digest := sha256.Sum256(encoded)
 	s.authPolicy = hex.EncodeToString(digest[:])
 	return nil
@@ -55,7 +57,7 @@ func (s *Service) authorizePayment(r *http.Request, req paymentRequest, price wi
 	if identity != "" && state.AuthID != "" && state.AuthID != identity {
 		return paymentFailure{403, "signer auth ID changed"}
 	}
-	if s.authURL != "" && (state.AuthPolicy != s.authPolicy || state.AuthExpiry <= time.Now().Unix()) {
+	if s.authURL != nil && (state.AuthPolicy != s.authPolicy || state.AuthExpiry <= time.Now().Unix()) {
 		body, err := json.Marshal(struct {
 			Headers http.Header   `json:"headers"`
 			State   *paymentState `json:"state"`
@@ -63,13 +65,16 @@ func (s *Service) authorizePayment(r *http.Request, req paymentRequest, price wi
 		if err != nil {
 			return err
 		}
-		request, err := http.NewRequestWithContext(r.Context(), http.MethodPost, s.authURL, bytes.NewReader(body))
+		request, err := http.NewRequestWithContext(r.Context(), http.MethodPost, s.authURL.String(), bytes.NewReader(body))
 		if err != nil {
 			return err
 		}
 		request.Header.Set("Content-Type", "application/json")
-		for name, value := range s.authHeaders {
-			request.Header.Set(name, value)
+		for name, values := range s.authHeaders {
+			request.Header.Del(name)
+			for _, value := range values {
+				request.Header.Add(name, value)
+			}
 		}
 		response, err := s.authClient.Do(request)
 		if err != nil {
@@ -110,7 +115,7 @@ func (s *Service) authorizePayment(r *http.Request, req paymentRequest, price wi
 	if identity != "" {
 		state.AuthID = identity
 	}
-	if s.authURL != "" && state.AuthMaxPrice != "" {
+	if s.authURL != nil && state.AuthMaxPrice != "" {
 		return checkMaxPrice(paymentRequest{Type: req.Type, MaxPrice: &maxPrice{Price: json.Number(state.AuthMaxPrice), Currency: "wei", Unit: map[string]string{"live": "seconds", "fixed": "fixed"}[req.Type]}}, price)
 	}
 	return nil

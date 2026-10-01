@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -44,18 +43,18 @@ type paymentResponse struct {
 }
 
 type Service struct {
-	authClient          *http.Client
-	authURL, authPolicy string
-	authHeaders         map[string]string
-	key                 *eth.Key
-	authToken           string
-	mux                 *http.ServeMux
-	discoveryURLs       []string
-	discoveryClient     *http.Client
-	paymentChain        pm.SenderChain
-	senderPolicy        pm.SenderPolicy
-	pricePolicy         *pricePolicy
-	slots               chan struct{}
+	authClient      *http.Client
+	authURL         *url.URL
+	authPolicy      string
+	authHeaders     Headers
+	key             *eth.Key
+	mux             *http.ServeMux
+	discoveryURLs   []*url.URL
+	discoveryClient *http.Client
+	paymentChain    pm.SenderChain
+	senderPolicy    pm.SenderPolicy
+	pricePolicy     *pricePolicy
+	slots           chan struct{}
 }
 
 func (s *Service) SetPaymentChain(chain pm.SenderChain) { s.paymentChain = chain }
@@ -68,36 +67,36 @@ func (s *Service) SetSenderPolicy(policy pm.SenderPolicy) error {
 	return nil
 }
 
-func (s *Service) SetDiscovery(orchestrators, grants []string, caFile string) error {
-	policy, err := destination.New("signer-discovery", grants)
-	if err != nil {
-		return err
+func validateDiscoveryURL(endpoint *url.URL) error {
+	if err := destination.ValidateURL(endpoint); err != nil {
+		return errors.New("invalid signer discovery orchestrator URL")
 	}
-	policy, err = policy.WithCAFile(caFile)
-	if err != nil {
-		return err
+	if endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" {
+		return errors.New("invalid signer discovery orchestrator URL")
 	}
-	client := policy.Client()
-	client.Timeout = 5 * time.Second
-	urls := make([]string, 0, len(orchestrators))
+	return nil
+}
+
+func (s *Service) SetDiscovery(orchestrators []*url.URL) error {
+	urls := make([]*url.URL, 0, len(orchestrators))
 	for _, candidate := range orchestrators {
-		parsed, err := destination.ValidateURL(candidate)
-		if err != nil || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-			return errors.New("invalid signer discovery orchestrator URL")
+		if err := validateDiscoveryURL(candidate); err != nil {
+			return err
 		}
+		parsed := *candidate
 		parsed.Path = strings.TrimRight(parsed.Path, "/") + "/discovery"
-		urls = append(urls, parsed.String())
+		urls = append(urls, &parsed)
 	}
-	s.discoveryClient = client
+	s.discoveryClient = &http.Client{Transport: http.DefaultTransport.(*http.Transport).Clone(), Timeout: 5 * time.Second}
 	s.discoveryURLs = urls
 	return nil
 }
 
-func NewService(key *eth.Key, authToken string) (*Service, error) {
+func NewService(key *eth.Key) (*Service, error) {
 	if key == nil {
 		return nil, errors.New("signer key is required")
 	}
-	return newService(key, authToken), nil
+	return newService(key), nil
 }
 
 func (s *Service) Close() error {
@@ -110,20 +109,30 @@ func (s *Service) Close() error {
 	return nil
 }
 
-func newService(key *eth.Key, authToken string) *Service {
-	s := &Service{key: key, authToken: authToken, mux: http.NewServeMux(), senderPolicy: pm.DefaultSenderPolicy(), slots: make(chan struct{}, 64)}
+func newService(key *eth.Key) *Service {
+	s := &Service{key: key, mux: http.NewServeMux(), senderPolicy: pm.DefaultSenderPolicy(), slots: make(chan struct{}, 64)}
 	s.mux.HandleFunc("POST /sign-orchestrator-info", s.signInfo)
 	s.mux.HandleFunc("POST /generate-live-payment", s.generate)
 	s.mux.HandleFunc("GET /discover-orchestrators", s.discover)
 	return s
 }
 func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if s.authToken != "" && subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte("Bearer "+s.authToken)) != 1 {
-		w.Header().Set("Connection", "close")
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(5 * time.Second))
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	control := http.NewResponseController(w)
+	_ = control.SetReadDeadline(time.Now().Add(5 * time.Second))
+	deadline, _ := ctx.Deadline()
+	_ = control.SetWriteDeadline(deadline)
+	done := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() {
+		_ = control.SetWriteDeadline(time.Now())
+		close(done)
+	})
+	defer func() {
+		if !stop() {
+			<-done // Do not change deadlines after the connection is reused.
+		}
+	}()
 	select {
 	case s.slots <- struct{}{}:
 		defer func() { <-s.slots }()
@@ -131,8 +140,6 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		signerError(w, http.StatusServiceUnavailable, "signer busy")
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-	defer cancel()
 	s.mux.ServeHTTP(w, r.WithContext(ctx))
 }
 func signerError(w http.ResponseWriter, status int, reason string) {
@@ -191,10 +198,7 @@ func (s *Service) discover(w http.ResponseWriter, r *http.Request) {
 	available := false
 	result := make([]discoveredOrchestrator, 0, len(s.discoveryURLs))
 	for _, endpoint := range s.discoveryURLs {
-		u, err := url.Parse(endpoint)
-		if err != nil {
-			continue
-		}
+		u := *endpoint
 		query := u.Query()
 		for _, app := range appFilter {
 			query.Add("app", app)
@@ -226,7 +230,7 @@ func (s *Service) discover(w http.ResponseWriter, r *http.Request) {
 		}
 		available = true
 		for _, entry := range entries {
-			if _, err := destination.ValidateURL(entry.Address); err != nil {
+			if _, err := destination.ParseURL(entry.Address); err != nil {
 				continue
 			}
 			filtered := make([]discoveredRunner, 0, len(entry.Runners))
@@ -324,7 +328,8 @@ func (s *Service) generate(w http.ResponseWriter, r *http.Request) {
 		signerError(w, 400, "invalid orchestrator Protobuf")
 		return
 	}
-	if !bytes.Equal(info.Address, info.TicketParams.Recipient) || len(info.Auth.Token) == 0 || len(info.TicketParams.Expiration.CreationRoundBlockHash) != 32 || len(info.Address) != 20 || info.Price.PricePerUnit <= 0 || info.Price.UnitsPerPrice <= 0 || len(info.TicketParams.Recipient) != 20 || len(info.TicketParams.RecipientRandHash) != 32 || info.Auth.SessionID == "" {
+	address := ethcommon.BytesToAddress(info.Address)
+	if !bytes.Equal(info.Address, info.TicketParams.Recipient) || address == (ethcommon.Address{}) || len(info.Auth.Token) == 0 || len(info.TicketParams.Expiration.CreationRoundBlockHash) != 32 || len(info.Address) != 20 || info.Price.PricePerUnit <= 0 || info.Price.UnitsPerPrice <= 0 || len(info.TicketParams.RecipientRandHash) != 32 || info.Auth.SessionID == "" {
 		signerError(w, 400, "incomplete or expired orchestrator payment params")
 		return
 	}
@@ -355,7 +360,6 @@ func (s *Service) generate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	address := ethcommon.BytesToAddress(info.Address)
 	var state paymentState
 	oldSequence := int64(-1)
 	if len(req.State.State) > 0 || len(req.State.Sig) > 0 {
@@ -384,10 +388,8 @@ func (s *Service) generate(w http.ResponseWriter, r *http.Request) {
 		signerError(w, 481, "orchestrator price exceeds initial session price")
 		return
 	}
-	if identity := r.Header.Get("Signer-Auth-Id"); identity != "" && state.AuthID != "" && identity != state.AuthID {
-		signerError(w, 403, "signer auth ID changed")
-		return
-	}
+	// Generate and sign the complete batch before authorization so the proposed
+	// state describes the actual tickets. Nothing is returned until approval.
 	draft, err := s.makePayment(r.Context(), req, info, state, oldSequence)
 	if err != nil {
 		var f paymentFailure
