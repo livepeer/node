@@ -1,9 +1,7 @@
 # Livepeer standalone extraction
 
 This repository is the standalone Live Runner extraction from
-`go-livepeer`. The source baseline and scope are recorded in
-[`docs/source-revision.md`](docs/source-revision.md) and
-[`docs/scope-matrix.md`](docs/scope-matrix.md).
+`go-livepeer`.
 
 ## Current implementation
 
@@ -35,10 +33,9 @@ This repository is the standalone Live Runner extraction from
 
 Relevant trickle and ticket authorship is preserved in filtered Git history;
 the original `go-livepeer/trickle` implementation and tests are also present
-in `trickle/`. See [`docs/history-extraction.md`](docs/history-extraction.md). Production
-chain cutover still needs deployment-specific staging validation, including
-contract addresses, funded accounts, gas behavior and a rollback drill; see
-[`docs/cutover.md`](docs/cutover.md).
+in `trickle/`. Production chain cutover still needs deployment-specific staging
+validation, including contract addresses, funded accounts, gas behavior and a
+rollback drill.
 
 The trickle server retains five segments per channel and rejects a segment
 above 10 MB by default. There is no global byte cap; size channel capacity
@@ -223,8 +220,7 @@ Winning tickets wait for parameter expiry before their randomness is exposed
 on-chain. Signed transaction bytes and hash are saved before broadcast; safe
 preparation failures retry, uncertain writes require reconciliation or an
 explicit identical-byte retry. Only finalized, canonical receipts settle
-liability. See [payment recovery](docs/payment-recovery.md) for commands and
-restart behavior. Back up the orchestrator database. Legacy
+liability. Back up the orchestrator database. Legacy
 signed client state is not a migration format for this signer's signed state.
 
 ## Chain management
