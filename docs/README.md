@@ -1,0 +1,32 @@
+# Documentation
+
+Start with the [local example](../README.md#run-a-local-example) to build the
+executables and send a request through an orchestrator.
+
+## Operating a node
+
+| Guide | Use it to |
+| --- | --- |
+| [Configuration and secrets](configuration.md) | Set TOML, environment variables, credentials, and Ethereum key files. |
+| [Orchestrator](orchestrator.md) | Register runners, configure networking and proxies, and enable payments. |
+| [Signer](signer.md) | Configure price limits, authorization, discovery, and Kafka accounting. |
+| [Chain commands](chain.md) | Inspect accounts, manage stake and funds, and submit transactions. |
+| [Payment recovery](payment-recovery.md) | Back up state, recover accounting events, and reconcile ticket redemptions. |
+| [Staging and cutover](cutover.md) | Validate a deployment, move traffic, and prepare rollback. |
+
+## Developing and integrating
+
+| Reference | Contents |
+| --- | --- |
+| [Development](development.md) | Build and test commands, SDK fixtures, and CLI snapshots. |
+| [Architecture](architecture.md) | Package responsibilities and import boundaries. |
+| [HTTP API](http-api.md) | Routes, payment message fields, and response codes. |
+| [Trickle protocol](../trickle/README.md) | Channel operations, sequences, streaming, and limits. |
+| [Contract bindings](../eth/contracts/README.md) | Binding provenance and upstream updates. |
+
+## Project history
+
+[Extraction provenance](provenance/README.md) records upstream revisions, scope,
+and Git history. [Historical reviews](reviews/README.md) preserve dated findings
+and their resolutions. These records describe earlier snapshots; use the guides
+above for current operation.
