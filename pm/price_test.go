@@ -7,7 +7,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Adapted from go-livepeer/ai/runner/live_runner_test.go's hour/fixed conversion cases.
+// Adapted from go-livepeer/ai/runner/live_runner_test.go's hour/fixed conversion
+// cases by Josh Allmann; see the source commits in price.go.
 func TestConvertRunnerPrice(t *testing.T) {
 	for _, tt := range []struct{ price, unit, wei, convertedUnit string }{
 		{"0.5", "hour", "1", "seconds"},

@@ -18,7 +18,9 @@ type poolEntry struct {
 	DelegatedStake *big.Int
 }
 
-// Based on go-livepeer's simulateTranscoderPoolUpdate/findTranscoderHints.
+// Adapted from Nico Vergauwen's go-livepeer/eth/client.go
+// simulateTranscoderPoolUpdate/findTranscoderHints, introduced in
+// c9aecb5615a41eda48dea537ec7b9461983e5ca5 and f088c2aac67c1f7bf30f1fd52fca20c914dd716a.
 // Work on a private slice so old/new delegate calculations cannot mutate each
 // other. Updating a member of a full pool must not evict another member.
 func poolHints(target common.Address, stake *big.Int, pool []poolEntry, maxSize uint64) lpTypes.TranscoderPoolHints {
@@ -218,6 +220,9 @@ func (c *Contracts) stakeData(ctx context.Context, from common.Address, method s
 	return data, address, err
 }
 
+// Reward hint calculations follow Nico Vergauwen's go-livepeer/eth/client.go
+// rewardHints (c9aecb5615a41eda48dea537ec7b9461983e5ca5), built on Yondon Fu's
+// original staking client. Transaction planning and validation are implemented here.
 func (c *Contracts) rewardHints(ctx context.Context, bonding *contracts.BondingManagerCaller, target common.Address) (lpTypes.TranscoderPoolHints, error) {
 	opts := &bind.CallOpts{Context: ctx}
 	var empty lpTypes.TranscoderPoolHints
@@ -292,6 +297,8 @@ func (c *Contracts) ChangeDelegate(ctx context.Context, from, to common.Address)
 	return c.PlanTransaction(ctx, from, address, data, new(big.Int))
 }
 
+// Reward-caller APIs follow Rick Staa's go-livepeer/eth/client.go LIP-118 support
+// (a31522e08b3e7c953a3bba51e7be6d79b4bf5c8c).
 func (c *Contracts) SetRewardCaller(ctx context.Context, from, caller common.Address) (TransactionPlan, error) {
 	return c.PlanContract(ctx, from, "bondingManager", "setRewardCaller", new(big.Int), caller)
 }

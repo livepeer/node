@@ -8,7 +8,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Ported economic boundaries from go-livepeer/pm/sender_test.go.
+// Ported economic boundaries from go-livepeer/pm/sender_test.go, by Yondon Fu,
+// Nico Vergauwen, and Rafał Leszko; see the source credits in senderpolicy.go.
 func TestSenderExposurePolicy(t *testing.T) {
 	for _, scenario := range []string{"valid", "certain-win", "ticket-ev", "batch-ev", "face-cap", "unlock-current", "unlock-next", "no-reserve"} {
 		t.Run(scenario, func(t *testing.T) {

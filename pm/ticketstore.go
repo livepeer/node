@@ -1,3 +1,5 @@
+// Retained store interfaces from livepeer/go-livepeer/pm/ticketstore.go,
+// by Yondon Fu, Nico Vergauwen, and Rafał Leszko. Source history is retained.
 package pm
 
 import (

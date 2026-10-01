@@ -14,6 +14,9 @@ import (
 
 // WeiPerUSD reads an operator-selected Chainlink-compatible ETH/USD feed.
 // It returns the last instant at which that observation may price new sessions.
+// Feed access follows Victor Elias's go-livepeer/eth/pricefeed.go
+// (ef5d78922e08d8b815814df419d03e0561c1e974); canonical reads and freshness checks
+// are implemented here.
 func (c *Contracts) WeiPerUSD(ctx context.Context, feed ethcommon.Address, maxAge time.Duration) (*big.Rat, time.Time, error) {
 	header, err := c.RPC.header(ctx, "latest")
 	if err != nil {

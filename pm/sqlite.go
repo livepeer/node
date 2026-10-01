@@ -1,3 +1,6 @@
+// Winning-ticket store operations follow livepeer/go-livepeer/common/db.go,
+// by Elad Mallel and Nico Vergauwen (404d24a9455cd0997af1be6d18faa998702cce69).
+// The redemption recovery schema and transaction state are implemented here.
 package pm
 
 import (

@@ -1,3 +1,6 @@
+// Random-value helpers are adapted from livepeer/go-livepeer/pm/helpers.go,
+// by Elad Mallel and Yondon Fu. Their filtered source history is retained;
+// the cryptographic RNG and failure handling were added in this repository.
 package pm
 
 import (

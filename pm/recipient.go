@@ -10,6 +10,8 @@ import (
 )
 
 // Ported from go-livepeer/pm/recipient.go at bd645a09266833fb859053445d9ac85846330756.
+// Originally by Yondon Fu, with parameter authentication by Nico Vergauwen:
+// 3159761196f5cafca93cdd6b6b40bead5e4ce80c and 5933bc2cfd57a54799d355aa7c78aa1094074c42.
 // Preserve the HMAC inputs and their encoding: this derives the private lottery
 // value and authenticates the advertised parameters without persisting them.
 func (e *Engine) recipientRand(seed *big.Int, sender ethcommon.Address, faceValue *big.Int, winProb *big.Int, expirationBlock *big.Int, price *big.Rat, ticketExpirationParams *TicketExpirationParams) *big.Int {
@@ -27,6 +29,7 @@ func (e *Engine) recipientRand(seed *big.Int, sender ethcommon.Address, faceValu
 
 // Ported from go-livepeer/core/orchestrator.go's AuthToken. Its key is independent
 // of the PM recipient secret and remains in memory for this engine's lifetime.
+// Originally by Yondon Fu (fae55ea07c327ddd4bac1c3b5ab4d35c375a4772).
 func (e *Engine) authToken(sessionID string, expiration int64) wire.AuthToken {
 	h := hmac.New(sha256.New, e.authSecret[:])
 	msg := append([]byte(sessionID), new(big.Int).SetInt64(expiration).Bytes()...)

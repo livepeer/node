@@ -7,6 +7,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// Signature and high-S vectors are from go-livepeer/crypto/verify_test.go,
+// by Yondon Fu (3b52399fc7b9177460864207a68eb9f3d2f4ee57).
 func TestVerifyTicketSignature(t *testing.T) {
 	addr := ethcommon.HexToAddress("3BadDb1eeE2105893136A3F96c8a963E9C6309d6")
 	msg := ethcommon.FromHex("b7da355477356fc4c47fcabcf232dc77a6db9b07b7e48b76261cc55cc8fbabb3")

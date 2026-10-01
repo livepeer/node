@@ -31,7 +31,8 @@ func TestPaymentSQLiteFilePermissions(t *testing.T) {
 	require.ErrorContains(t, err, "owner-only")
 }
 
-// Adapted from go-livepeer/common/db_test.go's winning-ticket store tests.
+// Adapted from go-livepeer/common/db_test.go's winning-ticket store tests,
+// by Elad Mallel and Nico Vergauwen (404d24a9455cd0997af1be6d18faa998702cce69).
 func TestSQLiteWinningTicketLifecycle(t *testing.T) {
 	store, err := OpenSQLite(filepath.Join(t.TempDir(), "recipient.sqlite"))
 	require.NoError(t, err)

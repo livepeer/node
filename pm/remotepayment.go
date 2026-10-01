@@ -14,6 +14,9 @@ type TicketSigner interface {
 
 // RemoteBatchSize retains the legacy minimum-credit floor of one ticket EV.
 // The fee is still debited from the balance after the tickets are created.
+// Adapted from Yondon Fu's go-livepeer/server/segment_rpc.go newBalanceUpdate
+// (5e31f8db3c1d06b40a344927c1cddfc33585c7f7) and core/accounting.go StageUpdate
+// (85bdacc93774bf0a61887623802f79e0cfd1f85e).
 func RemoteBatchSize(params TicketParams, fee, balance *big.Rat) (int, error) {
 	if params.FaceValue == nil || params.WinProb == nil || fee == nil || balance == nil ||
 		params.FaceValue.Sign() <= 0 || params.WinProb.Sign() <= 0 || params.WinProb.Cmp(maxWinProb) >= 0 || fee.Sign() <= 0 || balance.Sign() < 0 {
@@ -41,6 +44,9 @@ func RemoteBatchSize(params TicketParams, fee, balance *big.Rat) (int, error) {
 
 // MakeRemoteBatch constructs signed tickets for the billable fee and carries
 // forward unused expected value.
+// Ticket construction follows Yondon Fu's go-livepeer/pm/sender.go CreateTicketBatch
+// (a5ffbb1d31fba67077d5564c1b5161ba900e0be6), used by Josh Allmann's remote signer
+// in server/remote_signer.go (f117b4423f8614c7475f0bb0c5071433c7037b87).
 func MakeRemoteBatch(params TicketParams, signer TicketSigner, firstNonce uint32, fee, balance *big.Rat) (*TicketBatch, *big.Rat, error) {
 	if signer == nil || params.FaceValue == nil || params.WinProb == nil || params.ExpirationParams == nil || params.ExpirationBlock == nil || fee == nil || balance == nil {
 		return nil, nil, errors.New("incomplete remote payment params")

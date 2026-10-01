@@ -1,3 +1,6 @@
+// Ticket types and encodings are adapted from livepeer/go-livepeer/pm/ticket.go
+// at bd645a09266833fb859053445d9ac85846330756, by Yondon Fu, Elad Mallel,
+// and Nico Vergauwen. The original source commits are retained in Git history.
 package pm
 
 import (

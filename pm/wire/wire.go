@@ -1,6 +1,9 @@
 // Package wire preserves the retained fields and field numbers of the
 // legacy unversioned remote-signer Protobuf envelopes. Unknown fields are
 // skipped so current Go and Python runner clients can send their full messages.
+// The retained schemas come from livepeer/go-livepeer/net/lp_rpc.proto at
+// bd645a09266833fb859053445d9ac85846330756, authored by Josh Allmann,
+// Yondon Fu, Nico Vergauwen, and Angie Ramirez. This codec is implemented here.
 package wire
 
 import (

@@ -65,8 +65,8 @@ func NewEngine(store *SQLiteStore, chain PaymentChain, recipient ethcommon.Addre
 		return nil, errors.New("invalid payment engine configuration")
 	}
 	e := &Engine{store: store, chain: chain, recipient: recipient, faceValue: new(big.Int).Set(faceValue), winProb: new(big.Int).Set(winProb), sessions: make(map[string]*paymentSession), senderNonces: make(map[string]*recipientNonces), lastSeenBlock: new(big.Int)}
-	// Port of go-livepeer/pm.NewRecipient: a fresh 256-bit HMAC key per
-	// recipient lifetime. AuthToken has its own independent key, as upstream.
+	// Port of Yondon Fu's go-livepeer/pm.NewRecipient: a fresh 256-bit HMAC
+	// key per recipient lifetime. AuthToken has its own independent key, as upstream.
 	rand.Read(e.secret[:])
 	rand.Read(e.authSecret[:])
 	return e, nil

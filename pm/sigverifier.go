@@ -1,3 +1,7 @@
+// Adapted from livepeer/go-livepeer/pm/sigverifier.go and crypto/verify.go,
+// originally by Yondon Fu and Elad Mallel; Michael Ira Krufky moved VerifySig
+// to crypto. The 27/28 recovery convention follows Yondon Fu's upstream commit
+// 3b52399fc7b9177460864207a68eb9f3d2f4ee57.
 package pm
 
 import (

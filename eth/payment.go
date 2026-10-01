@@ -120,6 +120,9 @@ func (c PaymentChain) Snapshot(ctx context.Context) (ChainSnapshot, error) {
 // SenderInfo is a coherent view of a sender's collateral and the amount of
 // reserve this particular recipient can claim in the initialized round.
 // A zero recipient requests total remaining reserve, for sender readiness.
+// Sender/reserve semantics follow go-livepeer/eth/client_ticketbroker.go,
+// originally by Yondon Fu and Nico Vergauwen, with L1-round handling by
+// Rafał Leszko (4b6ede31f040a084ff9e55bd798a0d6fffee1e1b).
 type SenderInfo struct {
 	Snapshot                        ChainSnapshot
 	Deposit, Reserve, WithdrawRound *big.Int
@@ -153,6 +156,8 @@ func (c PaymentChain) SenderInfo(ctx context.Context, sender, recipient ethcommo
 	return SenderInfo{Snapshot: snapshot, Deposit: info.Sender.Deposit, Reserve: reserve, WithdrawRound: info.Sender.WithdrawRound}, nil
 }
 
+// The redemption tuple follows Yondon Fu's go-livepeer/eth/client_ticketbroker.go
+// RedeemWinningTicket (ffcefd6341d14696e2718c1a42875428cd2cc953).
 type RedeemTicket struct {
 	Recipient         ethcommon.Address
 	Sender            ethcommon.Address

@@ -22,6 +22,7 @@ import (
 
 // These vectors were produced by running recipient.rand, expiration AuxData,
 // and orchestrator.AuthToken extracted from the pinned go-livepeer revision.
+// Those routines were authored by Yondon Fu and Nico Vergauwen; see recipient.go.
 func TestRecipientHMACMatchesGoLivepeer(t *testing.T) {
 	data, err := os.ReadFile("testdata/recipient-hmac.json")
 	require.NoError(t, err)

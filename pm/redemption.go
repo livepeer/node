@@ -15,6 +15,8 @@ import (
 // RedeemPending only reveals randomness once the parameter acceptance window
 // has ended. Preparation failures leave tickets queued; signed identities are
 // durable before broadcasting. Call from one bounded worker per store.
+// The expiry rule follows Nico Vergauwen's go-livepeer/pm/queue.go; L1-clock
+// handling follows Rafał Leszko's 4b6ede31f040a084ff9e55bd798a0d6fffee1e1b.
 func RedeemPending(ctx context.Context, store *SQLiteStore, chain eth.PaymentChain, key *eth.Key, chainID *big.Int, snapshot eth.ChainSnapshot) []error {
 	if store == nil || key == nil || chainID == nil || snapshot.Block == nil || snapshot.Round == nil {
 		return []error{fmt.Errorf("redemption is not configured")}

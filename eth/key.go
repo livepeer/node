@@ -40,6 +40,8 @@ func OpenKeyFile(path string) (*Key, error) {
 
 func (k *Key) Address() ethcommon.Address { return crypto.PubkeyToAddress(k.private.PublicKey) }
 
+// Ethereum message signing and the 27/28 convention follow Yondon Fu's
+// go-livepeer/eth/accountmanager.go (3b52399fc7b9177460864207a68eb9f3d2f4ee57).
 func (k *Key) SignMessage(message []byte) ([]byte, error) {
 	sig, err := crypto.Sign(accounts.TextHash(message), k.private)
 	if err != nil {
@@ -49,6 +51,8 @@ func (k *Key) SignMessage(message []byte) ([]byte, error) {
 	return sig, nil
 }
 
+// Hash signing follows Yondon Fu's go-livepeer/eth/accountmanager.go signHash
+// (97a014cb692a736a853f7ebb396e9cbada5408a6).
 func (k *Key) SignHash(hash []byte) ([]byte, error) {
 	if len(hash) != 32 {
 		return nil, errors.New("ethereum signing hash must be 32 bytes")

@@ -31,8 +31,14 @@ This repository is the standalone Live Runner extraction from
 - All executables expose version, help, and shell completion. Boa loads strict
   TOML, component-prefixed environment variables, and exact-byte secret files.
 
-Relevant trickle and ticket authorship is preserved in filtered Git history;
-the original `go-livepeer/trickle` implementation and tests are also present
+Trickle, ticket, contract-binding, selected protocol-type, and test-helper
+authorship is preserved in filtered Git history. Source parents at the import
+commits let `git blame` follow copied code back to its upstream authors;
+`Original-Commit` trailers identify the upstream revisions. Adapted Ethereum
+and payment routines identify their sources and original authors in comments.
+Code imported or adapted from `go-livepeer` retains its MIT copyright and
+permission notice in [`LICENSE.go-livepeer`](LICENSE.go-livepeer).
+The original `go-livepeer/trickle` implementation and tests are also present
 in `trickle/`. Production chain cutover still needs deployment-specific staging
 validation, including contract addresses, funded accounts, gas behavior and a
 rollback drill.

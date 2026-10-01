@@ -1,4 +1,6 @@
 // Selected protocol types from go-livepeer bd645a09266833fb859053445d9ac85846330756.
+// Originally by Nico Vergauwen (poll choices and pool hints) and Rick Staa
+// (proposal choices). Their filtered source commits are retained in Git history.
 package types
 
 import "github.com/ethereum/go-ethereum/common"

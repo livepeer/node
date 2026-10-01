@@ -1,3 +1,5 @@
+// Ticket validation is adapted from livepeer/go-livepeer/pm/validator.go,
+// originally by Yondon Fu. The original source commits are retained in Git history.
 package pm
 
 import (

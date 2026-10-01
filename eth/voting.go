@@ -1,3 +1,6 @@
+// Voting APIs follow livepeer/go-livepeer/eth/client.go: poll voting by
+// Nico Vergauwen (994f4c0e5a755717f47feab1a397c74307cef8ef) and proposal voting
+// by Rick Staa (89d9ebc7fff0004aab11bbb733035327da7b2e1b).
 package eth
 
 import (

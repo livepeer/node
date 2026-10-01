@@ -10,6 +10,8 @@ import (
 
 // SenderPolicy limits actual ticket exposure, independently of the work price.
 // Defaults match the retained go-livepeer sender policy (values are in wei).
+// Adapted from pm/sender.go's validation by Yondon Fu and Nico Vergauwen,
+// including Rafał Leszko's batch EV limit (366c2d68b39143f7b805c1aa98a0da069104134e).
 type SenderPolicy struct {
 	MaxTicketEV, MaxBatchEV *big.Rat
 	DepositMultiplier       int64

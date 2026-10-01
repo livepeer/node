@@ -15,6 +15,13 @@ unchanged from `livepeer/go-livepeer` commit
 - `LivepeerGovernor.go`
 - `chainlink/AggregatorV3Interface.go`
 
+Their filtered source history is a parent of the binding import commit. It
+preserves the authors, committers, dates, and messages, with `Original-Commit`
+trailers linking each retained commit to `livepeer/go-livepeer`. Contributors
+include Eric Tang, Yondon Fu, Nico Vergauwen, Rafał Leszko, Rick Staa, and
+Victor Elias. The original MIT notice is in
+[`LICENSE.go-livepeer`](../../LICENSE.go-livepeer).
+
 Keep generated schemas and methods unchanged. On a deliberate upstream update,
 copy these files from the selected committed revision, review its contract/API
 changes, and update this provenance. For example, from a checkout of this repo:

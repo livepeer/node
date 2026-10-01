@@ -8,6 +8,9 @@ import (
 
 // Ported from go-livepeer/pm/recipient.go's senderNonces. A restart rotates the
 // recipient key, so parameters from a prior lifetime cannot authenticate.
+// Originally by Yondon Fu, with expiry cleanup by Nico Vergauwen
+// (7a7c656e2fffcc03ee77cece1b05d91dde3162a9) and map maintenance by Ivan Poleshchuk
+// (d3a7d7ddacca48a52ec9e506cfd9fe4b8e742ae4).
 type recipientNonces struct {
 	nonceSeen       map[uint32]bool
 	expirationBlock *big.Int
