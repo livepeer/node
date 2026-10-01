@@ -135,7 +135,9 @@ func TestSignerReadiness(t *testing.T) {
 						result = map[string]string{"number": "0x32", "hash": ethcommon.HexToHash("0x1234").Hex()}
 					}
 				case "eth_call":
-					var call struct{ Data string }
+					var call struct {
+						Data string `json:"input"`
+					}
 					require.NoError(t, json.Unmarshal(req.Params[0], &call))
 					selector := func(sig string) bool {
 						return strings.HasPrefix(call.Data, "0x"+hex.EncodeToString(crypto.Keccak256([]byte(sig))[:4]))

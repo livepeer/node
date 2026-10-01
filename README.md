@@ -17,15 +17,17 @@ This repository is the standalone Live Runner extraction from
   challenges, validates `live` and `fixed` ticket batches, charges sessions,
   and queues winning tickets for direct Ethereum redemption.
 - `livepeer-signer` serves the retained unversioned signing, payment generation
-  and discovery routes, with optional authorization webhooks. Payment state is
+  and discovery routes, with required on-chain configuration and optional
+  authorization webhooks. Payment state is
   client-held and signed; replicas sharing a key and webhook configuration are
   interchangeable.
 - `livepeer-chain` implements all 17 approved direct Ethereum commands.
   State-changing commands simulate and estimate gas first, and require
   `--submit` to broadcast. `--wait` waits for inclusion in a successful receipt.
-- Outbound runner, generated proxy, static health, and chain RPC destinations
-  have separate exact host:port grants. Private and special-use addresses are
-  denied by default at dial time.
+- Outbound runner, generated proxy, and static health destinations have
+  separate exact host:port grants. Private and special-use addresses are denied
+  by default at dial time for these clients. Ethereum RPC, discovery, and
+  webhooks use operator-configured endpoints without destination grants.
 - Ethereum contract calls, transaction signing and account access stay in
   `eth`; ticket, sender, recipient and redemption code stays in `pm`.
 - All executables expose version, help, and shell completion. Boa loads strict
@@ -61,8 +63,9 @@ bin/livepeer signer --config /absolute/path/to/signer.toml
 bin/livepeer chain status --config /absolute/path/to/chain.toml
 ```
 
-Use `--print-config` to inspect an audited TOML view. It omits direct secrets,
-secret file paths and the static runner file path. Boa reads secret files as
+The orchestrator and chain commands support `--print-config` to inspect an
+audited TOML view. It omits direct secrets, secret file paths and the static
+runner file path. Boa reads secret files as
 exact bytes, including a trailing newline, so operator-managed files or
 secret-manager mounts must contain precisely the intended credential. A direct
 environment secret and its file path cannot both be set. Direct secret flags
@@ -106,9 +109,9 @@ listener remains loopback and serves only `/metrics`, `/healthz`, and
 `/readyz`.
 
 Custom CA bundles can be assigned independently to runner traffic, generated
-session proxies, static health checks, signer discovery and chain RPC. Each bundle extends the
-system trust roots for only that destination purpose; certificate verification
-remains enabled.
+session proxies, and static health checks. Each bundle extends the system trust
+roots for that destination purpose; certificate verification remains enabled.
+Ethereum RPC clients use system trust roots without custom CA flags.
 
 ## Paid operation
 
@@ -119,10 +122,16 @@ session auth tokens. Challenges, balances and nonce replay guards stay in
 memory; SQLite holds winning tickets (including their redemption randomness),
 redemption attempts and chain activity observations. Restarting requires new
 paid sessions while stored winners remain redeemable. The signer key is the
-ticket sender. Configure signer RPC, chain ID
-and controller together: paid generation
-requires a current coherent sender-funds observation. Without RPC, signing
-identity and discovery remain available, but paid generation returns 482.
+ticket sender. Paid generation requires a
+current coherent sender-funds observation. The signer requires
+on-chain configuration at startup, including when used for identity signing
+or discovery. `ChainID` optionally asserts the RPC's chain ID; when omitted,
+the signer uses the RPC's chain. Controller and ETH/USD feed defaults match
+go-livepeer's Arbitrum mainnet addresses: respectively
+`0xD8E8328501E9645d16Cf49539efC04f734606ee4` and
+`0x639Fe6ab55C921f74e7fac1ee960C0B6293ba612`. Override both when using another
+chain. Its TOML keys use implicit Go field names, as shown in
+[`configs/signer/config.example.toml`](configs/signer/config.example.toml).
 The orchestrator SQLite file must be owner-only.
 
 Configure exactly one orchestrator conversion source: a fixed `wei_per_usd`,
@@ -133,15 +142,30 @@ priced discovery/reservations. Existing sessions retain their agreed wei
 price. USD/hour discovery is normalized to USD/second alongside wei/second.
 Off-chain operation accepts quoted runner prices but advertises free service.
 
-Paid signer configuration requires positive `max_live_price_usd_per_second` and
-`max_fixed_price_usd` and exactly one `wei_per_usd` or `eth_usd_feed`. Feed
-observations refresh every 30 seconds and expire after `price_max_age` (two
-hours by default). Rates and ceilings are compared exactly. An unavailable
-fresh rate returns 503 and makes the signer unready; a price above a ceiling
+Signer configuration requires `KeyFile`, an RPC URL through `RPCURLFile` or
+`LIVEPEER_SIGNER_RPC_URL`, and positive `MaxHourlyPrice` (USD/hour) and
+`MaxFixedPrice` (USD/request), with USD implicit. Live ceilings are divided by
+3600 before comparison with wei/second quotes. `ETHUSDFeed` supplies the rate
+unless `WeiPerUSD` overrides it with a fixed conversion, mostly for testing;
+the fixed rate never refreshes or expires. Feed observations refresh every
+30 seconds and expire after `ETHUSDMaxAge` (two hours by default). Rates and
+ceilings are compared exactly.
+
+If the feed is unavailable at startup, the signer starts unready and retries.
+A failed refresh preserves the last observation only until its expiry. Once
+that observation is stale, `/readyz` and payment generation return HTTP 503;
+identity signing and discovery remain available. A fresh successful observation
+restores rate availability. A price above a ceiling
 returns 481. Request and webhook wei ceilings apply as additional limits.
+`/readyz` also makes a bounded canonical chain/funds read: RPC or contract
+failures, an empty deposit or total reserve, and an imminent withdrawal return
+503. Readiness recovers on the next successful probe. Recipient-specific
+claimable reserve is still checked when paying that recipient. `/healthz`
+reports process liveness independently of payment readiness.
 
 The signer limits per-ticket EV, batch EV and face value relative to deposit;
-see `max_ticket_ev`, `max_batch_ev`, and `deposit_multiplier` in its example.
+see `MaxTicketEV`, `MaxBatchEV`, and `DepositMultiplier` in its example.
+`DepositMultiplier` must be at least one; explicitly setting zero is rejected.
 It issues enough tickets to reach at least the greater of the fee and one
 ticket's expected value, then carries unused expected value in signed state.
 The state is not a replay database: reusing an earlier signed state can yield
@@ -149,17 +173,51 @@ another batch, and retries need not return identical bytes. The recipient
 rejects duplicate tickets.
 The recipient checks claimable reserve, withdrawal timing and outstanding
 winning liability across sessions. Ethereum reads use canonical block-hash
-snapshots with Arbitrum's L1 clock and the last initialized round. Refresh
-returns 480 before parameter/auth expiry and resets the nonce on new randomness.
+snapshots with Arbitrum's L1 clock and the last initialized round. Ticket
+recipients must match the OrchestratorInfo address. Parameters must use the
+last initialized round and its canonical hash; older rounds, mismatched hashes,
+and expiring parameters/auth return 480 for refresh. New randomness resets the
+nonce. Parameter expiry is supplied by the caller, not signed by the orchestrator;
+these checks do not establish the provenance of an arbitrary challenge.
 
-Optional signer authorization uses `auth_webhook_file`, purpose-scoped grants
-and CA, and a file-backed JSON map in `auth_webhook_headers_file`. The webhook
-receives request headers and the proposed updated payment state after ticket
-calculation, and returns `status`,
-`reason`, Unix-second `expiry`, `auth_id`, and optional `maxPrice` (wei per
-second or fixed request). Successful authorization is cached in signed state
-until expiry; identity and price ceilings remain enforced. Changing the
-webhook URL or configured headers invalidates this cache. Redirects are refused.
+Optional signer authorization uses `AuthWebhookFile` and
+`AuthWebhookHeadersFile`. Headers use go-livepeer's comma-separated
+`Header: value` syntax, with CSV quoting for entries containing commas.
+Names are case-insensitive, repeated names retain multiple values, and malformed
+entries fail configuration parsing. URL and header credentials can also come
+from their component-prefixed environment variables. The webhook receives
+request headers and the proposed updated payment state. We deliberately generate
+and sign the tickets **before authorization so we know what is being authorized**.
+Payment, credentials and updated signed state are released only after approval.
+The webhook returns `status`, `reason`, Unix-second `expiry`, `auth_id`, and optional
+`maxPrice` (wei per second or fixed request). **Signed state is a bearer credential**:
+while authorization is cached, possession of it permits continuation without
+presenting the original credentials. Keep it out of logs and shared storage.
+Caching is generally not recommended outside specific, deliberately scoped
+trusted-client cases. Omit `expiry` or return zero to authorize each payment;
+a future expiry caches approval and delays credential revocation and budget
+rechecks until that time. A supplied `Signer-Auth-Id` must match the state, but
+omitting it does not authenticate a caller. If a proxy supplies identity, it
+must authenticate each request and overwrite caller-supplied identity headers.
+Price ceilings continue to apply during caching. Changing the webhook URL or
+configured headers invalidates the cache. Redirects
+are refused. The signer has no shared bearer-token or TLS-assertion flags;
+listener access and TLS termination are configured externally. Response writes
+are bounded by the request deadline (at most 30 seconds), and cancellation
+interrupts blocked writes. None of the signer routes stream beyond the request.
+
+Run the signer alongside a clearinghouse such as
+[livepeer/clearinghouse-batteries](https://github.com/livepeer/clearinghouse-batteries)
+to manage authorization, allocations and cumulative spending. Price and ticket
+limits constrain individual quotes/batches, not a customer's total budget.
+That clearinghouse's documented accounting pipeline consumes signing usage
+events through Kafka: this signer supports its webhook shape but currently has
+no Kafka usage-event producer. Connect and verify the accounting path before
+relying on end-to-end budget enforcement; configuring only the webhook is not
+the complete integration. An alternative is a synchronous authorization service
+with a durable ledger that atomically reserves each payment against a budget,
+deduplicates retries, and shares accounting across replicas. This still requires
+state somewhere; client-carried signed state alone cannot enforce cumulative caps.
 
 Winning tickets wait for parameter expiry before their randomness is exposed
 on-chain. Signed transaction bytes and hash are saved before broadcast; safe
@@ -187,16 +245,37 @@ round initialize
 
 Run a state change without `--submit` to review its simulation,
 gas estimate and call data. Add `--submit` and an owner-only
-`private_key_file` to broadcast; add `--wait` for a successful receipt.
+`KeyFile` to broadcast; add `--wait` for a successful receipt.
 The submission hash is printed before waiting and remains available on errors.
 With JSON output, submission and receipt are separate JSON-line records.
+Add `--quiet` to suppress normal transaction output, including dry-run plans,
+submission hashes and receipt records. Errors still go to stderr and return
+exit status 2; broadcast and receipt errors retain the transaction hash.
+Transaction switches and action inputs are accepted only on the command line.
+TOML contains shared operator settings: RPC connection, expected chain ID,
+Controller, sender, key location, and an optional maximum fee per gas.
+`--output` and `--print-config` are also
+command-line controls. Shared flags can appear before or after chain subcommands:
+
+```sh
+livepeer chain --config /path/to/chain.toml --output json stake bond ORCHESTRATOR_ADDRESS --amount 1000000000000000000
+livepeer chain ticketbroker fund --config /path/to/chain.toml --amount 1000000000000000000 --reserve 0 --submit --quiet
+```
+
 An approval needed by `stake bond` is submitted first; without `--wait`, rerun
 the bond after that approval is confirmed. `stake rebond --delegate ADDRESS`
 uses `rebondFromUnbonded`; omit the delegate for an already bonded account.
-Before `orchestrator activate`, self-bond using `stake bond --delegate YOUR_ADDRESS`
+Before `orchestrator activate`, self-bond using `stake bond YOUR_ADDRESS --amount AMOUNT`
 and set the public URI with `orchestrator set-config --service-uri URL`. The sender
 must match the key and the configured chain ID must match RPC. No command
 starts an HTTP server. Exit status is 0 on success and 2 on command failure.
+
+Transactions require dynamic fees and fail if the RPC header has no base fee.
+`--max-fee-per-gas` (TOML `MaxFeePerGas`) sets an optional
+ceiling in wei per gas; a higher estimate fails before signing. Staking and
+reward commands calculate pool-position hints. `stake bond` still requires a
+positive new-token amount. The `eth` APIs also support explicit delegation
+changes, voting, and delegated reward callers; their CLI commands follow later.
 
 TODO: add a richer terminal UI after the direct command surface is stable.
 

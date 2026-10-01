@@ -2,13 +2,15 @@ package eth
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"math/big"
-	"reflect"
 
+	"github.com/ethereum/go-ethereum"
+	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	ethcommon "github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/livepeer/node/eth/contracts"
 )
 
 // PaymentChain adapts the retained Livepeer contracts to pm's narrow chain
@@ -31,81 +33,40 @@ func (c PaymentChain) IsActiveAt(ctx context.Context, recipient ethcommon.Addres
 	if err != nil {
 		return false, err
 	}
-	result, err := c.Contracts.CallAt(ctx, snapshot.blockReference, "bondingManager", address, "isActiveTranscoder", recipient)
+	bonding, err := contracts.NewBondingManagerCaller(address, c.Contracts.callerAt(snapshot.blockReference))
 	if err != nil {
 		return false, err
 	}
-	active, ok := result[0].(bool)
-	if !ok {
-		return false, errors.New("invalid orchestrator active status")
-	}
-	return active, nil
+	return bonding.IsActiveTranscoder(&bind.CallOpts{Context: ctx}, recipient)
 }
 
 // Receipt reports a submitted redemption without retrying or resubmitting it.
 func (c PaymentChain) Receipt(ctx context.Context, hash ethcommon.Hash) (confirmed, reverted bool, err error) {
-	data, err := c.Contracts.RPC.CallNullable(ctx, "eth_getTransactionReceipt", hash.Hex())
-	if err != nil {
-		return false, false, err
-	}
-	if string(data) == "null" {
+	receipt, err := c.Contracts.RPC.TransactionReceipt(ctx, hash)
+	if errors.Is(err, ethereum.NotFound) {
 		return false, false, nil
 	}
-	var receipt struct {
-		Status      string `json:"status"`
-		BlockNumber string `json:"blockNumber"`
-		BlockHash   string `json:"blockHash"`
-	}
-	if err := json.Unmarshal(data, &receipt); err != nil {
-		return false, false, errors.New("invalid redemption receipt")
-	}
-	status, err := ParseHexQuantity(receipt.Status)
-	if err != nil || !status.IsUint64() {
-		return false, false, errors.New("invalid redemption receipt status")
-	}
-	block, err := ParseHexQuantity(receipt.BlockNumber)
-	if err != nil || !ethcommon.IsHexHash(receipt.BlockHash) {
-		return false, false, errors.New("invalid redemption receipt block")
-	}
-	// Wait for finality and verify the receipt still belongs to the canonical
-	// chain. A pre-finality reorg leaves the transaction in reconciliation.
-	raw, err := c.Contracts.RPC.Call(ctx, "eth_getBlockByNumber", "finalized", false)
 	if err != nil {
 		return false, false, err
 	}
-	var finalized struct {
-		Number string `json:"number"`
-	}
-	if err := json.Unmarshal(raw, &finalized); err != nil {
-		return false, false, err
-	}
-	head, err := ParseHexQuantity(finalized.Number)
+	finalized, err := c.Contracts.RPC.header(ctx, "finalized")
 	if err != nil {
 		return false, false, err
 	}
-	if head.Cmp(block) < 0 {
+	if finalized.Number == nil {
+		return false, false, errors.New("invalid finalized header")
+	}
+	if (*big.Int)(finalized.Number).Cmp(receipt.BlockNumber) < 0 {
 		return false, false, nil
 	}
-	raw, err = c.Contracts.RPC.Call(ctx, "eth_getBlockByNumber", receipt.BlockNumber, false)
+	canonical, err := c.Contracts.RPC.header(ctx, hexutil.EncodeBig(receipt.BlockNumber))
 	if err != nil {
-		return false, false, err
-	}
-	var canonical struct {
-		Hash string `json:"hash"`
-	}
-	if err := json.Unmarshal(raw, &canonical); err != nil {
 		return false, false, err
 	}
 	if canonical.Hash != receipt.BlockHash {
 		return false, false, nil
 	}
-	if status.Uint64() == 1 {
-		return true, false, nil
-	}
-	if status.Uint64() == 0 {
-		return false, true, nil
-	}
-	return false, false, errors.New("invalid redemption receipt status")
+	return receipt.Status == types.ReceiptStatusSuccessful, receipt.Status == types.ReceiptStatusFailed, nil
 }
 
 type ChainSnapshot struct {
@@ -116,73 +77,49 @@ type ChainSnapshot struct {
 }
 
 func (c PaymentChain) Snapshot(ctx context.Context) (ChainSnapshot, error) {
-	raw, err := c.Contracts.RPC.Call(ctx, "eth_getBlockByNumber", "latest", false)
+	header, err := c.Contracts.RPC.header(ctx, "latest")
 	if err != nil {
 		return ChainSnapshot{}, err
 	}
-	var header struct {
-		Number        string `json:"number"`
-		L1BlockNumber string `json:"l1BlockNumber"`
-		Hash          string `json:"hash"`
-	}
-	if err := json.Unmarshal(raw, &header); err != nil || !ethcommon.IsHexHash(header.Hash) {
+	if header.Hash == (ethcommon.Hash{}) || header.Number == nil {
 		return ChainSnapshot{}, errors.New("invalid chain header")
 	}
 	clock := header.Number
-	if header.L1BlockNumber != "" {
+	if header.L1BlockNumber != nil {
 		clock = header.L1BlockNumber
 	}
-	block, err := ParseHexQuantity(clock)
-	if err != nil {
-		return ChainSnapshot{}, err
-	}
-	// EIP-1898 binds every read to this canonical block, including Controller
-	// resolution. A reorg causes an RPC error instead of a mixed snapshot.
-	ref := map[string]any{"blockHash": header.Hash, "requireCanonical": true}
+	block := new(big.Int).Set((*big.Int)(clock))
+	// Bind every read to the canonical block, including Controller resolution.
+	ref := map[string]any{"blockHash": header.Hash.Hex(), "requireCanonical": true}
 	address, err := c.Contracts.ResolveAt(ctx, ref, "roundsManager")
 	if err != nil {
 		return ChainSnapshot{}, err
 	}
-	roundResult, err := c.Contracts.CallAt(ctx, ref, "roundsManager", address, "lastInitializedRound")
+	rounds, err := contracts.NewRoundsManagerCaller(address, c.Contracts.callerAt(ref))
 	if err != nil {
 		return ChainSnapshot{}, err
 	}
-	round, ok := roundResult[0].(*big.Int)
-	if !ok || !round.IsInt64() || round.Sign() <= 0 {
+	opts := &bind.CallOpts{Context: ctx}
+	round, err := rounds.LastInitializedRound(opts)
+	if err != nil {
+		return ChainSnapshot{}, err
+	}
+	if !round.IsInt64() || round.Sign() <= 0 {
 		return ChainSnapshot{}, errors.New("invalid initialized round")
 	}
-	hashResult, err := c.Contracts.CallAt(ctx, ref, "roundsManager", address, "blockHashForRound", round)
+	hash, err := rounds.BlockHashForRound(opts, round)
 	if err != nil {
 		return ChainSnapshot{}, err
 	}
-	hash, ok := hashResult[0].([32]byte)
-	if !ok || hash == ([32]byte{}) {
+	if hash == ([32]byte{}) {
 		return ChainSnapshot{}, errors.New("invalid round block hash")
 	}
 	return ChainSnapshot{Block: block, Round: round, RoundHash: ethcommon.Hash(hash), blockReference: ref}, nil
 }
 
-func tupleBigInt(value any, field string) (*big.Int, error) {
-	v := reflect.ValueOf(value)
-	if v.Kind() == reflect.Pointer {
-		v = v.Elem()
-	}
-	if v.Kind() != reflect.Struct {
-		return nil, errors.New("invalid contract tuple")
-	}
-	f := v.FieldByName(field)
-	if !f.IsValid() {
-		return nil, fmt.Errorf("missing contract tuple field %s", field)
-	}
-	result, ok := f.Interface().(*big.Int)
-	if !ok || result == nil {
-		return nil, errors.New("invalid contract integer")
-	}
-	return result, nil
-}
-
 // SenderInfo is a coherent view of a sender's collateral and the amount of
 // reserve this particular recipient can claim in the initialized round.
+// A zero recipient requests total remaining reserve, for sender readiness.
 type SenderInfo struct {
 	Snapshot                        ChainSnapshot
 	Deposit, Reserve, WithdrawRound *big.Int
@@ -197,40 +134,23 @@ func (c PaymentChain) SenderInfo(ctx context.Context, sender, recipient ethcommo
 	if err != nil {
 		return SenderInfo{}, err
 	}
-	values, err := c.Contracts.CallAt(ctx, snapshot.blockReference, "ticketBroker", address, "getSenderInfo", sender)
+	broker, err := contracts.NewTicketBrokerCaller(address, c.Contracts.callerAt(snapshot.blockReference))
 	if err != nil {
 		return SenderInfo{}, err
 	}
-	if len(values) != 2 {
-		return SenderInfo{}, errors.New("invalid sender info")
-	}
-	deposit, err := tupleBigInt(values[0], "Deposit")
+	opts := &bind.CallOpts{Context: ctx}
+	info, err := broker.GetSenderInfo(opts, sender)
 	if err != nil {
 		return SenderInfo{}, err
 	}
-	withdraw, err := tupleBigInt(values[0], "WithdrawRound")
-	if err != nil {
-		return SenderInfo{}, err
+	reserve := info.Reserve.FundsRemaining
+	if recipient != (ethcommon.Address{}) {
+		reserve, err = broker.ClaimableReserve(opts, sender, recipient)
+		if err != nil {
+			return SenderInfo{}, err
+		}
 	}
-	values, err = c.Contracts.CallAt(ctx, snapshot.blockReference, "ticketBroker", address, "claimableReserve", sender, recipient)
-	if err != nil {
-		return SenderInfo{}, err
-	}
-	reserve, ok := values[0].(*big.Int)
-	if !ok {
-		return SenderInfo{}, errors.New("invalid claimable reserve")
-	}
-	return SenderInfo{Snapshot: snapshot, Deposit: deposit, Reserve: reserve, WithdrawRound: withdraw}, nil
-}
-
-type brokerTicket struct {
-	Recipient         ethcommon.Address
-	Sender            ethcommon.Address
-	FaceValue         *big.Int
-	WinProb           *big.Int
-	SenderNonce       *big.Int
-	RecipientRandHash [32]byte
-	AuxData           []byte
+	return SenderInfo{Snapshot: snapshot, Deposit: info.Sender.Deposit, Reserve: reserve, WithdrawRound: info.Sender.WithdrawRound}, nil
 }
 
 type RedeemTicket struct {
@@ -246,6 +166,19 @@ type RedeemTicket struct {
 }
 
 func (c PaymentChain) PrepareRedemption(ctx context.Context, key *Key, chainID *big.Int, t RedeemTicket) (SignedTransaction, error) {
+	return c.prepareRedemption(ctx, key, chainID, t, nil)
+}
+
+// PrepareRedemptionAndStore reserves the nonce only after the caller saves the
+// signed redemption identity, before any possible broadcast.
+func (c PaymentChain) PrepareRedemptionAndStore(ctx context.Context, key *Key, chainID *big.Int, t RedeemTicket, save func(SignedTransaction) error) (SignedTransaction, error) {
+	if save == nil {
+		return SignedTransaction{}, errors.New("transaction persistence is required")
+	}
+	return c.prepareRedemption(ctx, key, chainID, t, save)
+}
+
+func (c PaymentChain) prepareRedemption(ctx context.Context, key *Key, chainID *big.Int, t RedeemTicket, save func(SignedTransaction) error) (SignedTransaction, error) {
 	if key == nil || key.Address() != t.Recipient || t.FaceValue == nil || t.WinProb == nil || t.RecipientRand == nil {
 		return SignedTransaction{}, errors.New("redemption recipient key mismatch")
 	}
@@ -253,7 +186,7 @@ func (c PaymentChain) PrepareRedemption(ctx context.Context, key *Key, chainID *
 	if err != nil {
 		return SignedTransaction{}, err
 	}
-	coreTicket := brokerTicket{Recipient: t.Recipient, Sender: t.Sender, FaceValue: t.FaceValue, WinProb: t.WinProb, SenderNonce: new(big.Int).SetUint64(uint64(t.SenderNonce)), RecipientRandHash: t.RecipientRandHash, AuxData: t.AuxData}
+	coreTicket := contracts.MTicketBrokerCoreTicket{Recipient: t.Recipient, Sender: t.Sender, FaceValue: t.FaceValue, WinProb: t.WinProb, SenderNonce: new(big.Int).SetUint64(uint64(t.SenderNonce)), RecipientRandHash: t.RecipientRandHash, AuxData: t.AuxData}
 	data, err := c.Contracts.Pack("ticketBroker", "redeemWinningTicket", coreTicket, t.Signature, t.RecipientRand)
 	if err != nil {
 		return SignedTransaction{}, err
@@ -261,6 +194,9 @@ func (c PaymentChain) PrepareRedemption(ctx context.Context, key *Key, chainID *
 	plan, err := c.Contracts.PlanTransaction(ctx, key.Address(), address, data, big.NewInt(0))
 	if err != nil {
 		return SignedTransaction{}, err
+	}
+	if save != nil {
+		return c.Contracts.PrepareAndStore(ctx, plan, key, chainID, save)
 	}
 	return c.Contracts.Prepare(ctx, plan, key, chainID)
 }

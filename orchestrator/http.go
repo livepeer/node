@@ -282,7 +282,7 @@ func (s *Server) createProxy(w http.ResponseWriter, r *http.Request) {
 	if body.TargetURL == "" {
 		target, _, _, err = s.registry.sessionTarget(r.PathValue("runner_id"), r.PathValue("session_id"))
 	} else {
-		target, err = destination.ValidateURL(body.TargetURL)
+		target, err = destination.ParseURL(body.TargetURL)
 	}
 	if err != nil {
 		fail(w, http.StatusBadRequest, err.Error())

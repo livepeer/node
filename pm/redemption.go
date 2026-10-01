@@ -30,6 +30,17 @@ func RedeemPending(ctx context.Context, store *SQLiteStore, chain eth.PaymentCha
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return []error{err}
 	}
+	var blocked int
+	if err := store.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM redemption_attempts WHERE phase IN ('prepared','broadcast')").Scan(&blocked); err != nil {
+		return []error{err}
+	}
+	if blocked != 0 {
+		return nil
+	}
+	floor, err := store.SavedNonceFloor(ctx, key.Address())
+	if err != nil {
+		return []error{err}
+	}
 	senders, err := store.PendingSenders()
 	if err != nil {
 		return []error{err}
@@ -58,10 +69,13 @@ func RedeemPending(ctx context.Context, store *SQLiteStore, chain eth.PaymentCha
 			continue
 		}
 		redeemTicket := eth.RedeemTicket{Recipient: ticket.Recipient, Sender: ticket.Sender, FaceValue: ticket.FaceValue, WinProb: ticket.WinProb, SenderNonce: ticket.SenderNonce, RecipientRandHash: ticket.RecipientRandHash, AuxData: ticket.AuxData(), Signature: ticket.Sig, RecipientRand: ticket.RecipientRand}
-		prepared, err := chain.PrepareRedemption(ctx, key, chainID, redeemTicket)
-		if err == nil {
-			err = store.recordPrepared(ctx, ticket, prepared)
+		if chain.Contracts == nil {
+			return append(failures, errors.New("redemption is not configured"))
 		}
+		chain.Contracts.SetNonceFloor(key.Address(), floor)
+		prepared, err := chain.PrepareRedemptionAndStore(ctx, key, chainID, redeemTicket, func(prepared eth.SignedTransaction) error {
+			return store.recordPrepared(ctx, ticket, prepared)
+		})
 		if err == nil {
 			err = broadcastRedemption(ctx, store, chain.Contracts, ticket.Sig, prepared)
 		}

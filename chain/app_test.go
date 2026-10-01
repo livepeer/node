@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/BurntSushi/toml"
@@ -86,10 +87,10 @@ func TestAccountValidatesSenderAndReadsPendingNonce(t *testing.T) {
 		switch request.Method {
 		case "eth_chainId":
 		case "eth_getBalance":
-			require.Equal(t, []any{sender.Hex(), "latest"}, request.Params)
+			require.Equal(t, []any{strings.ToLower(sender.Hex()), "latest"}, request.Params)
 			value = "0xde0b6b3a7640000"
 		case "eth_getTransactionCount":
-			require.Equal(t, []any{sender.Hex(), "pending"}, request.Params)
+			require.Equal(t, []any{strings.ToLower(sender.Hex()), "pending"}, request.Params)
 			value = "0x2"
 		default:
 			t.Errorf("unexpected RPC method %s", request.Method)

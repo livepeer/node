@@ -14,14 +14,12 @@ import (
 )
 
 type redemptionParams struct {
-	PaymentDB  string   `name:"payment-db" file:"true" descr:"Existing recipient SQLite database"`
-	Retry      string   `name:"retry-transaction" optional:"true" descr:"Rebroadcast the exact stored bytes for this transaction hash"`
-	Submit     bool     `name:"submit" optional:"true" descr:"Explicitly authorize rebroadcast"`
-	RPCURL     string   `name:"rpc-url" secret:"true" optional:"true"`
-	RPCURLFile string   `name:"rpc-url-file" secretfor:"RPCURL"`
-	RPCGrants  []string `name:"rpc-grants" optional:"true"`
-	RPCCAFile  string   `name:"rpc-ca-file" file:"true" optional:"true"`
-	ChainID    string   `name:"chain-id" optional:"true"`
+	PaymentDB  string `name:"payment-db" file:"true" descr:"Existing recipient SQLite database"`
+	Retry      string `name:"retry-transaction" optional:"true" descr:"Rebroadcast the exact stored bytes for this transaction hash"`
+	Submit     bool   `name:"submit" optional:"true" descr:"Explicitly authorize rebroadcast"`
+	RPCURL     string `name:"rpc-url" secret:"true" optional:"true"`
+	RPCURLFile string `name:"rpc-url-file" secretfor:"RPCURL"`
+	ChainID    string `name:"chain-id" optional:"true"`
 }
 
 func redemptionCommand() *cobra.Command {
@@ -45,10 +43,11 @@ func redemptionCommand() *cobra.Command {
 				if !ok || chainID.Sign() <= 0 {
 					return errors.New("retry requires a positive chain-id")
 				}
-				rpc, err := eth.OpenRPC(p.RPCURL, p.RPCGrants, p.RPCCAFile)
+				rpc, err := eth.OpenRPC(p.RPCURL)
 				if err != nil {
 					return err
 				}
+				defer rpc.Close()
 				if err := rpc.CheckChainID(cmd.Context(), chainID); err != nil {
 					return err
 				}

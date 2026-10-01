@@ -132,16 +132,11 @@ func executeActions(ctx context.Context, operator OperatorParams, display Displa
 	if err != nil {
 		return err
 	}
+	if operator.MaxFeePerGas != nil {
+		contracts.MaxFeePerGas = operator.MaxFeePerGas.ToBig()
+	}
 	run := func(a action, nextStep string) error {
-		address, err := contracts.Resolve(ctx, a.Contract)
-		if err != nil {
-			return err
-		}
-		data, err := contracts.Pack(a.Contract, a.Method, a.Args...)
-		if err != nil {
-			return err
-		}
-		plan, err := contracts.PlanTransaction(ctx, from, address, data, a.Value)
+		plan, err := contracts.PlanContract(ctx, from, a.Contract, a.Method, a.Value, a.Args...)
 		if err != nil {
 			return err
 		}

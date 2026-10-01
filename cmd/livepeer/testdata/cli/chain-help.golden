@@ -19,6 +19,7 @@ Flags:
       --chain-id uint               Optional expected RPC chain ID (env: LIVEPEER_CHAIN_CHAIN_ID)
   -c, --config string                (env: LIVEPEER_CHAIN_CONFIG)
       --controller-address string   Livepeer Controller (Arbitrum mainnet) (env: LIVEPEER_CHAIN_CONTROLLER_ADDRESS) (default "0xd8e8328501e9645d16cf49539efc04f734606ee4")
+  -m, --max-fee-per-gas string      Optional maximum transaction fee in wei per gas (env: LIVEPEER_CHAIN_MAX_FEE_PER_GAS)
   -o, --output string                (default "text")
       --print-config                Print audited operator configuration and exit
   -p, --private-key-file string      (env: LIVEPEER_CHAIN_PRIVATE_KEY_FILE)

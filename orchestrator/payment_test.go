@@ -10,6 +10,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -73,7 +74,7 @@ func TestPaidFixedSessionWithRemoteSigner(t *testing.T) {
 	require.NoError(t, err)
 	server := NewServer(registry, policy, policy, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	server.SetPayment(engine)
-	signerService, err := signer.NewService(payer, "")
+	signerService, err := signer.NewService(payer)
 	require.NoError(t, err)
 	defer signerService.Close()
 	signerService.SetPaymentChain(paymentTestChain{})
@@ -165,7 +166,7 @@ func TestPinnedPythonPaidSingleShot(t *testing.T) {
 	defer orch.Close()
 	registry.service = "http://" + orch.Listener.Addr().String()
 	orch.Start()
-	signerService, err := signer.NewService(payer, "")
+	signerService, err := signer.NewService(payer)
 	require.NoError(t, err)
 	defer signerService.Close()
 	signerService.SetPaymentChain(paymentTestChain{})
@@ -196,11 +197,11 @@ func TestPinnedPythonSignerDiscovery(t *testing.T) {
 	defer orch.Close()
 	registry.service = "http://" + orch.Listener.Addr().String()
 	orch.Start()
-	signerService, err := signer.NewService(paymentTestKey(t), "")
+	signerService, err := signer.NewService(paymentTestKey(t))
 	require.NoError(t, err)
 	defer signerService.Close()
 	signerService.SetPaymentChain(paymentTestChain{})
-	require.NoError(t, signerService.SetDiscovery([]string{orch.URL}, []string{strings.TrimPrefix(orch.URL, "http://")}, ""))
+	require.NoError(t, signerService.SetDiscovery([]*url.URL{mustURL(t, orch.URL)}))
 	signerHTTP := httptest.NewServer(signerService)
 	defer signerHTTP.Close()
 	fixture := filepath.Join(root, "cmd", "livepeer", "testdata", "python_signer_discovery.py")
@@ -302,7 +303,7 @@ func TestPinnedPythonSustainedPaymentRefresh(t *testing.T) {
 	registry.service = "http://" + orch.Listener.Addr().String()
 	orch.Start()
 	defer orch.Close()
-	service, err := signer.NewService(payer, "")
+	service, err := signer.NewService(payer)
 	require.NoError(t, err)
 	defer service.Close()
 	service.SetPaymentChain(chain)
@@ -318,4 +319,11 @@ func TestPinnedPythonSustainedPaymentRefresh(t *testing.T) {
 	require.Equal(t, int32(3), refreshes.Load())
 	_, sessions := registry.Counts()
 	require.Zero(t, sessions)
+}
+
+func mustURL(t *testing.T, raw string) *url.URL {
+	t.Helper()
+	u, err := url.Parse(raw)
+	require.NoError(t, err)
+	return u
 }

@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/BurntSushi/toml"
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/stretchr/testify/require"
 )
@@ -180,9 +181,9 @@ func TestOperatorSourcesAndFlagPlacement(t *testing.T) {
 		case "eth_chainId":
 			result = chainID
 		case "eth_getBalance":
-			require.Equal(t, []any{wantSender, "latest"}, request.Params)
+			require.Equal(t, []any{strings.ToLower(wantSender), "latest"}, request.Params)
 		case "eth_getTransactionCount":
-			require.Equal(t, []any{wantSender, "pending"}, request.Params)
+			require.Equal(t, []any{strings.ToLower(wantSender), "pending"}, request.Params)
 		default:
 			t.Errorf("unexpected RPC method %s", request.Method)
 		}
@@ -193,7 +194,7 @@ func TestOperatorSourcesAndFlagPlacement(t *testing.T) {
 	rpcFile := filepath.Join(dir, "rpc")
 	require.NoError(t, os.WriteFile(rpcFile, []byte(server.URL), 0600))
 	config := filepath.Join(dir, "chain.toml")
-	require.NoError(t, os.WriteFile(config, []byte(fmt.Sprintf("RPCURLFile = %q\nChainID = 3\nSender = %q\n", rpcFile, testSender)), 0600))
+	require.NoError(t, os.WriteFile(config, []byte(fmt.Sprintf("RPCURLFile = %q\nChainID = 3\nSender = %q\nMaxFeePerGas = '3'\n", rpcFile, testSender)), 0600))
 	partialConfig := filepath.Join(dir, "partial.toml")
 	require.NoError(t, os.WriteFile(partialConfig, []byte(fmt.Sprintf("RPCURLFile = %q\n", rpcFile)), 0600))
 
@@ -204,21 +205,23 @@ func TestOperatorSourcesAndFlagPlacement(t *testing.T) {
 		sender, id string
 	}{
 		{"config only", []string{"--config", config, "account", "--output", "json"}, false, testSender, "0x3"},
-		{"CLI before leaf", []string{"--config", config, "--chain-id", "1", "--sender", cliSender, "--output", "json", "account"}, true, cliSender, "0x1"},
-		{"CLI after leaf", []string{"account", "--config", config, "--chain-id", "1", "--sender", cliSender, "--output", "json"}, true, cliSender, "0x1"},
+		{"CLI before leaf", []string{"--config", config, "--chain-id", "1", "--sender", cliSender, "--max-fee-per-gas", "1", "--output", "json", "account"}, true, cliSender, "0x1"},
+		{"CLI after leaf", []string{"account", "--config", config, "--chain-id", "1", "--sender", cliSender, "--max-fee-per-gas", "1", "--output", "json"}, true, cliSender, "0x1"},
 		{"env over config", []string{"--config", config, "account", "--output", "json"}, true, envSender, "0x2"},
 		{"env only", []string{"account", "--output", "json"}, true, envSender, "0x2"},
-		{"CLI over partial config", []string{"account", "--config", partialConfig, "--chain-id", "1", "--sender", cliSender, "--output", "json"}, false, cliSender, "0x1"},
+		{"CLI over partial config", []string{"account", "--config", partialConfig, "--chain-id", "1", "--sender", cliSender, "--max-fee-per-gas", "1", "--output", "json"}, false, cliSender, "0x1"},
 		{"env over partial config", []string{"account", "--config", partialConfig, "--output", "json"}, true, envSender, "0x2"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("LIVEPEER_CHAIN_CHAIN_ID", "")
 			t.Setenv("LIVEPEER_CHAIN_SENDER", "")
 			t.Setenv("LIVEPEER_CHAIN_RPC_URL_FILE", "")
+			t.Setenv("LIVEPEER_CHAIN_MAX_FEE_PER_GAS", "")
 			if tc.env {
 				t.Setenv("LIVEPEER_CHAIN_CHAIN_ID", "2")
 				t.Setenv("LIVEPEER_CHAIN_SENDER", envSender)
 				t.Setenv("LIVEPEER_CHAIN_RPC_URL_FILE", rpcFile)
+				t.Setenv("LIVEPEER_CHAIN_MAX_FEE_PER_GAS", "2")
 			}
 			wantSender, chainID = ethcommon.HexToAddress(tc.sender).Hex(), tc.id
 			var output bytes.Buffer
@@ -226,6 +229,13 @@ func TestOperatorSourcesAndFlagPlacement(t *testing.T) {
 			root.SetArgs(tc.args)
 			require.NoError(t, root.Execute())
 			require.JSONEq(t, fmt.Sprintf(`{"address":%q,"balance_wei":"0","nonce":0}`, wantSender), output.String())
+			output.Reset()
+			root = Root(&output, &output)
+			root.SetArgs(append(append([]string{}, tc.args...), "--print-config"))
+			require.NoError(t, root.Execute())
+			var printed map[string]any
+			require.NoError(t, toml.Unmarshal(output.Bytes(), &printed))
+			require.Equal(t, strings.TrimPrefix(tc.id, "0x"), printed["MaxFeePerGas"], "the fee ceiling must respect CLI, environment, and TOML priority")
 		})
 	}
 }

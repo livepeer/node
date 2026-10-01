@@ -83,11 +83,12 @@ func TestDirectTLSServesWithOperatorCertificate(t *testing.T) {
 
 func TestConfigPrecedenceAndRedaction(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
-	require.NoError(t, os.WriteFile(path, []byte("service_url = 'https://file.example'\nlisten = '127.0.0.1:8000'\n"), 0600))
+	require.NoError(t, os.WriteFile(path, []byte("service_url = 'https://file.example'\nlisten = '127.0.0.1:8000'\npayment_max_fee_per_gas = '100'\n"), 0600))
 	t.Setenv("LIVEPEER_ORCHESTRATOR_SERVICE_URL", "https://env.example")
 	t.Setenv("LIVEPEER_ORCHESTRATOR_BOOTSTRAP_SECRET", "super-secret-env")
 	t.Setenv("LIVEPEER_ORCHESTRATOR_LISTEN", "127.0.0.1:8001")
-	output, err := execute(t, "--config", path, "--listen", "127.0.0.1:8002", "--service-url", "https://user:password@flag.example", "--print-config")
+	t.Setenv("LIVEPEER_ORCHESTRATOR_PAYMENT_MAX_FEE_PER_GAS", "200")
+	output, err := execute(t, "--config", path, "--listen", "127.0.0.1:8002", "--service-url", "https://user:password@flag.example", "--payment-max-fee-per-gas", "300", "--print-config")
 	require.NoError(t, err)
 	require.Contains(t, output, "127.0.0.1:8002")
 	require.NotContains(t, output, "127.0.0.1:8001")
@@ -97,6 +98,7 @@ func TestConfigPrecedenceAndRedaction(t *testing.T) {
 	require.NotContains(t, output, "env.example")
 	require.NotContains(t, output, "super-secret-env")
 	require.NotContains(t, output, path)
+	require.Contains(t, output, `payment_max_fee_per_gas = "300"`)
 }
 
 func TestConfigRejectsUnknownAndDirectSecrets(t *testing.T) {

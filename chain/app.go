@@ -9,6 +9,7 @@ import (
 	"math/big"
 
 	"github.com/BurntSushi/toml"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/j0sh/boa/pkg/boa"
 	"github.com/livepeer/node/eth"
 )
@@ -22,7 +23,7 @@ func unmarshalConfig(data []byte, target any) error {
 	// Detach pointers shared with Boa's CLI/env mirrors before TOML writes
 	// through them. Boa restores higher-priority values after decoding.
 	if p, ok := target.(*RootParams); ok {
-		p.ChainID, p.Sender = nil, nil
+		p.ChainID, p.Sender, p.MaxFeePerGas = nil, nil, nil
 	}
 	return toml.Unmarshal(data, target)
 }
@@ -33,10 +34,11 @@ func Status(ctx context.Context, p OperatorParams, display DisplayOptions, out i
 		return err
 	}
 	defer client.Close()
-	block, err := client.CallString(ctx, "eth_blockNumber")
+	blockNumber, err := client.BlockNumber(ctx)
 	if err != nil {
 		return err
 	}
+	block := hexutil.EncodeUint64(blockNumber)
 	if display.Output == "json" {
 		return json.NewEncoder(out).Encode(map[string]string{"chain_id": chainID.String(), "block_number": block})
 	}
@@ -74,25 +76,17 @@ func Account(ctx context.Context, p OperatorParams, display DisplayOptions, out 
 		return err
 	}
 	defer client.Close()
-	balanceRaw, err := client.CallString(ctx, "eth_getBalance", sender.Hex(), "latest")
+	balance, err := client.BalanceAt(ctx, sender, nil)
 	if err != nil {
 		return err
 	}
-	balance, err := eth.ParseHexQuantity(balanceRaw)
+	nonce, err := client.PendingNonceAt(ctx, sender)
 	if err != nil {
 		return err
-	}
-	nonceRaw, err := client.CallString(ctx, "eth_getTransactionCount", sender.Hex(), "pending")
-	if err != nil {
-		return err
-	}
-	nonce, err := eth.ParseHexQuantity(nonceRaw)
-	if err != nil || !nonce.IsUint64() {
-		return errors.New("invalid account nonce from RPC")
 	}
 	if display.Output == "json" {
-		return json.NewEncoder(out).Encode(map[string]any{"address": sender.Hex(), "balance_wei": balance.String(), "nonce": nonce.Uint64()})
+		return json.NewEncoder(out).Encode(map[string]any{"address": sender.Hex(), "balance_wei": balance.String(), "nonce": nonce})
 	}
-	_, err = fmt.Fprintf(out, "Address: %s\nETH balance (wei): %s\nPending nonce: %d\n", sender.Hex(), balance.String(), nonce.Uint64())
+	_, err = fmt.Fprintf(out, "Address: %s\nETH balance (wei): %s\nPending nonce: %d\n", sender.Hex(), balance.String(), nonce)
 	return err
 }

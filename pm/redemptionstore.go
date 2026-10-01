@@ -2,14 +2,34 @@ package pm
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"time"
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/livepeer/node/eth"
 )
+
+// SavedNonceFloor reserves every signed identity across process restarts,
+// including confirmed/reverted attempts that an RPC may omit from pending.
+func (s *SQLiteStore) SavedNonceFloor(ctx context.Context, address ethcommon.Address) (uint64, error) {
+	var raw string
+	err := s.db.QueryRowContext(ctx, "SELECT nonce FROM redemption_attempts WHERE key_address=? AND nonce IS NOT NULL ORDER BY length(nonce) DESC, nonce DESC LIMIT 1", address.Hex()).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	nonce, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil || nonce == math.MaxUint64 {
+		return 0, errors.New("invalid or exhausted saved redemption nonce")
+	}
+	return nonce + 1, nil
+}
 
 func (s *SQLiteStore) recordPrepared(ctx context.Context, ticket *SignedTicket, prepared eth.SignedTransaction) error {
 	tx, err := s.db.BeginTx(ctx, nil)

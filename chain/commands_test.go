@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/stretchr/testify/require"
 )
@@ -54,10 +56,10 @@ func TestTransactionActionInputs(t *testing.T) {
 			{"BondingManager", calldata("transcoder(uint256,uint256)", uintWord(3), uintWord(4)), "0x0"},
 			{"ServiceRegistry", calldata("setServiceURI(string)", stringResult(uri)), "0x0"},
 		}},
-		{"orchestrator reward", []call{{"BondingManager", calldata("reward()"), "0x0"}}},
-		{"stake unbond --amount 5", []call{{"BondingManager", calldata("unbond(uint256)", uintWord(5)), "0x0"}}},
-		{"stake rebond --lock-id 0", []call{{"BondingManager", calldata("rebond(uint256)", uintWord(0)), "0x0"}}},
-		{"stake rebond --lock-id 0 --delegate " + testSender, []call{{"BondingManager", calldata("rebondFromUnbonded(address,uint256)", addressWord(testSender), uintWord(0)), "0x0"}}},
+		{"orchestrator reward", []call{{"BondingManager", calldata("rewardWithHint(address,address)", uintWord(0), uintWord(0)), "0x0"}}},
+		{"stake unbond --amount 5", []call{{"BondingManager", calldata("unbondWithHint(uint256,address,address)", uintWord(5), uintWord(0), uintWord(0)), "0x0"}}},
+		{"stake rebond --lock-id 0", []call{{"BondingManager", calldata("rebondWithHint(uint256,address,address)", uintWord(0), uintWord(0), uintWord(0)), "0x0"}}},
+		{"stake rebond --lock-id 0 --delegate " + testSender, []call{{"BondingManager", calldata("rebondFromUnbondedWithHint(address,uint256,address,address)", addressWord(testSender), uintWord(0), uintWord(0), uintWord(0)), "0x0"}}},
 		{"stake withdraw --lock-id 0", []call{{"BondingManager", calldata("withdrawStake(uint256)", uintWord(0)), "0x0"}}},
 		{"earnings claim --end-round 0", []call{{"BondingManager", calldata("claimEarnings(uint256)", uintWord(0)), "0x0"}}},
 		{"earnings withdraw-fees --amount 5 --recipient " + testSender, []call{{"BondingManager", calldata("withdrawFees(address,uint256)", addressWord(testSender), uintWord(5)), "0x0"}}},
@@ -72,7 +74,7 @@ func TestTransactionActionInputs(t *testing.T) {
 			controller := ethcommon.HexToAddress("0xD8E8328501E9645d16Cf49539efC04f734606ee4")
 			addresses := map[string]ethcommon.Address{
 				"BondingManager": ethcommon.HexToAddress("0x1000"), "TicketBroker": ethcommon.HexToAddress("0x2000"),
-				"ServiceRegistry": ethcommon.HexToAddress("0x3000"), "RoundsManager": ethcommon.HexToAddress("0x4000"),
+				"ServiceRegistry": ethcommon.HexToAddress("0x3000"), "RoundsManager": ethcommon.HexToAddress("0x4000"), "Minter": ethcommon.HexToAddress("0x5000"),
 			}
 			var simulated, estimates int
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -85,11 +87,24 @@ func TestTransactionActionInputs(t *testing.T) {
 				switch req.Method {
 				case "eth_chainId":
 					result = "0xa4b1"
-				case "eth_gasPrice":
+				case "eth_getBlockByNumber":
+					result = &types.Header{Number: big.NewInt(1), Difficulty: new(big.Int), BaseFee: big.NewInt(1)}
+				case "eth_maxPriorityFeePerGas":
 					result = "0x2"
 				case "eth_call", "eth_estimateGas":
-					var input struct{ From, To, Data, Value string }
+					var input struct {
+						From, To, Value string
+						Data            string `json:"input"`
+					}
 					require.NoError(t, json.Unmarshal(req.Params[0], &input))
+					input.To = ethcommon.HexToAddress(input.To).Hex()
+					input.From = ethcommon.HexToAddress(input.From).Hex()
+					if req.Method == "eth_call" && (input.To == addresses["BondingManager"].Hex() || input.To == addresses["Minter"].Hex()) {
+						if read, ok := stakingReadResult(input.Data); ok {
+							result = read
+							break
+						}
+					}
 					if input.To == controller.Hex() {
 						require.Equal(t, "eth_call", req.Method)
 						var contract string
@@ -140,14 +155,16 @@ func TestTransactionActionInputs(t *testing.T) {
 					Simulation struct {
 						Data     string
 						GasLimit uint64 `json:"gas_limit"`
-						GasPrice string `json:"gas_price_wei"`
+						FeeCap   string `json:"max_fee_per_gas_wei"`
+						TipCap   string `json:"max_priority_fee_per_gas_wei"`
 					}
 				}
 				require.NoError(t, decoder.Decode(&record))
 				require.False(t, record.Submitted)
 				require.Equal(t, expected.data, record.Simulation.Data)
 				require.EqualValues(t, 21000, record.Simulation.GasLimit)
-				require.Equal(t, "2", record.Simulation.GasPrice)
+				require.Equal(t, "4", record.Simulation.FeeCap)
+				require.Equal(t, "2", record.Simulation.TipCap)
 			}
 			require.ErrorIs(t, decoder.Decode(new(any)), io.EOF, "emit exactly one plan per simulated transaction")
 		})
@@ -171,8 +188,12 @@ func TestOrchestratorGet(t *testing.T) {
 		case "eth_chainId":
 			result = "0xa4b1"
 		case "eth_call":
-			var input struct{ To, Data string }
+			var input struct {
+				To   string
+				Data string `json:"input"`
+			}
 			require.NoError(t, json.Unmarshal(req.Params[0], &input))
+			input.To = ethcommon.HexToAddress(input.To).Hex()
 			require.JSONEq(t, `"latest"`, string(req.Params[1]))
 			switch input.Data {
 			case calldata("getContract(bytes32)", hex.EncodeToString(crypto.Keccak256([]byte("BondingManager")))):
@@ -209,4 +230,33 @@ func TestOrchestratorGet(t *testing.T) {
 	require.NoError(t, root.Execute())
 	require.Equal(t, []string{"active", "service_uri", "transcoder"}, reads)
 	require.JSONEq(t, fmt.Sprintf(`{"address":%q,"active":true,"service_uri":%q,"reward_cut":"12345","fee_share":"67890"}`, sender.Hex(), uri), output.String())
+}
+
+// An empty pool makes CLI argument tests independent of position arithmetic;
+// nonempty old/new positions are exercised by eth's staking behavior tests.
+func stakingReadResult(data string) (string, bool) {
+	selector := data[:10]
+	match := func(sig string) bool { return selector == calldata(sig) }
+	switch {
+	case match("getTranscoderPoolMaxSize()"):
+		return "0x" + uintWord(10), true
+	case match("getFirstTranscoderInPool()"):
+		return "0x" + uintWord(0), true
+	case match("getDelegator(address)"):
+		return "0x" + uintWord(20) + uintWord(0) + addressWord(testSender) + strings.Repeat(uintWord(0), 4), true
+	case match("transcoderTotalStake(address)"):
+		return "0x" + uintWord(20), true
+	case match("getDelegatorUnbondingLock(address,uint256)"):
+		return "0x" + uintWord(5) + uintWord(10), true
+	case match("getTranscoder(address)"):
+		return "0x" + strings.Repeat(uintWord(0), 10), true
+	case match("getTranscoderEarningsPoolForRound(address,uint256)"):
+		return "0x" + uintWord(20) + strings.Repeat(uintWord(0), 4), true
+	case match("getTotalBonded()"):
+		return "0x" + uintWord(100), true
+	case match("currentMintableTokens()"):
+		return "0x" + uintWord(10), true
+	default:
+		return "", false
+	}
 }

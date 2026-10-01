@@ -253,7 +253,7 @@ func validateHeartbeat(req *heartbeatRequest) error {
 	if req.App == "" || req.Capacity < 1 || req.Capacity > 10000 {
 		return errors.New("app and capacity between 1 and 10000 are required")
 	}
-	if _, err := destination.ValidateURL(req.RunnerURL); err != nil {
+	if _, err := destination.ParseURL(req.RunnerURL); err != nil {
 		return errors.New("runner_url must be an absolute HTTP or HTTPS URL")
 	}
 	if req.Mode != "" && req.Mode != "persistent" && req.Mode != "single-shot" {
@@ -607,7 +607,7 @@ func (r *Registry) sessionTarget(id, sid string) (*url.URL, string, int, error) 
 	if item == nil || !r.usable(item) || item.Sessions[sid] == nil || item.Sessions[sid].pending {
 		return nil, "", http.StatusNotFound, errors.New("session not found")
 	}
-	target, err := destination.ValidateURL(item.RunnerURL)
+	target, err := destination.ParseURL(item.RunnerURL)
 	if err != nil {
 		return nil, "", http.StatusBadGateway, err
 	}
@@ -704,7 +704,7 @@ func (r *Registry) AddStatic(config StaticRunner) error {
 	}
 	quote := req.PriceInfo
 	if config.HealthURL != "" {
-		if _, err := destination.ValidateURL(config.HealthURL); err != nil {
+		if _, err := destination.ParseURL(config.HealthURL); err != nil {
 			return fmt.Errorf("static runner %s has invalid health URL", config.ID)
 		}
 	}

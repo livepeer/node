@@ -18,6 +18,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 	ethcommon "github.com/ethereum/go-ethereum/common"
+	"github.com/holiman/uint256"
 	"github.com/j0sh/boa/pkg/boa"
 	"github.com/livepeer/node/destination"
 	"github.com/livepeer/node/eth"
@@ -47,9 +48,8 @@ type Params struct {
 	PaymentKeyFile      string        `name:"payment-key-file" optional:"true" file:"true" toml:"payment_key_file"`
 	PaymentRPCURL       string        `name:"payment-rpc-url" secret:"true" optional:"true" toml:"payment_rpc_url"`
 	PaymentRPCURLFile   string        `name:"payment-rpc-url-file" secretfor:"PaymentRPCURL" toml:"payment_rpc_url_file"`
-	PaymentRPCGrants    []string      `name:"payment-rpc-grants" optional:"true" toml:"payment_rpc_grants"`
-	PaymentRPCCAFile    string        `name:"payment-rpc-ca-file" optional:"true" file:"true" toml:"payment_rpc_ca_file"`
 	PaymentChainID      string        `name:"payment-chain-id" optional:"true" toml:"payment_chain_id"`
+	PaymentMaxFeePerGas *uint256.Int  `name:"payment-max-fee-per-gas" optional:"true" toml:"payment_max_fee_per_gas" descr:"Optional maximum redemption fee in wei per gas"`
 	PaymentController   string        `name:"payment-controller-address" optional:"true" toml:"payment_controller_address"`
 	WeiPerUSD           string        `name:"wei-per-usd" optional:"true" toml:"wei_per_usd"`
 	TicketFaceValue     string        `name:"ticket-face-value" optional:"true" toml:"ticket_face_value"`
@@ -75,8 +75,11 @@ func (p Params) Validate() error {
 	if p.BootstrapSecret == "" && p.RunnerConfig == "" {
 		return errors.New("bootstrap secret or static runner config is required")
 	}
-	paymentRequested := p.PaymentKeyFile != "" || p.PaymentDB != "" || p.PaymentRPCURL != "" || p.PaymentChainID != "" || p.PaymentController != "" || p.WeiPerUSD != "" || p.ETHUSDFeed != "" || p.TicketFaceValue != "" || p.TicketWinProb != "" || len(p.PaymentRPCGrants) > 0 || p.PaymentRPCCAFile != ""
+	paymentRequested := p.PaymentKeyFile != "" || p.PaymentDB != "" || p.PaymentRPCURL != "" || p.PaymentChainID != "" || p.PaymentController != "" || p.WeiPerUSD != "" || p.ETHUSDFeed != "" || p.TicketFaceValue != "" || p.TicketWinProb != "" || p.PaymentMaxFeePerGas != nil
 	if paymentRequested {
+		if p.PaymentMaxFeePerGas != nil && p.PaymentMaxFeePerGas.IsZero() {
+			return errors.New("payment-max-fee-per-gas must be positive")
+		}
 		if p.PaymentKeyFile == "" || p.PaymentDB == "" || p.PaymentRPCURL == "" || p.PaymentChainID == "" || p.PaymentController == "" || (p.WeiPerUSD == "" && p.ETHUSDFeed == "") || p.TicketFaceValue == "" || p.TicketWinProb == "" {
 			return errors.New("on-chain payment requires payment-db, key, RPC, chain-id, controller, a fixed rate or ETH/USD feed, face-value and win-prob")
 		}
@@ -96,7 +99,7 @@ func (p Params) Validate() error {
 		} else if rate, ok := new(big.Rat).SetString(p.WeiPerUSD); !ok || rate.Sign() <= 0 {
 			return errors.New("wei-per-usd must be positive")
 		}
-		if _, err := destination.ValidateURL(p.PaymentRPCURL); err != nil {
+		if _, err := destination.ParseURL(p.PaymentRPCURL); err != nil {
 			return errors.New("invalid payment RPC URL")
 		}
 	}
@@ -128,7 +131,7 @@ func (p Params) Validate() error {
 	if !isLoopbackHost(listenHost) && !p.BehindTLS && p.TLSCertFile == "" {
 		return errors.New("non-loopback listener requires direct TLS or behind-tls")
 	}
-	base, err := destination.ValidateURL(p.ServiceURL)
+	base, err := destination.ParseURL(p.ServiceURL)
 	if err != nil || base.User != nil || base.RawQuery != "" || base.Fragment != "" {
 		return errors.New("service-url must be an absolute HTTP or HTTPS URL without credentials, query or fragment")
 	}
@@ -136,7 +139,7 @@ func (p Params) Validate() error {
 		return errors.New("service-url must use https with direct TLS")
 	}
 	if p.RunnerServiceURL != "" {
-		runnerBase, err := destination.ValidateURL(p.RunnerServiceURL)
+		runnerBase, err := destination.ParseURL(p.RunnerServiceURL)
 		if err != nil || runnerBase.User != nil || runnerBase.RawQuery != "" || runnerBase.Fragment != "" {
 			return errors.New("runner-service-url must be an absolute HTTP or HTTPS URL without credentials, query or fragment")
 		}
@@ -209,7 +212,7 @@ func printConfig(ctx *boa.HookContext, out io.Writer) error {
 	}
 	// File paths and any future free-form strings are excluded by this allowlist.
 	allowed := map[string]any{}
-	for _, key := range []string{"listen", "metrics_listen", "runner_grants", "session_proxy_grants", "health_grants", "heartbeat_interval", "heartbeat_ttl", "behind_tls", "payment_db", "payment_chain_id", "payment_controller_address", "wei_per_usd", "eth_usd_feed", "price_max_age", "ticket_face_value", "ticket_win_prob"} {
+	for _, key := range []string{"listen", "metrics_listen", "runner_grants", "session_proxy_grants", "health_grants", "heartbeat_interval", "heartbeat_ttl", "behind_tls", "payment_db", "payment_chain_id", "payment_max_fee_per_gas", "payment_controller_address", "wei_per_usd", "eth_usd_feed", "price_max_age", "ticket_face_value", "ticket_win_prob"} {
 		if value, exists := values[key]; exists {
 			allowed[key] = value
 		}
@@ -288,10 +291,11 @@ func Serve(parent context.Context, p Params, logOut io.Writer) (result error) {
 			return err
 		}
 		defer paymentStore.Close()
-		rpc, err := eth.OpenRPC(p.PaymentRPCURL, p.PaymentRPCGrants, p.PaymentRPCCAFile)
+		rpc, err := eth.OpenRPC(p.PaymentRPCURL)
 		if err != nil {
 			return err
 		}
+		defer rpc.Close()
 		paymentChainID, _ = new(big.Int).SetString(p.PaymentChainID, 10)
 		if err := rpc.CheckChainID(parent, paymentChainID); err != nil {
 			return err
@@ -299,6 +303,9 @@ func Serve(parent context.Context, p Params, logOut io.Writer) (result error) {
 		contracts, err := eth.OpenContracts(rpc, p.PaymentController)
 		if err != nil {
 			return err
+		}
+		if p.PaymentMaxFeePerGas != nil {
+			contracts.MaxFeePerGas = p.PaymentMaxFeePerGas.ToBig()
 		}
 		paymentChain = eth.PaymentChain{Contracts: contracts}
 		if p.ETHUSDFeed != "" {

@@ -10,15 +10,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ethereum/go-ethereum/accounts/abi"
 	ethcommon "github.com/ethereum/go-ethereum/common"
+	"github.com/livepeer/node/eth/contracts/chainlink"
 	"github.com/stretchr/testify/require"
 )
 
 func TestPriceFeedConversionAndRejection(t *testing.T) {
 	for _, scenario := range []string{"valid", "stale", "future", "negative", "incomplete", "wrong-pair"} {
 		t.Run(scenario, func(t *testing.T) {
-			contract, err := abi.JSON(strings.NewReader(contractABIs["priceFeed"]))
+			contract, err := chainlink.AggregatorV3InterfaceMetaData.GetAbi()
 			require.NoError(t, err)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				var req struct {
@@ -32,7 +32,7 @@ func TestPriceFeedConversionAndRejection(t *testing.T) {
 				} else {
 					var call map[string]string
 					require.NoError(t, json.Unmarshal(req.Params[0], &call))
-					data, err := hex.DecodeString(strings.TrimPrefix(call["data"], "0x"))
+					data, err := hex.DecodeString(strings.TrimPrefix(call["input"], "0x"))
 					require.NoError(t, err)
 					method, err := contract.MethodById(data[:4])
 					require.NoError(t, err)
@@ -67,7 +67,7 @@ func TestPriceFeedConversionAndRejection(t *testing.T) {
 				_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": result})
 			}))
 			defer server.Close()
-			rpc, err := OpenRPC(server.URL, []string{strings.TrimPrefix(server.URL, "http://")}, "")
+			rpc, err := OpenRPC(server.URL)
 			require.NoError(t, err)
 			contracts, err := OpenContracts(rpc, ethcommon.HexToAddress("0x1000").Hex())
 			require.NoError(t, err)

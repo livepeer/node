@@ -2,13 +2,13 @@ package eth
 
 import (
 	"crypto/ecdsa"
-	"encoding/hex"
 	"errors"
 	"os"
 	"strings"
 
 	"github.com/ethereum/go-ethereum/accounts"
 	ethcommon "github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/crypto"
 )
 
@@ -61,4 +61,4 @@ func (k *Key) SignHash(hash []byte) ([]byte, error) {
 	return sig, nil
 }
 
-func HexSignature(sig []byte) string { return "0x" + hex.EncodeToString(sig) }
+func HexSignature(sig []byte) string { return hexutil.Encode(sig) }

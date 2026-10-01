@@ -2,6 +2,7 @@ RPCURLFile = "/run/secrets/livepeer-chain-rpc-url"
 # ChainID = 42161 # Optional expected RPC chain ID
 # Sender = "0x0123456789abcdef0123456789abcdef01234567"
 # Controller = "0xD8E8328501E9645d16Cf49539efC04f734606ee4" # Arbitrum mainnet default
+# MaxFeePerGas = "1000000000" # Optional ceiling, wei per gas
 # KeyFile = "/run/secrets/livepeer-chain-key"
 
 # Action inputs and output controls must be provided on the command line.

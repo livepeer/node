@@ -37,13 +37,15 @@ func TestRegressionRedemptionWaitsForParameterExpiry(t *testing.T) {
 					Params []json.RawMessage
 				}
 				require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
-				result := "0x"
+				var result any = "0x"
 				switch req.Method {
 				case "eth_call":
 					result = "0x" + strings.Repeat("0", 60) + "2000"
+				case "eth_getBlockByNumber":
+					result = &types.Header{Number: big.NewInt(1), Difficulty: new(big.Int), BaseFee: big.NewInt(1)}
 				case "eth_estimateGas":
 					result = "0x5208"
-				case "eth_gasPrice":
+				case "eth_maxPriorityFeePerGas":
 					result = "0x1"
 				case "eth_getTransactionCount":
 					result = "0x1"
@@ -59,14 +61,14 @@ func TestRegressionRedemptionWaitsForParameterExpiry(t *testing.T) {
 					// The exact transaction identity must exist before sending.
 					items, err := store.Redemptions()
 					require.NoError(t, err)
-					require.Equal(t, []RedemptionStatus{{Hash: result, Phase: "broadcast"}}, items)
+					require.Equal(t, []RedemptionStatus{{Hash: result.(string), Phase: "broadcast"}}, items)
 				default:
 					t.Errorf("unexpected RPC method %s", req.Method)
 				}
 				require.NoError(t, json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": result}))
 			}))
 			defer rpcServer.Close()
-			rpc, err := eth.OpenRPC(rpcServer.URL, []string{strings.TrimPrefix(rpcServer.URL, "http://")}, "")
+			rpc, err := eth.OpenRPC(rpcServer.URL)
 			require.NoError(t, err)
 			contracts, err := eth.OpenContracts(rpc, "0x0000000000000000000000000000000000001000")
 			require.NoError(t, err)

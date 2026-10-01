@@ -41,17 +41,23 @@ func TestRedemptionRecoveryBeforeAndAfterBroadcast(t *testing.T) {
 					Params []json.RawMessage
 				}
 				require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
-				result := "0x1"
+				var result any = "0x1"
 				switch req.Method {
 				case "eth_call":
 					result = "0x" + strings.Repeat("0", 60) + "2000"
+				case "eth_getBlockByNumber":
+					result = &types.Header{Number: big.NewInt(1), Difficulty: new(big.Int), BaseFee: big.NewInt(1)}
 				case "eth_estimateGas":
 					if failure == "preparation" && fail.Load() {
 						http.Error(w, "unavailable", http.StatusServiceUnavailable)
 						return
 					}
 					result = "0x5208"
-				case "eth_gasPrice", "eth_getTransactionCount":
+				case "eth_getTransactionReceipt":
+					// All receipt fields are valid except the deliberately omitted status.
+					result = map[string]any{"transactionHash": req.Params[0], "blockNumber": "0x1", "blockHash": ethcommon.Hash{31: 1},
+						"cumulativeGasUsed": "0x0", "gasUsed": "0x0", "logsBloom": types.Bloom{}, "logs": []any{}}
+				case "eth_maxPriorityFeePerGas", "eth_getTransactionCount":
 				case "eth_sendRawTransaction":
 					broadcasts.Add(1)
 					var encoded string
@@ -75,7 +81,7 @@ func TestRedemptionRecoveryBeforeAndAfterBroadcast(t *testing.T) {
 				_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": result})
 			}))
 			defer server.Close()
-			rpc, err := eth.OpenRPC(server.URL, []string{strings.TrimPrefix(server.URL, "http://")}, "")
+			rpc, err := eth.OpenRPC(server.URL)
 			require.NoError(t, err)
 			contracts, err := eth.OpenContracts(rpc, ethcommon.HexToAddress("0x1000").Hex())
 			require.NoError(t, err)
@@ -102,8 +108,35 @@ func TestRedemptionRecoveryBeforeAndAfterBroadcast(t *testing.T) {
 				require.NoError(t, RetryRedemption(t.Context(), store, contracts, ethcommon.HexToHash(items[0].Hash)))
 				require.Equal(t, int32(2), broadcasts.Load())
 			}
+			before, err := store.Redemptions()
+			require.NoError(t, err)
+			require.NotEmpty(t, ReconcileSubmitted(t.Context(), store, chain), "missing receipt status must fail reconciliation")
+			after, err := store.Redemptions()
+			require.NoError(t, err)
+			require.Equal(t, before, after, "malformed receipts must leave durable attempts unresolved")
 			require.Empty(t, ReconcileSubmitted(t.Context(), store, receiptFixture{confirmed: true}))
 			require.Error(t, RetryRedemption(t.Context(), store, contracts, ethcommon.HexToHash(items[0].Hash)))
+			if failure == "prepared-crash" {
+				// A fresh client sees the same stale RPC nonce after restart.
+				// Saved, confirmed identities must still reserve their nonce.
+				require.NoError(t, store.Close())
+				store, err = OpenSQLite(path)
+				require.NoError(t, err)
+				contracts, err = eth.OpenContracts(rpc, ethcommon.HexToAddress("0x1000").Hex())
+				require.NoError(t, err)
+				chain = eth.PaymentChain{Contracts: contracts}
+				next := *ticket
+				next.Ticket = &Ticket{Sender: ticket.Sender, Recipient: ticket.Recipient, FaceValue: ticket.FaceValue, WinProb: ticket.WinProb, SenderNonce: 2, RecipientRandHash: ticket.RecipientRandHash, CreationRound: 5, ParamsExpirationBlock: big.NewInt(10)}
+				next.Sig = []byte{4, 5, 6}
+				require.NoError(t, store.StoreWinningTicket(&next))
+				firstRaw = ""
+				require.Empty(t, RedeemPending(t.Context(), store, chain, key, big.NewInt(1), snapshot))
+				encoded, err := hex.DecodeString(strings.TrimPrefix(firstRaw, "0x"))
+				require.NoError(t, err)
+				var signed types.Transaction
+				require.NoError(t, signed.UnmarshalBinary(encoded))
+				require.EqualValues(t, 2, signed.Nonce(), "confirmed history must advance a fresh client's nonce floor")
+			}
 		})
 	}
 }

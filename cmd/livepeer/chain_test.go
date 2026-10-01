@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,7 +18,7 @@ import (
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/livepeer/node/eth"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/stretchr/testify/require"
 )
 
@@ -37,8 +38,9 @@ func TestChainBinaryQuietExecution(t *testing.T) {
 	}
 	keyFile := filepath.Join(install, "key")
 	require.NoError(t, os.WriteFile(keyFile, []byte(strings.Repeat("0", 63)+"1"), 0600))
-	key, err := eth.OpenKeyFile(keyFile)
+	key, err := crypto.HexToECDSA(strings.Repeat("0", 63) + "1")
 	require.NoError(t, err)
+	keyAddress := crypto.PubkeyToAddress(key.PublicKey)
 	for _, tc := range []struct {
 		name        string
 		flags       []string
@@ -68,11 +70,13 @@ func TestChainBinaryQuietExecution(t *testing.T) {
 				require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
 				var result any = "0x1"
 				switch req.Method {
-				case "eth_chainId", "eth_gasPrice", "eth_getTransactionCount":
+				case "eth_getBlockByNumber":
+					result = &types.Header{Number: big.NewInt(1), Difficulty: new(big.Int), BaseFee: big.NewInt(1)}
+				case "eth_chainId", "eth_maxPriorityFeePerGas", "eth_getTransactionCount":
 				case "eth_call":
 					var call struct{ To string }
 					require.NoError(t, json.Unmarshal(req.Params[0], &call))
-					if call.To == controller.Hex() {
+					if ethcommon.HexToAddress(call.To) == controller {
 						result = "0x" + hex.EncodeToString(ethcommon.LeftPadBytes(broker.Bytes(), 32))
 					} else {
 						if tc.failure == "simulation" {
@@ -103,7 +107,7 @@ func TestChainBinaryQuietExecution(t *testing.T) {
 						http.Error(w, "receipt unavailable", http.StatusServiceUnavailable)
 						return
 					}
-					result = map[string]string{"status": "0x1", "blockNumber": "0x10"}
+					result = &types.Receipt{TxHash: ethcommon.HexToHash(hash.Load().(string)), Status: 1, BlockNumber: big.NewInt(16), BlockHash: ethcommon.Hash{31: 1}, Logs: []*types.Log{}}
 				default:
 					t.Errorf("unexpected RPC %s", req.Method)
 				}
@@ -114,7 +118,7 @@ func TestChainBinaryQuietExecution(t *testing.T) {
 			rpcFile := filepath.Join(dir, "rpc")
 			require.NoError(t, os.WriteFile(rpcFile, []byte(server.URL), 0600))
 			config := filepath.Join(dir, "chain.toml")
-			require.NoError(t, os.WriteFile(config, []byte(fmt.Sprintf("RPCURLFile = %q\nSender = %q\nKeyFile = %q\n", rpcFile, key.Address().Hex(), keyFile)), 0600))
+			require.NoError(t, os.WriteFile(config, []byte(fmt.Sprintf("RPCURLFile = %q\nSender = %q\nKeyFile = %q\n", rpcFile, keyAddress.Hex(), keyFile)), 0600))
 			args := append([]string{"chain", "--config", config, "ticketbroker", "unlock", "--quiet", "--output", "json"}, tc.flags...)
 			command := exec.Command(filepath.Join(install, "livepeer"), args...)
 			var stdout, stderr bytes.Buffer

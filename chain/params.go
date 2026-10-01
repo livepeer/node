@@ -14,12 +14,13 @@ import (
 
 // OperatorParams is the persistent operator context shared by chain commands.
 type OperatorParams struct {
-	RPCURL     *url.URL           `name:"rpc-url" secret:"true" optional:"true" persistent:"true"`
-	RPCURLFile string             `name:"rpc-url-file" secretfor:"RPCURL" persistent:"true"`
-	ChainID    *uint64            `min:"1" persistent:"true" descr:"Optional expected RPC chain ID"`
-	Sender     *ethcommon.Address `persistent:"true"`
-	Controller ethcommon.Address  `name:"controller-address" required:"true" persistent:"true" default:"0xD8E8328501E9645d16Cf49539efC04f734606ee4" descr:"Livepeer Controller (Arbitrum mainnet)"`
-	KeyFile    string             `name:"private-key-file" optional:"true" file:"true" persistent:"true"`
+	RPCURL       *url.URL           `name:"rpc-url" secret:"true" optional:"true" persistent:"true"`
+	RPCURLFile   string             `name:"rpc-url-file" secretfor:"RPCURL" persistent:"true"`
+	ChainID      *uint64            `min:"1" persistent:"true" descr:"Optional expected RPC chain ID"`
+	Sender       *ethcommon.Address `persistent:"true"`
+	Controller   ethcommon.Address  `name:"controller-address" required:"true" persistent:"true" default:"0xD8E8328501E9645d16Cf49539efC04f734606ee4" descr:"Livepeer Controller (Arbitrum mainnet)"`
+	KeyFile      string             `name:"private-key-file" optional:"true" file:"true" persistent:"true"`
+	MaxFeePerGas *uint256.Int       `persistent:"true" descr:"Optional maximum transaction fee in wei per gas"`
 }
 
 func (p OperatorParams) Validate() error {
@@ -29,16 +30,20 @@ func (p OperatorParams) Validate() error {
 	if p.Controller == (ethcommon.Address{}) {
 		return errors.New("controller-address must be nonzero")
 	}
+	if p.MaxFeePerGas != nil && p.MaxFeePerGas.IsZero() {
+		return errors.New("max-fee-per-gas must be positive")
+	}
 	return nil
 }
 
 // printConfig deliberately includes only audited operator values.
 func (p OperatorParams) printConfig(out io.Writer) error {
 	data, err := toml.Marshal(struct {
-		ChainID    *uint64
-		Sender     *ethcommon.Address
-		Controller ethcommon.Address
-	}{p.ChainID, p.Sender, p.Controller})
+		ChainID      *uint64
+		Sender       *ethcommon.Address
+		Controller   ethcommon.Address
+		MaxFeePerGas *uint256.Int
+	}{p.ChainID, p.Sender, p.Controller, p.MaxFeePerGas})
 	if err != nil {
 		return err
 	}
