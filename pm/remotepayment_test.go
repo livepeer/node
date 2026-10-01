@@ -13,46 +13,44 @@ type batchTestSigner struct{}
 func (batchTestSigner) Address() ethcommon.Address         { return ethcommon.HexToAddress("0x1234") }
 func (batchTestSigner) SignMessage([]byte) ([]byte, error) { return []byte{1, 2, 3}, nil }
 
-func TestMakeRemoteBatchCarriesFractionalExpectedValue(t *testing.T) {
-	params := TicketParams{Recipient: ethcommon.HexToAddress("0x5678"), FaceValue: big.NewInt(3), WinProb: new(big.Int).Div(new(big.Int).Set(maxWinProb), big.NewInt(2)), ExpirationBlock: big.NewInt(100), ExpirationParams: &TicketExpirationParams{CreationRound: 10}}
-	batch, remaining, err := MakeRemoteBatch(params, batchTestSigner{}, 0, big.NewRat(2, 1), big.NewRat(0, 1))
-	require.NoError(t, err)
-	require.Len(t, batch.SenderParams, 2)
-	require.Equal(t, uint32(1), batch.SenderParams[0].SenderNonce)
-	require.Equal(t, uint32(2), batch.SenderParams[1].SenderNonce)
-	require.True(t, remaining.Sign() > 0)
-	require.True(t, remaining.Cmp(big.NewRat(1, 1)) < 0)
-}
-
-func TestMakeRemoteBatchRejectsExcessiveMint(t *testing.T) {
-	params := TicketParams{FaceValue: big.NewInt(1), WinProb: new(big.Int).Sub(maxWinProb, big.NewInt(1)), ExpirationBlock: big.NewInt(100), ExpirationParams: &TicketExpirationParams{}}
-	_, _, err := MakeRemoteBatch(params, batchTestSigner{}, 0, big.NewRat(101, 1), big.NewRat(0, 1))
-	require.ErrorContains(t, err, "exceeds 100")
-}
-
-func TestRemoteBatchSizeMinimumTicketCredit(t *testing.T) {
-	params := TicketParams{FaceValue: big.NewInt(10), WinProb: new(big.Int).Sub(maxWinProb, big.NewInt(1))}
-	ev := ticketEV(params.FaceValue, params.WinProb)
-	count, err := RemoteBatchSize(params, big.NewRat(2, 1), big.NewRat(5, 1))
-	require.NoError(t, err)
-	require.Equal(t, 1, count)
-
-	// At the EV floor no new ticket is needed, even though the saved credit
-	// can still pay a smaller fee. This is the retained 482 behavior.
-	_, err = RemoteBatchSize(params, big.NewRat(2, 1), ev)
-	require.ErrorIs(t, err, ErrNoTickets)
-	count, err = RemoteBatchSize(params, big.NewRat(2, 1), big.NewRat(2, 1))
-	require.NoError(t, err)
-	require.Equal(t, 1, count)
-
-	// Once the fee exceeds EV, ticket count is the exact ceiling of shortfall/EV.
-	fee := new(big.Rat).Mul(ev, big.NewRat(3, 1))
-	count, err = RemoteBatchSize(params, fee, ev)
-	require.NoError(t, err)
-	require.Equal(t, 2, count)
-	_, err = RemoteBatchSize(params, fee, fee)
-	require.ErrorIs(t, err, ErrNoTickets)
-	count, err = RemoteBatchSize(params, fee, new(big.Rat).Sub(fee, big.NewRat(1, 1)))
-	require.NoError(t, err)
-	require.Equal(t, 1, count)
+func TestMakeRemoteBatchCreditAndNonceBoundaries(t *testing.T) {
+	// maxWinProb is divisible by three, so each ticket has exactly 10/3 wei EV.
+	params := TicketParams{Recipient: ethcommon.HexToAddress("0x5678"), FaceValue: big.NewInt(10), WinProb: new(big.Int).Quo(maxWinProb, big.NewInt(3)), ExpirationBlock: big.NewInt(100), ExpirationParams: &TicketExpirationParams{CreationRound: 10}}
+	for _, tt := range []struct {
+		name                    string
+		fee, balance, remaining *big.Rat
+		firstNonce              uint32
+		count                   int
+		want                    error
+		message                 string
+	}{
+		{"fractional change", big.NewRat(5, 1), new(big.Rat), big.NewRat(5, 3), 0, 2, nil, ""},
+		{"EV floor despite prepaid fee", big.NewRat(1, 1), big.NewRat(2, 1), big.NewRat(13, 3), 41, 1, nil, ""},
+		{"at EV floor", big.NewRat(1, 1), big.NewRat(10, 3), nil, 0, 0, ErrNoTickets, ""},
+		{"larger fee shortfall", big.NewRat(10, 1), big.NewRat(10, 3), new(big.Rat), 0, 2, nil, ""},
+		{"fee prepaid", big.NewRat(10, 1), big.NewRat(10, 1), nil, 0, 0, ErrNoTickets, ""},
+		{"one wei short", big.NewRat(10, 1), big.NewRat(9, 1), big.NewRat(7, 3), 0, 1, nil, ""},
+		{"last nonce", big.NewRat(1, 1), new(big.Rat), big.NewRat(7, 3), 598, 1, nil, ""},
+		{"nonce exhausted", big.NewRat(1, 1), new(big.Rat), nil, 599, 0, ErrRefreshRequired, ""},
+		{"oversized batch", big.NewRat(1001, 3), new(big.Rat), nil, 0, 0, nil, "exceeds 100"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			balance := new(big.Rat).Set(tt.balance)
+			batch, remaining, err := MakeRemoteBatch(params, batchTestSigner{}, tt.firstNonce, tt.fee, balance)
+			require.Equal(t, tt.balance.RatString(), balance.RatString(), "the caller owns its prior balance")
+			if tt.message != "" {
+				require.ErrorContains(t, err, tt.message)
+				return
+			}
+			require.ErrorIs(t, err, tt.want)
+			if tt.want != nil {
+				return
+			}
+			require.Len(t, batch.SenderParams, tt.count)
+			require.Equal(t, tt.remaining.RatString(), remaining.RatString())
+			for i, ticket := range batch.SenderParams {
+				require.Equal(t, tt.firstNonce+uint32(i)+1, ticket.SenderNonce)
+			}
+		})
+	}
 }

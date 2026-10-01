@@ -19,10 +19,6 @@ type TicketStore interface {
 	// StoreWinningTicket stores a signed ticket
 	StoreWinningTicket(ticket *SignedTicket) error
 
-	// MarkWinningTicketSubmitted stores a broadcast hash. A later receipt
-	// confirmation sets redeemed_at; this call does not claim finality.
-	MarkWinningTicketSubmitted(ticket *SignedTicket, txHash ethcommon.Hash) error
-
 	// WinningTicketCount returns the amount of non-redeemed winning tickets for a sender in the TicketStore
 	WinningTicketCount(sender ethcommon.Address, minCreationRound int64) (int, error)
 

@@ -11,43 +11,6 @@ import (
 	"github.com/livepeer/node/eth"
 )
 
-// Migrate old attempt rows conservatively. A previous binary did not persist
-// signed bytes before sending; a hashless old claim is therefore uncertain.
-func (s *SQLiteStore) migrateRedemptions() error {
-	rows, err := s.db.Query("PRAGMA table_info(redemption_attempts)")
-	if err != nil {
-		return err
-	}
-	columns := map[string]bool{}
-	for rows.Next() {
-		var id, notNull, pk int
-		var name, kind string
-		var defaultValue any
-		if err := rows.Scan(&id, &name, &kind, &notNull, &defaultValue, &pk); err != nil {
-			rows.Close()
-			return err
-		}
-		columns[name] = true
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
-		return err
-	}
-	for _, column := range []struct{ name, definition string }{
-		{"phase", "TEXT NOT NULL DEFAULT 'legacy-uncertain'"},
-		{"raw_transaction", "BLOB"}, {"key_address", "TEXT"}, {"nonce", "TEXT"},
-	} {
-		if !columns[column.name] {
-			if _, err := s.db.Exec("ALTER TABLE redemption_attempts ADD COLUMN " + column.name + " " + column.definition); err != nil {
-				return err
-			}
-		}
-	}
-	_, err = s.db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS redemption_nonce ON redemption_attempts(key_address,nonce) WHERE nonce IS NOT NULL")
-	return err
-}
-
 func (s *SQLiteStore) recordPrepared(ctx context.Context, ticket *SignedTicket, prepared eth.SignedTransaction) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -55,7 +18,7 @@ func (s *SQLiteStore) recordPrepared(ctx context.Context, ticket *SignedTicket, 
 	}
 	defer tx.Rollback()
 	var blocked int
-	if err := tx.QueryRow("SELECT COUNT(*) FROM redemption_attempts WHERE phase IN ('prepared','broadcast','legacy-uncertain')").Scan(&blocked); err != nil {
+	if err := tx.QueryRow("SELECT COUNT(*) FROM redemption_attempts WHERE phase IN ('prepared','broadcast')").Scan(&blocked); err != nil {
 		return err
 	}
 	if blocked != 0 {

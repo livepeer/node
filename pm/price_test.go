@@ -9,15 +9,17 @@ import (
 
 // Adapted from go-livepeer/ai/runner/live_runner_test.go's hour/fixed conversion cases.
 func TestConvertRunnerPrice(t *testing.T) {
-	rate := big.NewRat(7200, 1)
-	perSecond, unit, err := ConvertRunnerPrice("0.5", "hour", rate)
-	require.NoError(t, err)
-	require.Equal(t, "seconds", unit)
-	require.Equal(t, "1", perSecond.String())
-	fixed, unit, err := ConvertRunnerPrice("0.5", "fixed", rate)
-	require.NoError(t, err)
-	require.Equal(t, "fixed", unit)
-	require.Equal(t, "3600", fixed.String())
-	_, _, err = ConvertRunnerPrice("1", "720p", rate)
-	require.Error(t, err)
+	for _, tt := range []struct{ price, unit, wei, convertedUnit string }{
+		{"0.5", "hour", "1", "seconds"},
+		{"0.5", "fixed", "3600", "fixed"},
+		{"0.00001", "hour", "1", "seconds"},
+		{"0.0002", "fixed", "2", "fixed"},
+	} {
+		t.Run(tt.price+"/"+tt.unit, func(t *testing.T) {
+			wei, unit, err := ConvertRunnerPrice(tt.price, tt.unit, big.NewRat(7200, 1))
+			require.NoError(t, err)
+			require.Equal(t, tt.wei, wei.String())
+			require.Equal(t, tt.convertedUnit, unit)
+		})
+	}
 }

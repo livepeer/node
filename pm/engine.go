@@ -3,11 +3,10 @@ package pm
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
-	"database/sql"
 	"encoding/base64"
 	"errors"
-	"fmt"
 	"math/big"
 	"sync"
 	"time"
@@ -33,19 +32,44 @@ type PaymentChain interface {
 }
 
 type Engine struct {
-	mu        sync.Mutex
-	store     *SQLiteStore
-	chain     PaymentChain
-	recipient ethcommon.Address
-	faceValue *big.Int
-	winProb   *big.Int
+	mu            sync.Mutex
+	store         *SQLiteStore
+	chain         PaymentChain
+	recipient     ethcommon.Address
+	faceValue     *big.Int
+	winProb       *big.Int
+	secret        [32]byte
+	authSecret    [32]byte
+	sessions      map[string]*paymentSession
+	senderNonces  map[string]*recipientNonces
+	nonceCount    int
+	lastSeenBlock *big.Int
+}
+
+// Session scope, the latest response, and accounting are process-local, just as
+// the runner sessions are. Issued PM parameters and secrets are never persisted.
+// The cached response serves refresh/retry routes; it does not authenticate PM.
+type paymentSession struct {
+	runner     string
+	sender     ethcommon.Address
+	price      wire.PriceInfo
+	unit       string
+	info       []byte
+	balance    *big.Rat
+	lastCharge time.Time
+	updated    time.Time
 }
 
 func NewEngine(store *SQLiteStore, chain PaymentChain, recipient ethcommon.Address, faceValue, winProb *big.Int) (*Engine, error) {
 	if store == nil || chain == nil || recipient == (ethcommon.Address{}) || faceValue == nil || faceValue.Sign() <= 0 || winProb == nil || winProb.Sign() <= 0 || winProb.Cmp(maxWinProb) >= 0 {
 		return nil, errors.New("invalid payment engine configuration")
 	}
-	return &Engine{store: store, chain: chain, recipient: recipient, faceValue: new(big.Int).Set(faceValue), winProb: new(big.Int).Set(winProb)}, nil
+	e := &Engine{store: store, chain: chain, recipient: recipient, faceValue: new(big.Int).Set(faceValue), winProb: new(big.Int).Set(winProb), sessions: make(map[string]*paymentSession), senderNonces: make(map[string]*recipientNonces), lastSeenBlock: new(big.Int)}
+	// Port of go-livepeer/pm.NewRecipient: a fresh 256-bit HMAC key per
+	// recipient lifetime. AuthToken has its own independent key, as upstream.
+	rand.Read(e.secret[:])
+	rand.Read(e.authSecret[:])
+	return e, nil
 }
 
 type Challenge struct {
@@ -55,14 +79,8 @@ type Challenge struct {
 	PaymentURL    string `json:"payment_url"`
 }
 
-func randomBytes(length int) ([]byte, error) {
-	b := make([]byte, length)
-	_, err := rand.Read(b)
-	return b, err
-}
-
-// MakeChallenge pins the runner, sender, price, auth token and ticket params in
-// SQLite before returning a Python/Go runner compatible 402 body.
+// MakeChallenge returns a Python/Go runner compatible 402 body. Ticket
+// parameters are authenticated by the recipient HMAC, as in go-livepeer.
 func (e *Engine) MakeChallenge(ctx context.Context, runner, manifest string, sender ethcommon.Address, price int64, unit, service string) (Challenge, error) {
 	if runner == "" || manifest == "" || sender == (ethcommon.Address{}) || price <= 0 || (unit != "seconds" && unit != "fixed") {
 		return Challenge{}, errors.New("invalid payment challenge scope")
@@ -81,80 +99,70 @@ func (e *Engine) MakeChallenge(ctx context.Context, runner, manifest string, sen
 	if snapshot.Block == nil || snapshot.Round == nil || snapshot.Block.Sign() < 0 || snapshot.Round.Sign() <= 0 || snapshot.RoundHash == (ethcommon.Hash{}) {
 		return Challenge{}, errors.New("chain snapshot unavailable")
 	}
-	random, err := randomBytes(32)
-	if err != nil {
-		return Challenge{}, err
-	}
-	seed, err := randomBytes(32)
-	if err != nil {
-		return Challenge{}, err
-	}
-	token, err := randomBytes(32)
-	if err != nil {
-		return Challenge{}, err
-	}
-	randHash := crypto.Keccak256Hash(random)
-	info := wire.OrchestratorInfo{Transcoder: service, Address: e.recipient.Bytes(), Price: wire.PriceInfo{PricePerUnit: price, UnitsPerPrice: 1},
-		TicketParams: wire.TicketParams{Recipient: e.recipient.Bytes(), FaceValue: e.faceValue.Bytes(), WinProb: e.winProb.Bytes(), RecipientRandHash: randHash.Bytes(), Seed: seed, ExpirationBlock: new(big.Int).Add(snapshot.Block, big.NewInt(40)).Bytes(), Expiration: wire.ExpirationParams{CreationRound: snapshot.Round.Int64(), CreationRoundBlockHash: snapshot.RoundHash.Bytes()}},
-		Auth:         wire.AuthToken{Token: token, SessionID: manifest, Expiration: time.Now().Add(time.Hour).Unix()}}
-	encoded := wire.EncodeOrchestratorInfo(info)
+	seed := make([]byte, 32)
+	rand.Read(seed)
+	priceInfo := wire.PriceInfo{PricePerUnit: price, UnitsPerPrice: 1}
+	expiration := &TicketExpirationParams{CreationRound: snapshot.Round.Int64(), CreationRoundBlockHash: snapshot.RoundHash}
+	expiresAtBlock := new(big.Int).Add(snapshot.Block, big.NewInt(40))
+	recipientRand := e.recipientRand(new(big.Int).SetBytes(seed), sender, e.faceValue, e.winProb, expiresAtBlock, big.NewRat(price, 1), expiration)
+	randHash := crypto.Keccak256Hash(ethcommon.LeftPadBytes(recipientRand.Bytes(), uint256Size))
+	info := wire.OrchestratorInfo{Transcoder: service, Address: e.recipient.Bytes(), Price: priceInfo,
+		TicketParams: wire.TicketParams{Recipient: e.recipient.Bytes(), FaceValue: e.faceValue.Bytes(), WinProb: e.winProb.Bytes(), RecipientRandHash: randHash.Bytes(), Seed: seed, ExpirationBlock: expiresAtBlock.Bytes(), Expiration: wire.ExpirationParams{CreationRound: expiration.CreationRound, CreationRoundBlockHash: expiration.CreationRoundBlockHash.Bytes()}},
+		Auth:         e.authToken(manifest, time.Now().Add(time.Hour).Unix())}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	tx, err := e.store.db.BeginTx(ctx, nil)
-	if err != nil {
-		return Challenge{}, err
+	e.observeBlock(snapshot.Block)
+	current := e.sessions[manifest]
+	if current == nil {
+		if len(e.sessions) >= 100000 {
+			return Challenge{}, errors.New("payment session capacity reached")
+		}
+		current = &paymentSession{runner: runner, sender: sender, price: priceInfo, unit: unit, balance: new(big.Rat)}
+		e.sessions[manifest] = current
+	} else if current.runner != runner || current.sender != sender || current.price != priceInfo || current.unit != unit {
+		return Challenge{}, errors.New("payment session scope conflict")
 	}
-	defer tx.Rollback()
-	result, err := tx.Exec(`INSERT INTO payment_challenges(manifest,runner,sender,info,recipient_rand,unit,balance,created_at)
-        SELECT ?,?,?,?,?,?,'0',? WHERE (SELECT COUNT(*) FROM payment_challenges)<100000 OR EXISTS(SELECT 1 FROM payment_challenges WHERE manifest=?)
-		ON CONFLICT(manifest) DO UPDATE SET info=excluded.info,recipient_rand=excluded.recipient_rand,created_at=excluded.created_at
-        WHERE payment_challenges.runner=excluded.runner AND payment_challenges.sender=excluded.sender AND payment_challenges.unit=excluded.unit`, manifest, runner, sender.Hex(), encoded, random, unit, time.Now().UTC().Format(time.RFC3339Nano), manifest)
-	if err != nil {
-		return Challenge{}, err
-	}
-	if n, err := result.RowsAffected(); err != nil || n != 1 {
-		return Challenge{}, errors.New("payment challenge capacity or scope conflict")
-	}
-	if _, err := tx.Exec("INSERT INTO payment_ticket_epochs(hash,expires_at) VALUES(?,?)", randHash.Hex(), info.Auth.Expiration); err != nil {
-		return Challenge{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return Challenge{}, err
-	}
+	current.info, current.updated = wire.EncodeOrchestratorInfo(info), time.Now()
+	return paymentChallenge(runner, manifest, service, current.info), nil
+}
 
-	return Challenge{PaymentParams: base64.StdEncoding.EncodeToString(encoded), Orchestrator: service, ManifestID: manifest, PaymentURL: service + "/apps/" + runner + "/session/" + manifest + "/payment"}, nil
+func paymentChallenge(runner, manifest, service string, info []byte) Challenge {
+	return Challenge{PaymentParams: base64.StdEncoding.EncodeToString(info), Orchestrator: service, ManifestID: manifest, PaymentURL: service + "/apps/" + runner + "/session/" + manifest + "/payment"}
 }
 
 func (e *Engine) ChallengeInfo(manifest string) (wire.OrchestratorInfo, error) {
-	var encoded []byte
-	if err := e.store.db.QueryRow("SELECT info FROM payment_challenges WHERE manifest=?", manifest).Scan(&encoded); err != nil {
-		return wire.OrchestratorInfo{}, err
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	current := e.sessions[manifest]
+	if current == nil {
+		return wire.OrchestratorInfo{}, ErrMissingChallenge
 	}
-	return wire.DecodeOrchestratorInfo(encoded)
+	return wire.DecodeOrchestratorInfo(current.info)
 }
 
 func (e *Engine) ChallengeForManifest(runner, manifest, service string) (Challenge, error) {
-	info, err := e.ChallengeInfo(manifest)
-	if err != nil {
-		return Challenge{}, err
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	current := e.sessions[manifest]
+	if current == nil || current.runner != runner {
+		return Challenge{}, ErrMissingChallenge
 	}
-	return Challenge{PaymentParams: base64.StdEncoding.EncodeToString(wire.EncodeOrchestratorInfo(info)), Orchestrator: service, ManifestID: manifest, PaymentURL: service + "/apps/" + runner + "/session/" + manifest + "/payment"}, nil
+	return paymentChallenge(runner, manifest, service, current.info), nil
 }
 
 func (e *Engine) RefreshChallenge(ctx context.Context, manifest string, sender ethcommon.Address, service string) (Challenge, error) {
-	var runner, senderString, unit string
-	var encoded []byte
-	if err := e.store.db.QueryRow("SELECT runner,sender,unit,info FROM payment_challenges WHERE manifest=?", manifest).Scan(&runner, &senderString, &unit, &encoded); err != nil {
-		return Challenge{}, err
+	e.mu.Lock()
+	current := e.sessions[manifest]
+	if current == nil {
+		e.mu.Unlock()
+		return Challenge{}, ErrMissingChallenge
 	}
-	if sender.Hex() != senderString {
+	runner, expectedSender, price, unit := current.runner, current.sender, current.price, current.unit
+	e.mu.Unlock()
+	if sender != expectedSender {
 		return Challenge{}, ErrInvalidPayment
 	}
-	info, err := wire.DecodeOrchestratorInfo(encoded)
-	if err != nil {
-		return Challenge{}, err
-	}
-	return e.MakeChallenge(ctx, runner, manifest, sender, info.Price.PricePerUnit, unit, service)
+	return e.MakeChallenge(ctx, runner, manifest, sender, price.PricePerUnit, unit, service)
 }
 
 func ManifestFromSegment(header string) (string, error) {
@@ -202,24 +210,17 @@ func (e *Engine) Receive(ctx context.Context, runner, manifest, paymentHeader, s
 	if len(payment.Sender) != 20 || len(segment.Hash) != 32 || string(segment.ManifestID) != manifest || segment.Auth.SessionID != manifest || len(segment.Signature) != 65 {
 		return ethcommon.Address{}, nil, ErrInvalidPayment
 	}
-	var storedRunner, senderString string
-	var encoded, recipientRand []byte
-	err = e.store.db.QueryRow("SELECT runner,sender,info,recipient_rand FROM payment_challenges WHERE manifest=?", manifest).Scan(&storedRunner, &senderString, &encoded, &recipientRand)
-	if errors.Is(err, sql.ErrNoRows) {
+	sender := ethcommon.BytesToAddress(payment.Sender)
+	e.mu.Lock()
+	session := e.sessions[manifest]
+	if session == nil {
+		e.mu.Unlock()
 		return ethcommon.Address{}, nil, ErrMissingChallenge
 	}
-	if err != nil {
-		return ethcommon.Address{}, nil, err
-	}
-	info, err := wire.DecodeOrchestratorInfo(encoded)
-	if err != nil {
-		return ethcommon.Address{}, nil, err
-	}
-	sender := ethcommon.BytesToAddress(payment.Sender)
-	if storedRunner != runner || sender.Hex() != senderString || !bytes.Equal(segment.Auth.Token, info.Auth.Token) || segment.Auth.Expiration != info.Auth.Expiration || time.Now().Unix() > info.Auth.Expiration ||
-		!bytes.Equal(wire.EncodeTicketParams(payment.TicketParams), wire.EncodeTicketParams(info.TicketParams)) ||
-		payment.Expiration.CreationRound != info.TicketParams.Expiration.CreationRound || !bytes.Equal(payment.Expiration.CreationRoundBlockHash, info.TicketParams.Expiration.CreationRoundBlockHash) ||
-		payment.ExpectedPrice != info.Price || len(payment.SenderParams) == 0 || len(payment.SenderParams) > 100 {
+	runnerMatches, senderMatches, price := session.runner == runner, session.sender == sender, session.price
+	e.mu.Unlock()
+	params, recipientRand, err := e.authenticatePayment(payment, segment.Auth)
+	if err != nil || !runnerMatches || !senderMatches || payment.ExpectedPrice != price || len(payment.SenderParams) == 0 || len(payment.SenderParams) > 100 {
 		return ethcommon.Address{}, nil, ErrInvalidPayment
 	}
 	flatten := append([]byte(manifest), make([]byte, 32)...)
@@ -239,8 +240,8 @@ func (e *Engine) Receive(ctx context.Context, runner, manifest, paymentHeader, s
 	if !active {
 		return ethcommon.Address{}, nil, ErrInvalidPayment
 	}
-	params := TicketParams{Recipient: e.recipient, FaceValue: new(big.Int).SetBytes(info.TicketParams.FaceValue), WinProb: new(big.Int).SetBytes(info.TicketParams.WinProb), RecipientRandHash: ethcommon.BytesToHash(info.TicketParams.RecipientRandHash), Seed: new(big.Int).SetBytes(info.TicketParams.Seed), ExpirationBlock: new(big.Int).SetBytes(info.TicketParams.ExpirationBlock), ExpirationParams: &TicketExpirationParams{CreationRound: info.TicketParams.Expiration.CreationRound, CreationRoundBlockHash: ethcommon.BytesToHash(info.TicketParams.Expiration.CreationRoundBlockHash)}}
-	if snapshot.Block == nil || snapshot.Round == nil || params.ExpirationBlock.Cmp(snapshot.Block) <= 0 || params.ExpirationParams.CreationRound < snapshot.Round.Int64()-2 || params.ExpirationParams.CreationRound > snapshot.Round.Int64() || params.FaceValue.Sign() <= 0 || params.WinProb.Sign() <= 0 {
+
+	if snapshot.Block == nil || snapshot.Round == nil || params.ExpirationParams.CreationRound < snapshot.Round.Int64()-2 || params.ExpirationParams.CreationRound > snapshot.Round.Int64() {
 		return ethcommon.Address{}, nil, ErrInvalidPayment
 	}
 	if err := ValidateSenderFunds(funds); err != nil {
@@ -251,21 +252,26 @@ func (e *Engine) Receive(ctx context.Context, runner, manifest, paymentHeader, s
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	// A single transaction atomically records nonce replay protection, winning
-	// tickets and expected-value credit for the session.
+	// Store winning tickets before publishing in-memory replay guards and credit.
+	// The lock serializes receipt and accounting; failed batches change neither.
+	if e.sessions[manifest] != session {
+		return ethcommon.Address{}, nil, ErrMissingChallenge
+	}
+	e.observeBlock(snapshot.Block)
+	if params.ExpirationBlock.Cmp(e.lastSeenBlock) <= 0 {
+		return ethcommon.Address{}, nil, ErrInvalidPayment
+	}
+	if e.nonceCount+len(payment.SenderParams) > 1000000 {
+		return ethcommon.Address{}, nil, errors.New("payment ticket capacity reached")
+	}
+	randKey := recipientRand.String()
+	previous := e.senderNonces[randKey]
+	batchNonces := make(map[uint32]bool, len(payment.SenderParams))
 	tx, err := e.store.db.BeginTx(ctx, nil)
 	if err != nil {
 		return ethcommon.Address{}, nil, err
 	}
 	defer tx.Rollback()
-	var currentBalance string
-	var currentInfo []byte
-	if err := tx.QueryRow("SELECT balance,info FROM payment_challenges WHERE manifest=?", manifest).Scan(&currentBalance, &currentInfo); err != nil {
-		return ethcommon.Address{}, nil, err
-	}
-	if !bytes.Equal(currentInfo, encoded) {
-		return ethcommon.Address{}, nil, ErrInvalidPayment
-	}
 	// Once redemption can reveal randomness, this epoch must never accept
 	// more tickets, even if a reorg moves the observed L1 clock backwards.
 	var exposed int
@@ -275,34 +281,24 @@ func (e *Engine) Receive(ctx context.Context, runner, manifest, paymentHeader, s
 	if exposed != 0 {
 		return ethcommon.Address{}, nil, ErrInvalidPayment
 	}
-	balance, ok := new(big.Rat).SetString(currentBalance)
-	if !ok {
-		return ethcommon.Address{}, nil, errors.New("corrupt payment balance")
-	}
-	var ticketCount int
-	if err := tx.QueryRow("SELECT COUNT(*) FROM used_payment_tickets").Scan(&ticketCount); err != nil {
-		return ethcommon.Address{}, nil, err
-	}
-	if ticketCount+len(payment.SenderParams) > 1000000 {
-		return ethcommon.Address{}, nil, errors.New("payment ticket capacity reached")
-	}
+	balance := new(big.Rat).Set(session.balance)
 	validator := NewValidator(DefaultSigVerifier{})
-	winningRand := new(big.Int).SetBytes(recipientRand)
 	for _, sp := range payment.SenderParams {
 		if sp.SenderNonce == 0 || sp.SenderNonce >= 600 || len(sp.Sig) != 65 {
 			return ethcommon.Address{}, nil, ErrInvalidPayment
 		}
 		ticket := NewTicket(&params, params.ExpirationParams, sender, sp.SenderNonce)
-		if err := validator.ValidateTicket(e.recipient, ticket, sp.Sig, winningRand); err != nil {
+		if err := validator.ValidateTicket(e.recipient, ticket, sp.Sig, recipientRand); err != nil {
 			return ethcommon.Address{}, nil, ErrInvalidPayment
 		}
-		if _, err := tx.Exec("INSERT INTO used_payment_tickets(sender,recipient_rand_hash,sender_nonce) VALUES(?,?,?)", sender.Hex(), params.RecipientRandHash.Hex(), sp.SenderNonce); err != nil {
+		if batchNonces[sp.SenderNonce] || (previous != nil && previous.nonceSeen[sp.SenderNonce]) {
 			return ethcommon.Address{}, nil, ErrInvalidPayment
 		}
+		batchNonces[sp.SenderNonce] = true
 		balance.Add(balance, ticket.EV())
-		if validator.IsWinningTicket(ticket, sp.Sig, winningRand) {
+		if validator.IsWinningTicket(ticket, sp.Sig, recipientRand) {
 			_, err := tx.Exec(`INSERT INTO winning_tickets(sender,recipient,face_value,win_prob,sender_nonce,recipient_rand,recipient_rand_hash,sig,creation_round,creation_round_block_hash,params_expiration_block)
-				VALUES(?,?,?,?,?,?,?,?,?,?,?)`, sender.Hex(), ticket.Recipient.Hex(), ticket.FaceValue.Bytes(), ticket.WinProb.Bytes(), ticket.SenderNonce, recipientRand, ticket.RecipientRandHash.Hex(), sp.Sig, ticket.CreationRound, ticket.CreationRoundBlockHash.Hex(), ticket.ParamsExpirationBlock.String())
+				VALUES(?,?,?,?,?,?,?,?,?,?,?)`, sender.Hex(), ticket.Recipient.Hex(), ticket.FaceValue.Bytes(), ticket.WinProb.Bytes(), ticket.SenderNonce, ethcommon.LeftPadBytes(recipientRand.Bytes(), uint256Size), ticket.RecipientRandHash.Hex(), sp.Sig, ticket.CreationRound, ticket.CreationRoundBlockHash.Hex(), ticket.ParamsExpirationBlock.String())
 			if err != nil {
 				return ethcommon.Address{}, nil, err
 			}
@@ -331,103 +327,99 @@ func (e *Engine) Receive(ctx context.Context, runner, manifest, paymentHeader, s
 	if pending.Cmp(new(big.Int).Add(funds.Deposit, funds.Reserve)) > 0 {
 		return ethcommon.Address{}, nil, ErrSenderUnavailable
 	}
-	if _, err := tx.Exec("UPDATE payment_challenges SET balance=? WHERE manifest=?", balance.RatString(), manifest); err != nil {
-		return ethcommon.Address{}, nil, err
-	}
 	if err := tx.Commit(); err != nil {
 		return ethcommon.Address{}, nil, err
 	}
-	return sender, balance, nil
+	if previous == nil {
+		previous = &recipientNonces{nonceSeen: make(map[uint32]bool), expirationBlock: new(big.Int).Set(params.ExpirationBlock)}
+		e.senderNonces[randKey] = previous
+	}
+	for nonce := range batchNonces {
+		previous.nonceSeen[nonce] = true
+	}
+	e.nonceCount += len(batchNonces)
+	session.balance, session.updated = balance, time.Now()
+	return sender, new(big.Rat).Set(balance), nil
 }
 
 func (e *Engine) Charge(ctx context.Context, manifest string, now time.Time) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	tx, err := e.store.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	var encoded []byte
-	var unit, balanceString string
-	var lastCharge sql.NullString
-	if err := tx.QueryRow("SELECT info,unit,balance,last_charge FROM payment_challenges WHERE manifest=?", manifest).Scan(&encoded, &unit, &balanceString, &lastCharge); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return ErrMissingChallenge
-		}
-		return err
-	}
-	info, err := wire.DecodeOrchestratorInfo(encoded)
-	if err != nil {
-		return err
-	}
-	balance, ok := new(big.Rat).SetString(balanceString)
-	if !ok {
-		return errors.New("corrupt payment balance")
+	current := e.sessions[manifest]
+	if current == nil {
+		return ErrMissingChallenge
 	}
 	units := int64(0)
-	if unit == "fixed" {
-		if lastCharge.Valid {
-			// A fixed-price session can remain live for days without another
-			// fee; keep its authorization/accounting record while it is active.
-			_, err := tx.Exec("UPDATE payment_challenges SET created_at=? WHERE manifest=? AND created_at<?", time.Now().UTC().Format(time.RFC3339Nano), manifest, time.Now().Add(-time.Hour).UTC().Format(time.RFC3339Nano))
-			if err != nil {
-				return err
-			}
-			if err := tx.Commit(); err != nil {
-				return err
-			}
+	if current.unit == "fixed" {
+		if !current.lastCharge.IsZero() {
+			current.updated = time.Now()
 			return ErrFixedAlreadyCharged
 		}
 		units = 1
-	} else if unit == "seconds" && lastCharge.Valid {
-		previous, err := time.Parse(time.RFC3339Nano, lastCharge.String)
-		if err != nil {
-			return err
-		}
-		units = max(int64(now.Sub(previous)/time.Second), 0)
+	} else if current.unit == "seconds" && !current.lastCharge.IsZero() {
+		units = max(int64(now.Sub(current.lastCharge)/time.Second), 0)
 		if units > 3600 {
 			return ErrInsufficientBalance
 		}
 		if units == 0 {
-			return tx.Commit()
+			return nil
 		}
-		now = previous.Add(time.Duration(units) * time.Second)
-	} else if unit != "seconds" {
-		return errors.New("invalid payment unit")
+		now = current.lastCharge.Add(time.Duration(units) * time.Second)
 	}
-	fee := new(big.Rat).Mul(big.NewRat(info.Price.PricePerUnit, info.Price.UnitsPerPrice), big.NewRat(units, 1))
-	if balance.Cmp(fee) < 0 {
+	fee := new(big.Rat).Mul(big.NewRat(current.price.PricePerUnit, current.price.UnitsPerPrice), big.NewRat(units, 1))
+	if current.balance.Cmp(fee) < 0 {
 		return ErrInsufficientBalance
 	}
-	balance.Sub(balance, fee)
-	_, err = tx.Exec("UPDATE payment_challenges SET balance=?,last_charge=?,created_at=? WHERE manifest=?", balance.RatString(), now.UTC().Format(time.RFC3339Nano), time.Now().UTC().Format(time.RFC3339Nano), manifest)
-	if err != nil {
-		return err
-	}
-	return tx.Commit()
+	current.balance.Sub(current.balance, fee)
+	current.lastCharge, current.updated = now, time.Now()
+	return nil
 }
 
 func (e *Engine) Balance(manifest string) (*big.Rat, error) {
-	var value string
-	if err := e.store.db.QueryRow("SELECT balance FROM payment_challenges WHERE manifest=?", manifest).Scan(&value); err != nil {
-		return nil, err
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	current := e.sessions[manifest]
+	if current == nil {
+		return nil, ErrMissingChallenge
 	}
-	result, ok := new(big.Rat).SetString(value)
-	if !ok {
-		return nil, fmt.Errorf("corrupt balance")
-	}
-	return result, nil
+	return new(big.Rat).Set(current.balance), nil
 }
 
 // ChallengePrice returns the agreed quote for a pending reservation, scoped to
 // its runner. Updating the runner/feed must not change a previously issued quote.
 func (e *Engine) ChallengePrice(runner, manifest string) (int64, string, error) {
-	var raw []byte
-	var unit string
-	if err := e.store.db.QueryRow("SELECT info,unit FROM payment_challenges WHERE runner=? AND manifest=?", runner, manifest).Scan(&raw, &unit); err != nil {
-		return 0, "", err
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	current := e.sessions[manifest]
+	if current == nil || current.runner != runner {
+		return 0, "", ErrMissingChallenge
 	}
-	info, err := wire.DecodeOrchestratorInfo(raw)
-	return info.Price.PricePerUnit, unit, err
+	return current.price.PricePerUnit, current.unit, nil
+}
+
+// authenticatePayment reconstructs the PM commitment from the supplied fields,
+// using go-livepeer's recipient HMAC.
+func (e *Engine) authenticatePayment(payment wire.Payment, auth wire.AuthToken) (TicketParams, *big.Int, error) {
+	p := payment.TicketParams
+	if len(payment.Sender) != 20 || len(p.Recipient) != 20 || ethcommon.BytesToAddress(p.Recipient) != e.recipient ||
+		len(p.FaceValue) == 0 || len(p.FaceValue) > 32 || len(p.WinProb) == 0 || len(p.WinProb) > 32 ||
+		len(p.Seed) == 0 || len(p.Seed) > 32 || len(p.ExpirationBlock) == 0 || len(p.ExpirationBlock) > 32 || len(p.RecipientRandHash) != 32 ||
+		payment.Expiration.CreationRound <= 0 || len(payment.Expiration.CreationRoundBlockHash) != 32 ||
+		payment.Expiration.CreationRound != p.Expiration.CreationRound || !bytes.Equal(payment.Expiration.CreationRoundBlockHash, p.Expiration.CreationRoundBlockHash) ||
+		payment.ExpectedPrice.PricePerUnit <= 0 || payment.ExpectedPrice.UnitsPerPrice <= 0 || auth.SessionID == "" || time.Now().Unix() > auth.Expiration ||
+		!hmac.Equal(auth.Token, e.authToken(auth.SessionID, auth.Expiration).Token) {
+		return TicketParams{}, nil, ErrInvalidPayment
+	}
+	params := TicketParams{Recipient: e.recipient, FaceValue: new(big.Int).SetBytes(p.FaceValue), WinProb: new(big.Int).SetBytes(p.WinProb), RecipientRandHash: ethcommon.BytesToHash(p.RecipientRandHash), Seed: new(big.Int).SetBytes(p.Seed), ExpirationBlock: new(big.Int).SetBytes(p.ExpirationBlock), ExpirationParams: &TicketExpirationParams{CreationRound: payment.Expiration.CreationRound, CreationRoundBlockHash: ethcommon.BytesToHash(payment.Expiration.CreationRoundBlockHash)}}
+	if params.FaceValue.Sign() <= 0 || params.WinProb.Sign() <= 0 || params.WinProb.Cmp(maxWinProb) >= 0 {
+		return TicketParams{}, nil, ErrInvalidPayment
+	}
+	recipientRand := e.recipientRand(params.Seed, ethcommon.BytesToAddress(payment.Sender), params.FaceValue, params.WinProb, params.ExpirationBlock, big.NewRat(payment.ExpectedPrice.PricePerUnit, payment.ExpectedPrice.UnitsPerPrice), params.ExpirationParams)
+	if crypto.Keccak256Hash(ethcommon.LeftPadBytes(recipientRand.Bytes(), uint256Size)) != params.RecipientRandHash {
+		return TicketParams{}, nil, ErrInvalidPayment
+	}
+	return params, recipientRand, nil
 }

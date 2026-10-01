@@ -2,27 +2,51 @@ package pm
 
 import (
 	"context"
+	"math/big"
 	"time"
 )
 
-// PruneControlState removes replay guards only after their authentication
-// window has ended. Winning tickets and uncertain broadcasts are retained.
-func (s *SQLiteStore) PruneControlState(ctx context.Context) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+// Ported from go-livepeer/pm/recipient.go's senderNonces. A restart rotates the
+// recipient key, so parameters from a prior lifetime cannot authenticate.
+type recipientNonces struct {
+	nonceSeen       map[uint32]bool
+	expirationBlock *big.Int
+}
+
+// observeBlock performs the upstream nonce cleanup at parameter expiry. Keep
+// expiry monotonic within a recipient lifetime so a backward chain observation
+// cannot revive parameters whose replay guards have already been removed.
+// Caller holds e.mu.
+func (e *Engine) observeBlock(block *big.Int) {
+	if block.Cmp(e.lastSeenBlock) <= 0 {
+		return
+	}
+	e.lastSeenBlock.Set(block)
+	for key, nonces := range e.senderNonces {
+		if nonces.expirationBlock.Cmp(block) <= 0 {
+			e.nonceCount -= len(nonces.nonceSeen)
+			delete(e.senderNonces, key)
+		}
+	}
+}
+
+// PruneControlState bounds process-local session and nonce state. Winning
+// tickets and uncertain broadcasts remain durable for redemption/recovery.
+func (e *Engine) PruneControlState(ctx context.Context) error {
+	snapshot, err := e.chain.Snapshot(ctx)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	cutoff := time.Now().Add(-24 * time.Hour)
+	for manifest, session := range e.sessions {
+		if session.updated.Before(cutoff) {
+			delete(e.sessions, manifest)
+		}
+	}
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
-	for _, statement := range []string{
-		"DELETE FROM used_payment_tickets WHERE recipient_rand_hash IN (SELECT hash FROM payment_ticket_epochs WHERE expires_at<?)",
-		"DELETE FROM payment_ticket_epochs WHERE expires_at<?",
-	} {
-		if _, err := tx.ExecContext(ctx, statement, time.Now().Unix()); err != nil {
-			return err
-		}
+	if snapshot.Block != nil {
+		e.observeBlock(snapshot.Block)
 	}
-	if _, err := tx.ExecContext(ctx, "DELETE FROM payment_challenges WHERE created_at<?", time.Now().Add(-24*time.Hour).UTC().Format(time.RFC3339Nano)); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return nil
 }

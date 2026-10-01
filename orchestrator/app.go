@@ -398,7 +398,7 @@ func Serve(parent context.Context, p Params, logOut io.Writer) (result error) {
 		}
 		startWorker(time.Second, 5*time.Second, app.ChargePaidSessions)
 		startWorker(time.Minute, 5*time.Second, func(ctx context.Context) {
-			if err := paymentStore.PruneControlState(ctx); err != nil {
+			if err := engine.PruneControlState(ctx); err != nil {
 				logger.Error("payment retention", "error", err)
 			}
 		})

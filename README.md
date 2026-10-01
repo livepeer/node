@@ -112,9 +112,14 @@ remains enabled.
 
 ## Paid operation
 
-The orchestrator payment key is the ticket recipient. Its SQLite file holds
-challenges, balances, nonce replay protection, winning tickets and redemption
-attempts. The signer key is the ticket sender. Configure signer RPC, chain ID
+The orchestrator payment key is the ticket recipient. PM parameter generation
+and authentication retain go-livepeer's HMAC-SHA256 derivation, with a fresh
+256-bit cryptographic secret per process. A separate in-memory HMAC key signs
+session auth tokens. Challenges, balances and nonce replay guards stay in
+memory; SQLite holds winning tickets (including their redemption randomness),
+redemption attempts and chain activity observations. Restarting requires new
+paid sessions while stored winners remain redeemable. The signer key is the
+ticket sender. Configure signer RPC, chain ID
 and controller together: paid generation
 requires a current coherent sender-funds observation. Without RPC, signing
 identity and discovery remain available, but paid generation returns 482.
@@ -161,7 +166,7 @@ on-chain. Signed transaction bytes and hash are saved before broadcast; safe
 preparation failures retry, uncertain writes require reconciliation or an
 explicit identical-byte retry. Only finalized, canonical receipts settle
 liability. See [payment recovery](docs/payment-recovery.md) for commands and
-upgrade behavior. Back up the orchestrator database before upgrading. Legacy
+restart behavior. Back up the orchestrator database. Legacy
 signed client state is not a migration format for this signer's signed state.
 
 ## Chain management

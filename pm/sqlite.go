@@ -59,35 +59,17 @@ func OpenSQLite(path string) (*SQLiteStore, error) {
 		`CREATE TABLE IF NOT EXISTS orchestrator_rounds (
 			address TEXT NOT NULL, round TEXT NOT NULL, active INTEGER NOT NULL,
 			PRIMARY KEY(address, round))`,
-		`CREATE TABLE IF NOT EXISTS payment_challenges (
-			manifest TEXT PRIMARY KEY, runner TEXT NOT NULL, sender TEXT NOT NULL,
-			info BLOB NOT NULL, recipient_rand BLOB NOT NULL, unit TEXT NOT NULL,
-			balance TEXT NOT NULL DEFAULT '0', last_charge TEXT,
-			created_at TEXT NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS used_payment_tickets (
-			sender TEXT NOT NULL, recipient_rand_hash TEXT NOT NULL,
-			sender_nonce INTEGER NOT NULL,
-			PRIMARY KEY(sender, recipient_rand_hash, sender_nonce))`,
-		`CREATE TABLE IF NOT EXISTS payment_ticket_epochs(hash TEXT PRIMARY KEY, expires_at INTEGER NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS redemption_attempts (
-			sig BLOB PRIMARY KEY, attempted_at TEXT NOT NULL, error TEXT)`,
+			sig BLOB PRIMARY KEY, attempted_at TEXT NOT NULL, error TEXT,
+			phase TEXT NOT NULL, raw_transaction BLOB, key_address TEXT, nonce TEXT)`,
+		"CREATE UNIQUE INDEX IF NOT EXISTS redemption_nonce ON redemption_attempts(key_address,nonce) WHERE nonce IS NOT NULL",
 	} {
 		if _, err := db.Exec(stmt); err != nil {
 			_ = db.Close()
-			return nil, fmt.Errorf("payment SQLite migration: %w", err)
+			return nil, fmt.Errorf("initialize payment SQLite: %w", err)
 		}
 	}
-	// Legacy guards get a full retention window on migration.
-	if _, err := db.Exec("INSERT OR IGNORE INTO payment_ticket_epochs SELECT DISTINCT recipient_rand_hash,? FROM used_payment_tickets", time.Now().Add(24*time.Hour).Unix()); err != nil {
-		db.Close()
-		return nil, err
-	}
-	store := &SQLiteStore{db: db}
-	if err := store.migrateRedemptions(); err != nil {
-		db.Close()
-		return nil, err
-	}
-	return store, nil
+	return &SQLiteStore{db: db}, nil
 }
 
 func (s *SQLiteStore) Close() error { return s.db.Close() }
@@ -142,27 +124,6 @@ func (s *SQLiteStore) WinningTicketCount(sender ethcommon.Address, minCreationRo
 	var count int
 	err := s.db.QueryRow(`SELECT COUNT(*) FROM winning_tickets WHERE sender=? AND creation_round>=? AND tx_hash IS NULL`, sender.Hex(), minCreationRound).Scan(&count)
 	return count, err
-}
-
-func (s *SQLiteStore) MarkWinningTicketSubmitted(t *SignedTicket, txHash ethcommon.Hash) error {
-	if err := validStoredTicket(t); err != nil {
-		return err
-	}
-	if txHash == (ethcommon.Hash{}) {
-		return errors.New("redemption transaction hash is required")
-	}
-	result, err := s.db.Exec(`UPDATE winning_tickets SET tx_hash=? WHERE sig=? AND tx_hash IS NULL`, txHash.Hex(), t.Sig)
-	if err != nil {
-		return err
-	}
-	n, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if n != 1 {
-		return errors.New("winning ticket is absent or already submitted")
-	}
-	return nil
 }
 
 type SubmittedRedemption struct {
@@ -279,22 +240,6 @@ func (s *SQLiteStore) PendingSenders() ([]ethcommon.Address, error) {
 		result = append(result, ethcommon.HexToAddress(raw))
 	}
 	return result, rows.Err()
-}
-
-func (s *SQLiteStore) ClaimRedemption(t *SignedTicket) error {
-	if err := validStoredTicket(t); err != nil {
-		return err
-	}
-	_, err := s.db.Exec(`INSERT INTO redemption_attempts(sig,attempted_at) VALUES(?,?)`, t.Sig, time.Now().UTC().Format(time.RFC3339Nano))
-	return err
-}
-
-func (s *SQLiteStore) RecordRedemptionError(t *SignedTicket, err error) error {
-	if t == nil || err == nil {
-		return errors.New("invalid redemption failure")
-	}
-	_, dbErr := s.db.Exec(`UPDATE redemption_attempts SET error=? WHERE sig=?`, err.Error(), t.Sig)
-	return dbErr
 }
 
 var _ TicketStore = (*SQLiteStore)(nil)

@@ -1,0 +1,51 @@
+{
+  "secret": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "source_revision": "bd645a09266833fb859053445d9ac85846330756",
+  "vectors": [
+    {
+      "Seed": "1",
+      "Sender": "0x1234567890123456789012345678901234567890",
+      "FaceValue": "10",
+      "WinProb": "100",
+      "ExpirationBlock": "90",
+      "Price": "3/7",
+      "RoundHash": "0x1234",
+      "Session": "manifest",
+      "Round": 5,
+      "AuthExpiration": 2000000000,
+      "Random": "c9ea77c660280ee4b98869238e67b642270b03d3c754ce737fced0dbcc900cf3",
+      "Commitment": "0x919c6a0ded2b13dc2a36d35d86e95efe5485e491aaef48dad356a016c47fb394",
+      "Token": "d2913fedef229250d33b8075857113b8a2389003c8921d1e3f0dc7f47e5ffb8a"
+    },
+    {
+      "Seed": "12345678901234567890123456789012345678901234567890",
+      "Sender": "0xffffffffffffffffffffffffffffffffffffffff",
+      "FaceValue": "1000000000000000000",
+      "WinProb": "57896044618658097711785492504343953926634992332820282019728792003956564819967",
+      "ExpirationBlock": "123456789",
+      "Price": "1000000000000000/3600",
+      "RoundHash": "0xabcdef0123456789",
+      "Session": "runner/session-2",
+      "Round": 4096,
+      "AuthExpiration": 2100000001,
+      "Random": "ea16f47ac2e48ed1198a2d9ef20a48806fad253d7332b65b1f0acf6e2ffe96d8",
+      "Commitment": "0x8bc2bc825f02abe55d7d86d821fab0391a79990babb8b03057aa80b2184d2308",
+      "Token": "dbff885b3b27681d39f80efc1c001b62dabb4bd5c2025ea7f5794105ac67c016"
+    },
+    {
+      "Seed": "0",
+      "Sender": "0x0000000000000000000000000000000000000001",
+      "FaceValue": "256",
+      "WinProb": "257",
+      "ExpirationBlock": "65536",
+      "Price": "2/4",
+      "RoundHash": "0x01",
+      "Session": "s",
+      "Round": 1,
+      "AuthExpiration": 1,
+      "Random": "ce17e478b8864fc19e65f9102467916e0b9c16ec423789c275caa3e82306b292",
+      "Commitment": "0x6407d4377963bfd6fe062f8c3511196b776fff6e577b43e2f4297ac1ea623c24",
+      "Token": "1f06377654537f6a715d860457df6996630ec333f90178ea29b0bb6dd7fd6f5a"
+    }
+  ]
+}

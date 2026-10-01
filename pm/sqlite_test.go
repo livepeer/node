@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
+	"github.com/livepeer/node/eth"
 	"github.com/stretchr/testify/require"
 )
 
@@ -32,9 +33,9 @@ func TestPaymentSQLiteFilePermissions(t *testing.T) {
 
 // Adapted from go-livepeer/common/db_test.go's winning-ticket store tests.
 func TestSQLiteWinningTicketLifecycle(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "recipient.sqlite")
-	store, err := OpenSQLite(path)
+	store, err := OpenSQLite(filepath.Join(t.TempDir(), "recipient.sqlite"))
 	require.NoError(t, err)
+	defer store.Close()
 	sender := ethcommon.HexToAddress("0x1234")
 	ticket := &SignedTicket{Ticket: &Ticket{Sender: sender, Recipient: ethcommon.HexToAddress("0x5678"),
 		FaceValue: big.NewInt(1234), WinProb: big.NewInt(2345), SenderNonce: 123,
@@ -52,46 +53,45 @@ func TestSQLiteWinningTicketLifecycle(t *testing.T) {
 	selected, err = store.SelectEarliestWinningTicket(sender, 10)
 	require.NoError(t, err)
 	require.Nil(t, selected)
-	require.NoError(t, store.Close())
-	store, err = OpenSQLite(path)
-	require.NoError(t, err)
-	defer store.Close()
-	selected, err = store.SelectEarliestWinningTicket(sender, 9)
-	require.NoError(t, err)
-	require.Equal(t, ticket, selected)
-	require.NoError(t, store.ClaimRedemption(ticket))
-	require.NoError(t, store.MarkWinningTicketSubmitted(ticket, ethcommon.HexToHash("0x1234")))
-	require.Error(t, store.MarkWinningTicketSubmitted(ticket, ethcommon.HexToHash("0x1234")))
-	submitted, err := store.SubmittedRedemptions()
-	require.NoError(t, err)
-	require.Len(t, submitted, 1)
-	require.Equal(t, ethcommon.HexToHash("0x1234"), submitted[0].Hash)
-	require.Empty(t, ReconcileSubmitted(t.Context(), store, receiptFixture{confirmed: true}))
-	submitted, err = store.SubmittedRedemptions()
-	require.NoError(t, err)
-	require.Empty(t, submitted)
+	require.NoError(t, store.RemoveWinningTicket(ticket))
 	count, err = store.WinningTicketCount(sender, 9)
 	require.NoError(t, err)
 	require.Zero(t, count)
-	require.NoError(t, store.RemoveWinningTicket(ticket))
 }
 
-func TestRevertedRedemptionIsRecordedWithoutRetry(t *testing.T) {
-	store, err := OpenSQLite(filepath.Join(t.TempDir(), "recipient.sqlite"))
-	require.NoError(t, err)
-	defer store.Close()
-	sender := ethcommon.HexToAddress("0x1234")
-	ticket := &SignedTicket{Ticket: &Ticket{Sender: sender, Recipient: ethcommon.HexToAddress("0x5678"), FaceValue: big.NewInt(1), WinProb: big.NewInt(1), SenderNonce: 1, RecipientRandHash: ethcommon.HexToHash("0xabcd"), CreationRound: 1, ParamsExpirationBlock: big.NewInt(10)}, Sig: []byte{1, 2, 3}, RecipientRand: big.NewInt(4)}
-	require.NoError(t, store.StoreWinningTicket(ticket))
-	require.NoError(t, store.ClaimRedemption(ticket))
-	require.NoError(t, store.MarkWinningTicketSubmitted(ticket, ethcommon.HexToHash("0x1234")))
-	require.Len(t, ReconcileSubmitted(t.Context(), store, receiptFixture{reverted: true}), 1)
-	submitted, err := store.SubmittedRedemptions()
-	require.NoError(t, err)
-	require.Empty(t, submitted)
-	pending, err := store.PendingSenders()
-	require.NoError(t, err)
-	require.Empty(t, pending)
+func TestRedemptionReceiptSettlesAttempt(t *testing.T) {
+	for _, phase := range []string{"confirmed", "reverted"} {
+		t.Run(phase, func(t *testing.T) {
+			store, err := OpenSQLite(filepath.Join(t.TempDir(), "recipient.sqlite"))
+			require.NoError(t, err)
+			defer store.Close()
+			sender := ethcommon.HexToAddress("0x1234")
+			ticket := &SignedTicket{Ticket: &Ticket{Sender: sender, Recipient: ethcommon.HexToAddress("0x5678"), FaceValue: big.NewInt(1), WinProb: big.NewInt(1), SenderNonce: 1, RecipientRandHash: ethcommon.HexToHash("0xabcd"), CreationRound: 1, ParamsExpirationBlock: big.NewInt(10)}, Sig: []byte{1, 2, 3}, RecipientRand: big.NewInt(4)}
+			require.NoError(t, store.StoreWinningTicket(ticket))
+			hash := ethcommon.HexToHash("0x1234")
+			require.NoError(t, store.recordPrepared(t.Context(), ticket, eth.SignedTransaction{Hash: hash, Raw: []byte{1}, From: ticket.Recipient, Nonce: 1}))
+			submitted, err := store.SubmittedRedemptions()
+			require.NoError(t, err)
+			require.Equal(t, []SubmittedRedemption{{Signature: ticket.Sig, Hash: hash}}, submitted)
+			failures := ReconcileSubmitted(t.Context(), store, receiptFixture{confirmed: phase == "confirmed", reverted: phase == "reverted"})
+			if phase == "reverted" {
+				require.Len(t, failures, 1)
+				require.ErrorContains(t, failures[0], "reverted")
+			} else {
+				require.Empty(t, failures)
+			}
+			attempts, err := store.Redemptions()
+			require.NoError(t, err)
+			require.Len(t, attempts, 1)
+			require.Equal(t, phase, attempts[0].Phase)
+			submitted, err = store.SubmittedRedemptions()
+			require.NoError(t, err)
+			require.Empty(t, submitted)
+			pending, err := store.PendingSenders()
+			require.NoError(t, err)
+			require.Empty(t, pending)
+		})
+	}
 }
 
 func TestSQLiteOrchestratorRoundView(t *testing.T) {
