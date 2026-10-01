@@ -282,7 +282,7 @@ go test -race ./...
 go vet ./...
 ```
 
-The architecture test checks source-level import boundaries. Real-process and
+The `cmd/livepeer` tests check source-level import boundaries. Real-process and
 HTTP integration tests exercise pinned Go and Python SDK revisions when their
 checkouts and dependencies are available; CI checks out both revisions.
 Payment tests cover Python `live` and `fixed` calls, sustained refresh across

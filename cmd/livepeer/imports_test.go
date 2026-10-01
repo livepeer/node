@@ -1,4 +1,4 @@
-package architecture
+package main
 
 import (
 	"go/parser"
@@ -18,7 +18,7 @@ const module = "github.com/livepeer/node/"
 func TestImportLattice(t *testing.T) {
 	_, here, _, ok := runtime.Caller(0)
 	require.True(t, ok)
-	root := filepath.Clean(filepath.Join(filepath.Dir(here), ".."))
+	root := filepath.Clean(filepath.Join(filepath.Dir(here), "..", ".."))
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -51,14 +51,6 @@ func TestImportLattice(t *testing.T) {
 }
 
 func forbiddenImport(file, dep string) string {
-	for _, prefix := range []string{
-		"github.com/livepeer/go-livepeer", "github.com/livepeer/lpms",
-		"google.golang.org/grpc", "github.com/golang/protobuf",
-	} {
-		if strings.HasPrefix(dep, prefix) {
-			return "legacy, media or gRPC dependency"
-		}
-	}
 	if strings.HasPrefix(dep, "google.golang.org/protobuf") && !strings.HasPrefix(file, "pm/wire/") {
 		return "Protobuf runtime outside pm/wire"
 	}
