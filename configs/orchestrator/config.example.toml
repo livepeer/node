@@ -4,6 +4,8 @@ service_url = "http://127.0.0.1:8935"
 # runner_service_url = "http://127.0.0.1:8935" # Runner-facing callbacks and trickle; defaults to service_url.
 bootstrap_secret_file = "/run/secrets/livepeer-runner-bootstrap"
 runner_config = "/etc/livepeer/runners.toml"
+# Use either registration method or both. Omit runner_config for dynamic-only
+# operation; omit bootstrap_secret_file for static-only operation.
 heartbeat_interval = "5s"
 heartbeat_ttl = "30s"
 runner_grants = []
@@ -18,10 +20,11 @@ behind_tls = false
 # tls_cert_file = "/etc/livepeer/tls/fullchain.pem"
 # tls_key_file = "/run/secrets/livepeer-tls-key.pem"
 
-# To enable paid runners, configure every field in this block. Prices sent by
-# runners are USD per hour or per fixed request; wei_per_usd is an operator
-# supplied fixed exchange rate. Alternatively configure eth_usd_feed alone;
-# choose an ETH/USD feed on the same payment chain and verify its address.
+# Paid operation requires the database, key, RPC, chain ID, Controller, face
+# value, winning probability, and exactly one conversion source below.
+# Runner prices are USD per hour or per fixed request. Choose wei_per_usd
+# for a fixed conversion OR eth_usd_feed for an ETH/USD feed on the payment
+# chain. The fee ceiling and price_max_age are optional. See docs/orchestrator.md.
 # payment_db = "/var/lib/livepeer/orchestrator-payment.sqlite"
 # payment_key_file = "/run/secrets/livepeer-orchestrator-key"
 # payment_rpc_url_file = "/run/secrets/livepeer-payment-rpc-url"

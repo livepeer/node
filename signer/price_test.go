@@ -13,6 +13,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func (p *pricePolicy) check(paymentType string, price wire.PriceInfo) error {
+	_, err := p.checkWithRate(paymentType, price)
+	return err
+}
+
 func TestPricePolicyExactCeilingsAndRateExpiry(t *testing.T) {
 	hourly := big.NewRat(1200, 1) // $1200/hour = $1/3 per second.
 	p, err := newPricePolicy(hourly, testRat(t, "1/2"))

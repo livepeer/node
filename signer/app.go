@@ -30,6 +30,7 @@ func init() {
 }
 
 type Params struct {
+	Kafka                  *KafkaConfig         `optional:"true"`
 	AuthWebhookHeadersFile string               `name:"auth-webhook-headers-file" secretfor:"AuthWebhookHeaders"`
 	AuthWebhook            *url.URL             `name:"auth-webhook" optional:"true" secret:"true"`
 	AuthWebhookFile        string               `name:"auth-webhook-file" secretfor:"AuthWebhook"`
@@ -74,6 +75,11 @@ func (p Params) discoveryURLs() []*url.URL {
 }
 
 func (p Params) Validate() error {
+	if p.Kafka != nil {
+		if err := p.Kafka.Validate(); err != nil {
+			return err
+		}
+	}
 	if p.AuthWebhook != nil || len(p.AuthWebhookHeaders) > 0 {
 		if err := validateAuthWebhook(p.AuthWebhook); err != nil {
 			return err
@@ -169,6 +175,14 @@ func serve(parent context.Context, p Params) error {
 	if err := service.SetDiscovery(p.discoveryURLs()); err != nil {
 		return err
 	}
+	producer, err := openKafkaProducer(ctx, p.Kafka, key.Address().Hex())
+	if err != nil {
+		return err
+	}
+	defer func() { _ = producer.Close() }()
+	if producer != nil {
+		service.events = producer
+	}
 	listener, err := net.Listen("tcp", p.Listen.String())
 	if err != nil {
 		return err
@@ -188,21 +202,28 @@ func serve(parent context.Context, p Params) error {
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
 		funds, err := service.paymentChain.SenderInfo(ctx, key.Address(), ethcommon.Address{})
-		if err != nil || pm.ValidateSenderFunds(funds) != nil || !service.pricePolicy.ready() {
+		if err != nil || pm.ValidateSenderFunds(funds) != nil || !service.pricePolicy.ready() || !producer.ready(ctx) {
 			http.Error(w, "signer payment dependencies unavailable", http.StatusServiceUnavailable)
 			return
 		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, "ready\n")
 	})
-	metricsMux.HandleFunc("GET /metrics", func(w http.ResponseWriter, _ *http.Request) {
+	metricsMux.HandleFunc("GET /metrics", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 		_, _ = io.WriteString(w, "livepeer_signer_up 1\n")
+		producer.metrics(r.Context(), w)
 	})
 	srv := &http.Server{BaseContext: func(net.Listener) context.Context { return ctx }, Handler: service, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10, MaxHeaderValueCount: 128}
 	metricsServer := &http.Server{BaseContext: srv.BaseContext, Handler: metricsMux, ReadHeaderTimeout: 5 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10, MaxHeaderValueCount: 128}
 	errCh := make(chan error, 2)
 	var workers sync.WaitGroup
+	// Keep delivery alive until in-flight HTTP handlers have finished enqueuing.
+	publisherCtx, publisherStop := context.WithCancel(context.Background())
+	defer publisherStop()
+	if producer != nil {
+		workers.Go(func() { producer.run(publisherCtx) })
+	}
 	if p.WeiPerUSD == nil {
 		workers.Go(func() {
 			refreshPriceFeed(ctx, 30*time.Second, service.pricePolicy, func(readCtx context.Context) (*big.Rat, time.Time, error) {
@@ -230,6 +251,7 @@ func serve(parent context.Context, p Params) error {
 		err = errors.Join(err, shutdownErr)
 		_ = metricsServer.Close()
 	}
+	publisherStop()
 	workers.Wait()
 	return err
 }

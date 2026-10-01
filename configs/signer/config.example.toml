@@ -1,8 +1,11 @@
-# Signer TOML keys use the implicit Go field names; CLI flags use kebab-case.
+# Signer TOML uses the names shown below; flags use kebab-case.
+# See docs/signer.md and docs/configuration.md.
 Listen = "127.0.0.1:8937"
 MetricsListen = "127.0.0.1:8938"
 KeyFile = "/run/secrets/livepeer-signer-key"
+# Raw Ethereum key: 64 hex digits, optional 0x prefix, owner-only permissions.
 Orchestrators = []
+# Add orchestrator discovery URLs to make runners discoverable through the signer.
 
 # On-chain configuration is required, including for identity and discovery.
 # The RPC URL is an exact-byte secret file (omit a trailing newline).
@@ -26,19 +29,40 @@ ETHUSDMaxAge = "2h"
 # The signer retries every 30 seconds and resumes when it observes a fresh rate.
 # Identity signing and discovery remain available while the feed is stale.
 
-# Exposure limits are independent of the requested work's maxPrice.
+# Expected value (EV) limits are in wei and independent of work's maxPrice.
 MaxTicketEV = "3000000000000"
 MaxBatchEV = "20000000000000"
 DepositMultiplier = 1
 
 # Run alongside a clearinghouse for authorization and cumulative spending limits;
-# see README.md for the clearinghouse-batteries accounting integration requirements.
+# see docs/signer.md for webhook and Kafka accounting integration.
 # Signed state is a bearer credential. Authorization caching is generally discouraged;
 # the webhook should omit expiry or return zero to authorize every payment.
-# Tickets are generated and signed before authorization to identify the actual payment.
+# The webhook receives proposed payment state; data is returned only after approval.
 # Both webhook values are secret files.
 # Header syntax matches go-livepeer: Authorization: Bearer credential,X-Key: key
 # Quote an entire entry using CSV syntax if its value contains commas:
 # "X-List: a,b",Authorization: Bearer credential
 # AuthWebhookFile = "/run/secrets/livepeer-signer-auth-url"
 # AuthWebhookHeadersFile = "/run/secrets/livepeer-signer-auth-headers"
+
+# Optional durable accounting events. Omit all Kafka settings to disable.
+# Supplying any Kafka setting requires Broker and Topic.
+# Provide one bootstrap host[:port]; Kafka discovers other brokers.
+# OutboxDB defaults to signer-events.sqlite in the working directory.
+# For an override, create the parent directory first; keep one outbox per replica.
+# TLS with system trust roots is the default when the scheme is omitted.
+# kafka:// explicitly uses plaintext transport; kafkas:// explicitly uses TLS.
+# Credentials must be paired and enable SASL. AuthMethod is a strict enum:
+# plain, scram-sha-256, scram-sha-512 (default).
+# Omitted ports use signer conventions: plaintext 9092, TLS-only 9093,
+# SASL/SCRAM 9096, SASL/PLAIN 9094. An explicit port always overrides these.
+# Provider listeners can differ: e.g. MSK private TLS-only uses 9094.
+# [Kafka]
+# Broker = "broker.example.com"
+# Topic = "livepeer-signing"
+# AuthMethod = "scram-sha-512"
+# UsernameFile = "/run/secrets/kafka-username"
+# PasswordFile = "/run/secrets/kafka-password"
+# OutboxDB = "/var/lib/livepeer/signer-events.sqlite"
+# OutboxMaxBytes = 268435456 # Pending JSON payloads; default 256 MiB.

@@ -32,5 +32,5 @@ git -C /path/to/go-livepeer show REVISION:eth/contracts/bondingManager.go > eth/
 
 Application policy lives in the parent `eth` package: canonical snapshots,
 transaction planning, hints, fee limits, and saved transaction identities.
-Whole generated files retain unused methods; their presence does not add CLI
-commands or authorize broader protocol behavior.
+Generated files include unused upstream methods. The supported CLI operations
+are listed in [chain commands](../../docs/chain.md).

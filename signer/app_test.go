@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
@@ -46,6 +47,7 @@ func TestSignerConfigurationValidation(t *testing.T) {
 		change func(*Params)
 		want   string
 	}{
+		{"empty Kafka", func(p *Params) { p.Kafka = &KafkaConfig{} }, "kafka broker"},
 		{"RPC scheme", func(p *Params) { p.RPCURL = testURL(t, "file:///rpc") }, "RPC URL"},
 		{"Controller", func(p *Params) { p.Controller = ethcommon.Address{} }, "controller-address"},
 		{"feed", func(p *Params) { p.ETHUSDFeed = ethcommon.Address{} }, "eth-usd-feed"},
@@ -178,6 +180,17 @@ func TestSignerReadiness(t *testing.T) {
 				return address
 			}
 			p.Listen, p.MetricsListen = free(), free()
+			var outbox *eventOutbox
+			if fixedRate {
+				eventBytes, err := json.Marshal(testEvent())
+				require.NoError(t, err)
+				p.Kafka = &KafkaConfig{Broker: kafkaBrokerURL(t, "kafka://127.0.0.1:1"), Topic: "signing", OutboxDB: filepath.Join(t.TempDir(), "events.sqlite"), OutboxMaxBytes: int64(len(eventBytes))}
+				brokerAddress, err := p.Kafka.brokerAddress()
+				require.NoError(t, err)
+				outbox, err = openEventOutbox(t.Context(), p.Kafka.OutboxDB, outboxBinding{crypto.PubkeyToAddress(key.PublicKey).Hex(), brokerAddress, p.Kafka.Topic}, p.Kafka.OutboxMaxBytes)
+				require.NoError(t, err)
+				defer func() { require.NoError(t, outbox.Close()) }()
+			}
 			ctx, cancel := context.WithCancel(t.Context())
 			done := make(chan error, 1)
 			go func() { done <- serve(ctx, p) }()
@@ -214,6 +227,19 @@ func TestSignerReadiness(t *testing.T) {
 				require.Equal(t, want, get("/readyz"))
 				require.Equal(t, 200, get("/healthz"))
 			}
+			_, err = outbox.enqueue(t.Context(), testEvent())
+			require.NoError(t, err)
+			require.Equal(t, 503, get("/readyz"), "a full outbox must make the signer unready")
+			response, err := client.Get("http://" + p.MetricsListen.String() + "/metrics")
+			require.NoError(t, err)
+			metrics, err := io.ReadAll(response.Body)
+			require.NoError(t, response.Body.Close())
+			require.NoError(t, err)
+			require.Contains(t, string(metrics), "livepeer_signer_kafka_pending_events 1")
+			pending, err := outbox.pending(t.Context())
+			require.NoError(t, err)
+			require.NoError(t, outbox.acknowledge(t.Context(), pending))
+			require.Equal(t, 200, get("/readyz"), "storage readiness recovers even while Kafka is unavailable")
 		})
 	}
 }

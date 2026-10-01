@@ -23,6 +23,14 @@ type remoteSender struct {
 type paymentDraft struct {
 	Payment, SegCreds string
 	State             paymentState
+	Usage             paymentUsage
+}
+
+type paymentUsage struct {
+	Fee, Balance *big.Rat
+	PreviousTime time.Time
+	BillableSecs float64
+	NumTickets   int
 }
 
 type paymentState struct {
@@ -49,10 +57,16 @@ func (s remoteSender) Generate(ctx context.Context, paymentType, manifest string
 		return paymentDraft{}, errors.New("invalid remote payment request")
 	}
 	now := time.Now().UTC()
+	previous := state.LastUpdate.UTC()
+	if previous.IsZero() {
+		previous = now
+	}
+	billableSecs := now.Sub(previous).Seconds()
 	seconds := int64(1)
 	if paymentType == "live" {
 		if oldSequence < 0 {
 			seconds = 10
+			billableSecs = 10
 		} else {
 			seconds = max(int64(math.Ceil(now.Sub(state.LastUpdate).Seconds())), 1)
 		}
@@ -114,5 +128,6 @@ func (s remoteSender) Generate(ctx context.Context, paymentType, manifest string
 	state.Balance = remaining.RatString()
 	state.LastUpdate = now
 	state.SequenceNumber = uint64(oldSequence + 1)
-	return paymentDraft{Payment: base64.StdEncoding.EncodeToString(wire.EncodePayment(message)), SegCreds: base64.StdEncoding.EncodeToString(wire.EncodeSegData(segment)), State: state}, nil
+	return paymentDraft{Payment: base64.StdEncoding.EncodeToString(wire.EncodePayment(message)), SegCreds: base64.StdEncoding.EncodeToString(wire.EncodeSegData(segment)), State: state,
+		Usage: paymentUsage{Fee: fee, Balance: remaining, PreviousTime: previous, BillableSecs: billableSecs, NumTickets: len(batch.SenderParams)}}, nil
 }

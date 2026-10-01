@@ -41,8 +41,7 @@ func (s *Service) SetAuthWebhook(endpoint *url.URL, headers Headers) error {
 	s.authClient = &http.Client{Transport: http.DefaultTransport.(*http.Transport).Clone(), Timeout: 5 * time.Second}
 	// Authentication is one explicit call, including when a target redirects.
 	s.authClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	copyURL := *endpoint
-	s.authURL, s.authHeaders = &copyURL, Headers(http.Header(headers).Clone())
+	s.authURL, s.authHeaders = endpoint.Clone(), Headers(http.Header(headers).Clone())
 	encoded, _ := json.Marshal(struct {
 		URL     string
 		Headers Headers

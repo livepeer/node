@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"math"
 	"math/big"
 	"net/http"
@@ -54,6 +55,7 @@ type Service struct {
 	paymentChain    pm.SenderChain
 	senderPolicy    pm.SenderPolicy
 	pricePolicy     *pricePolicy
+	events          signedTicketSink
 	slots           chan struct{}
 }
 
@@ -83,9 +85,9 @@ func (s *Service) SetDiscovery(orchestrators []*url.URL) error {
 		if err := validateDiscoveryURL(candidate); err != nil {
 			return err
 		}
-		parsed := *candidate
+		parsed := candidate.Clone()
 		parsed.Path = strings.TrimRight(parsed.Path, "/") + "/discovery"
-		urls = append(urls, &parsed)
+		urls = append(urls, parsed)
 	}
 	s.discoveryClient = &http.Client{Transport: http.DefaultTransport.(*http.Transport).Clone(), Timeout: 5 * time.Second}
 	s.discoveryURLs = urls
@@ -269,12 +271,10 @@ func (s *Service) discover(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(result)
 }
 
-func randomStateID() (string, error) {
+func randomStateID() string {
 	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(b[:]), nil
+	rand.Read(b[:])
+	return hex.EncodeToString(b[:])
 }
 
 type paymentFailure struct {
@@ -353,8 +353,11 @@ func (s *Service) generate(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	var accountingRate *big.Rat
 	if s.pricePolicy != nil {
-		if err := s.pricePolicy.check(req.Type, info.Price); err != nil {
+		var err error
+		accountingRate, err = s.pricePolicy.checkWithRate(req.Type, info.Price)
+		if err != nil {
 			f := err.(paymentFailure)
 			signerError(w, f.status, f.reason)
 			return
@@ -377,12 +380,7 @@ func (s *Service) generate(w http.ResponseWriter, r *http.Request) {
 		}
 		oldSequence = int64(state.SequenceNumber)
 	} else {
-		id, err := randomStateID()
-		if err != nil {
-			signerError(w, 500, "cannot create payment state")
-			return
-		}
-		state = paymentState{StateID: id, OrchestratorAddress: address, App: req.App, Type: req.Type, ManifestID: req.ManifestID, InitialPricePerUnit: info.Price.PricePerUnit, InitialPixelsPerUnit: info.Price.UnitsPerPrice}
+		state = paymentState{StateID: randomStateID(), OrchestratorAddress: address, App: req.App, Type: req.Type, ManifestID: req.ManifestID, InitialPricePerUnit: info.Price.PricePerUnit, InitialPixelsPerUnit: info.Price.UnitsPerPrice}
 	}
 	if state.InitialPricePerUnit <= 0 || state.InitialPixelsPerUnit <= 0 || new(big.Rat).SetFrac64(info.Price.PricePerUnit, info.Price.UnitsPerPrice).Cmp(new(big.Rat).SetFrac64(state.InitialPricePerUnit, state.InitialPixelsPerUnit)) > 0 {
 		signerError(w, 481, "orchestrator price exceeds initial session price")
@@ -392,14 +390,12 @@ func (s *Service) generate(w http.ResponseWriter, r *http.Request) {
 	// state describes the actual tickets. Nothing is returned until approval.
 	draft, err := s.makePayment(r.Context(), req, info, state, oldSequence)
 	if err != nil {
-		var f paymentFailure
-		switch {
-		case errors.As(err, &f):
+		if f, ok := errors.AsType[paymentFailure](err); ok {
 			if f.status == 480 {
 				w.Header().Set("Livepeer-Orchestrator-URL", info.Transcoder)
 			}
 			signerError(w, f.status, f.reason)
-		default:
+		} else {
 			signerError(w, 500, "payment generation failed")
 		}
 		return
@@ -426,6 +422,18 @@ func (s *Service) generate(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		signerError(w, 500, "payment response encoding failed")
 		return
+	}
+	if s.events != nil {
+		event := newSignedTicketEvent(s.key.Address(), req, info, draft, accountingRate)
+		if err := s.events.Enqueue(r.Context(), event); err != nil {
+			if errors.Is(err, errEventTooLarge) {
+				signerError(w, http.StatusRequestEntityTooLarge, err.Error())
+			} else {
+				slog.Error("signer accounting event could not be persisted; payment withheld")
+				signerError(w, http.StatusServiceUnavailable, "signer accounting outbox unavailable or full")
+			}
+			return
+		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(response)

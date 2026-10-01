@@ -61,10 +61,11 @@ func (p *pricePolicy) ready() bool {
 	return ok
 }
 
-func (p *pricePolicy) check(paymentType string, price wire.PriceInfo) error {
+// Return the observation used for validation so accounting cannot race a feed refresh.
+func (p *pricePolicy) checkWithRate(paymentType string, price wire.PriceInfo) (*big.Rat, error) {
 	rate, ok := p.rate()
 	if !ok {
-		return paymentFailure{503, "signer USD conversion rate unavailable"}
+		return nil, paymentFailure{503, "signer USD conversion rate unavailable"}
 	}
 	ceiling := p.maxLiveUSD
 	if paymentType == "fixed" {
@@ -72,9 +73,9 @@ func (p *pricePolicy) check(paymentType string, price wire.PriceInfo) error {
 	}
 	actual := new(big.Rat).SetFrac64(price.PricePerUnit, price.UnitsPerPrice)
 	if actual.Cmp(new(big.Rat).Mul(ceiling, rate)) > 0 {
-		return paymentFailure{481, "orchestrator price exceeds signer USD maximum"}
+		return nil, paymentFailure{481, "orchestrator price exceeds signer USD maximum"}
 	}
-	return nil
+	return rate, nil
 }
 
 func refreshPriceFeed(ctx context.Context, period time.Duration, policy *pricePolicy, read func(context.Context) (*big.Rat, time.Time, error)) {
