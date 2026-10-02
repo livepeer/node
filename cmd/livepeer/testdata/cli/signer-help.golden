@@ -27,7 +27,8 @@ Flags:
       --rpc-url-file string                 (env: LIVEPEER_SIGNER_RPC_URL_FILE)
       --chain-id uint                      Optional expected RPC chain ID (env: LIVEPEER_SIGNER_CHAIN_ID)
       --controller-address string          Livepeer Controller (Arbitrum mainnet) (env: LIVEPEER_SIGNER_CONTROLLER_ADDRESS) (default "0xd8e8328501e9645d16cf49539efc04f734606ee4")
-  -p, --private-key-file string             (env: LIVEPEER_SIGNER_PRIVATE_KEY_FILE, required)
+      --keystore-file string               Encrypted geth account JSON file (env: LIVEPEER_SIGNER_KEYSTORE_FILE, required)
+      --keystore-password-file string      Owner-only file containing the exact keystore password bytes (env: LIVEPEER_SIGNER_KEYSTORE_PASSWORD_FILE, required)
   -o, --orchestrators strings               (env: LIVEPEER_SIGNER_ORCHESTRATORS)
       --discovery-grants strings           Private discovery host[:port] grants (env: LIVEPEER_SIGNER_DISCOVERY_GRANTS)
   -h, --help                               help for livepeer-signer

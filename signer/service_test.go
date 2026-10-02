@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,8 +11,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,6 +20,7 @@ import (
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/livepeer/node/eth"
+	"github.com/livepeer/node/internal/test"
 	"github.com/livepeer/node/pm"
 	"github.com/livepeer/node/pm/wire"
 	"github.com/stretchr/testify/require"
@@ -59,20 +57,17 @@ func (fundedSender) SenderInfo(context.Context, ethcommon.Address, ethcommon.Add
 	return eth.SenderInfo{Snapshot: eth.ChainSnapshot{Block: big.NewInt(50), Round: big.NewInt(5), RoundHash: ethcommon.HexToHash("0x1234")}, Deposit: new(big.Int).Exp(big.NewInt(10), big.NewInt(20), nil), Reserve: new(big.Int).Exp(big.NewInt(10), big.NewInt(20), nil), WithdrawRound: new(big.Int)}, nil
 }
 
-func testSignerKey(t *testing.T) (*eth.Key, string) {
+func testSignerKey(t *testing.T) (*eth.Key, string, string) {
 	t.Helper()
-	private, err := crypto.GenerateKey()
+	keyFile, passwordPath := test.WriteKeystore(t, nil)
+	key, err := eth.OpenKeystoreFile(keyFile, passwordPath)
 	require.NoError(t, err)
-	keyFile := filepath.Join(t.TempDir(), "key")
-	require.NoError(t, os.WriteFile(keyFile, []byte(hex.EncodeToString(crypto.FromECDSA(private))), 0600))
-	key, err := eth.OpenKeyFile(keyFile)
-	require.NoError(t, err)
-	return key, keyFile
+	return key, keyFile, passwordPath
 }
 
 func testService(t *testing.T) (*Service, wire.OrchestratorInfo) {
 	t.Helper()
-	key, _ := testSignerKey(t)
+	key, _, _ := testSignerKey(t)
 	max := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
 	info := wire.OrchestratorInfo{Transcoder: "https://orch.example.com", Address: ethcommon.HexToAddress("0x1234").Bytes(), Price: wire.PriceInfo{PricePerUnit: 10, UnitsPerPrice: 1},
 		TicketParams: wire.TicketParams{Recipient: ethcommon.HexToAddress("0x1234").Bytes(), FaceValue: big.NewInt(20).Bytes(), WinProb: new(big.Int).Add(new(big.Int).Quo(max, big.NewInt(2)), big.NewInt(1)).Bytes(), RecipientRandHash: crypto.Keccak256(make([]byte, 32)), Seed: big.NewInt(1).Bytes(), ExpirationBlock: big.NewInt(500).Bytes(), Expiration: wire.ExpirationParams{CreationRound: 5, CreationRoundBlockHash: ethcommon.HexToHash("0x1234").Bytes()}},
@@ -164,7 +159,7 @@ func TestSignerRequestPriceCeiling(t *testing.T) {
 
 func TestSignedStateMovesBetweenIndependentSigners(t *testing.T) {
 	_, info := testService(t)
-	_, keyFile := testSignerKey(t)
+	_, keyFile, passwordPath := testSignerKey(t)
 	var calls atomic.Int32
 	webhook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
@@ -178,7 +173,7 @@ func TestSignedStateMovesBetweenIndependentSigners(t *testing.T) {
 	defer webhook.Close()
 	var replicas [2]*Service
 	for i := range replicas {
-		key, err := eth.OpenKeyFile(keyFile)
+		key, err := eth.OpenKeystoreFile(keyFile, passwordPath)
 		require.NoError(t, err)
 		replicas[i] = newService(key)
 		content, err := newPricePolicy(new(big.Rat).Mul(testRat(t, "1000"), big.NewRat(3600, 1)), testRat(t, "1000"))

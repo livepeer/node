@@ -15,12 +15,15 @@ import (
 
 	"github.com/BurntSushi/toml"
 	ethcommon "github.com/ethereum/go-ethereum/common"
+	"github.com/livepeer/node/internal/test"
 	"github.com/stretchr/testify/require"
 )
 
 const testSender = "0x0123456789abcdef0123456789abcdef01234567"
 
 func TestLeafHelpAndCompletion(t *testing.T) {
+	t.Setenv("LIVEPEER_CHAIN_KEYSTORE_FILE", "/missing/account.json")
+	t.Setenv("LIVEPEER_CHAIN_KEYSTORE_PASSWORD_FILE", "/missing/password")
 	for _, tc := range []struct {
 		command         string
 		present, absent []string
@@ -51,9 +54,14 @@ func TestLeafHelpAndCompletion(t *testing.T) {
 			})
 		}
 	}
+	root := Root(&bytes.Buffer{}, &bytes.Buffer{})
+	root.SetArgs([]string{"completion", "bash"})
+	require.NoError(t, root.Execute())
 }
 
 func TestActionValidationBeforeRPC(t *testing.T) {
+	path, passwordPath := test.WriteKeystore(t, nil)
+	require.NoError(t, os.WriteFile(passwordPath, []byte("wrong-secret"), 0600))
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		requests.Add(1)
@@ -90,7 +98,10 @@ func TestActionValidationBeforeRPC(t *testing.T) {
 		{[]string{"ticketbroker", "fund", "--amount", "0", "--reserve", "0"}, "cannot both be zero"},
 		{[]string{"ticketbroker", "fund", "--amount", "115792089237316195423570985008687907853269984665640564039457584007913129639935", "--reserve", "1"}, "total exceeds uint256"},
 		{[]string{"ticketbroker", "unlock", "--wait"}, "wait requires submit"},
-		{[]string{"ticketbroker", "unlock", "--submit"}, "private-key-file"},
+		{[]string{"ticketbroker", "unlock", "--submit"}, "keystore-file"},
+		{[]string{"ticketbroker", "unlock", "--submit", "--keystore-file", path}, "keystore-password-file"},
+		{[]string{"ticketbroker", "unlock", "--submit", "--keystore-password-file", passwordPath}, "keystore-file"},
+		{[]string{"ticketbroker", "unlock", "--submit", "--keystore-file", path, "--keystore-password-file", passwordPath}, "cannot decrypt keystore"},
 		{[]string{"status", "--submit"}, "unknown flag"},
 		{[]string{"account", "--quiet"}, "unknown flag"},
 		{[]string{"status", "--chain-id", "0"}, "below min"},
@@ -101,7 +112,9 @@ func TestActionValidationBeforeRPC(t *testing.T) {
 			var output bytes.Buffer
 			root := Root(&output, &output)
 			root.SetArgs(append([]string{"--sender", testSender}, tc.args...))
-			require.ErrorContains(t, root.Execute(), tc.want)
+			err := root.Execute()
+			require.ErrorContains(t, err, tc.want)
+			require.NotContains(t, err.Error(), "wrong-secret")
 			require.Empty(t, output.String())
 			require.Zero(t, requests.Load())
 		})
@@ -194,7 +207,7 @@ func TestOperatorSourcesAndFlagPlacement(t *testing.T) {
 	rpcFile := filepath.Join(dir, "rpc")
 	require.NoError(t, os.WriteFile(rpcFile, []byte(server.URL), 0600))
 	config := filepath.Join(dir, "chain.toml")
-	require.NoError(t, os.WriteFile(config, []byte(fmt.Sprintf("RPCURLFile = %q\nChainID = 3\nSender = %q\nMaxFeePerGas = '3'\n", rpcFile, testSender)), 0600))
+	require.NoError(t, os.WriteFile(config, []byte(fmt.Sprintf("RPCURLFile = %q\nChainID = 3\nSender = %q\nMaxFeePerGas = '3'\nKeystoreFile = '/missing/account.json'\nKeystorePasswordFile = '/missing/password'\n", rpcFile, testSender)), 0600))
 	partialConfig := filepath.Join(dir, "partial.toml")
 	require.NoError(t, os.WriteFile(partialConfig, []byte(fmt.Sprintf("RPCURLFile = %q\n", rpcFile)), 0600))
 

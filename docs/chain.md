@@ -30,7 +30,8 @@ bin/livepeer chain --config /etc/livepeer/chain.toml --output json stake bond OR
 ## Preview and submit
 
 Run a state change without `--submit` to inspect its simulation, gas estimate,
-and call data. Add `--submit` and `KeyFile` to broadcast; add `--wait` to wait
+and call data. Add `--submit`, `KeystoreFile`, and `KeystorePasswordFile` to
+broadcast; add `--wait` to wait
 for inclusion in a successful receipt. The sender must match the signing key,
 and an expected chain ID must match the RPC.
 
@@ -42,7 +43,7 @@ errors retain the transaction hash. Exit status is 0 on success and 2 on failure
 
 Transaction switches, action inputs, `--output`, and `--print-config` are
 command-line controls. TOML holds shared settings: RPC connection, expected
-chain ID, Controller, sender, key path, and an optional maximum fee per gas.
+chain ID, Controller, sender, keystore paths, and an optional maximum fee per gas.
 
 ```sh
 bin/livepeer chain ticketbroker fund --config /etc/livepeer/chain.toml --amount 1000000000000000000 --reserve 0 --submit --quiet

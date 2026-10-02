@@ -2,8 +2,9 @@
 # See docs/signer.md and docs/configuration.md.
 Listen = "127.0.0.1:8937"
 MetricsListen = "127.0.0.1:8938"
-KeyFile = "/run/secrets/livepeer-signer-key"
-# Raw Ethereum key: 64 hex digits, optional 0x prefix, owner-only permissions.
+KeystoreFile = "/run/secrets/livepeer-signer-keystore.json"
+KeystorePasswordFile = "/run/secrets/livepeer-signer-keystore-password"
+# Encrypted geth account JSON; both files must be owner-only.
 # Discovery sources and grants for private destinations; see docs/signer.md.
 Orchestrators = []
 DiscoveryGrants = []

@@ -42,7 +42,8 @@ sequenceDiagram
 Copy the [configuration example](../configs/signer/config.example.toml) to
 `/etc/livepeer/signer.toml` and configure:
 
-- `KeyFile`: the file containing the Ethereum private key used to sign payments.
+- `KeystoreFile` and `KeystorePasswordFile`: the encrypted geth keystore
+  used to sign payments.
 - `RPCURLFile`: the file containing the Ethereum RPC URL.
 - `MaxHourlyPrice` and `MaxFixedPrice`: positive price limits in USD, described
   under [payment limits](#set-payment-limits).

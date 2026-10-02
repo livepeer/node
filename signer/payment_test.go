@@ -27,7 +27,7 @@ func (c collateralChain) SenderInfo(ctx context.Context, _, _ ethcommon.Address)
 }
 
 func TestRecipientReservesWinningLiabilityAcrossConcurrentSessions(t *testing.T) {
-	key, _ := testSignerKey(t)
+	key, _, _ := testSignerKey(t)
 	store, err := pm.OpenSQLite(filepath.Join(t.TempDir(), "recipient.sqlite"))
 	require.NoError(t, err)
 	defer store.Close()

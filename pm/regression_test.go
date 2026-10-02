@@ -6,7 +6,6 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -15,15 +14,15 @@ import (
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/livepeer/node/eth"
+	"github.com/livepeer/node/internal/test"
 	"github.com/stretchr/testify/require"
 )
 
 func TestRegressionRedemptionWaitsForParameterExpiry(t *testing.T) {
 	for _, block := range []int64{9, 10, 11} {
 		t.Run(big.NewInt(block).String(), func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "key")
-			require.NoError(t, os.WriteFile(path, []byte(strings.Repeat("0", 63)+"1"), 0600))
-			key, err := eth.OpenKeyFile(path)
+			path, passwordPath := test.WriteFixedKeystore(t)
+			key, err := eth.OpenKeystoreFile(path, passwordPath)
 			require.NoError(t, err)
 			store, err := OpenSQLite(filepath.Join(t.TempDir(), "payment.sqlite"))
 			require.NoError(t, err)

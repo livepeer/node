@@ -16,9 +16,11 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/ethereum/go-ethereum/accounts/keystore"
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
 
@@ -36,11 +38,15 @@ func TestChainBinaryQuietExecution(t *testing.T) {
 		output, err := build.CombinedOutput()
 		require.NoError(t, err, string(output))
 	}
-	keyFile := filepath.Join(install, "key")
-	require.NoError(t, os.WriteFile(keyFile, []byte(strings.Repeat("0", 63)+"1"), 0600))
 	key, err := crypto.HexToECDSA(strings.Repeat("0", 63) + "1")
 	require.NoError(t, err)
 	keyAddress := crypto.PubkeyToAddress(key.PublicKey)
+	keyFile, passwordPath := filepath.Join(install, "keystore.json"), filepath.Join(install, "password")
+	const password = "binary test keystore password"
+	keyJSON, err := keystore.EncryptKey(&keystore.Key{Id: uuid.New(), Address: keyAddress, PrivateKey: key}, password, keystore.LightScryptN, keystore.LightScryptP)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(keyFile, keyJSON, 0600))
+	require.NoError(t, os.WriteFile(passwordPath, []byte(password), 0600))
 	for _, tc := range []struct {
 		name        string
 		flags       []string
@@ -118,7 +124,7 @@ func TestChainBinaryQuietExecution(t *testing.T) {
 			rpcFile := filepath.Join(dir, "rpc")
 			require.NoError(t, os.WriteFile(rpcFile, []byte(server.URL), 0600))
 			config := filepath.Join(dir, "chain.toml")
-			require.NoError(t, os.WriteFile(config, []byte(fmt.Sprintf("RPCURLFile = %q\nSender = %q\nKeyFile = %q\n", rpcFile, keyAddress.Hex(), keyFile)), 0600))
+			require.NoError(t, os.WriteFile(config, []byte(fmt.Sprintf("RPCURLFile = %q\nSender = %q\nKeystoreFile = %q\nKeystorePasswordFile = %q\n", rpcFile, keyAddress.Hex(), keyFile, passwordPath)), 0600))
 			args := append([]string{"chain", "--config", config, "ticketbroker", "unlock", "--quiet", "--output", "json"}, tc.flags...)
 			command := exec.Command(filepath.Join(install, "livepeer"), args...)
 			var stdout, stderr bytes.Buffer

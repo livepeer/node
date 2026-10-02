@@ -3,8 +3,6 @@ package eth
 import (
 	"encoding/json"
 	"math/big"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -12,13 +10,13 @@ import (
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/livepeer/node/internal/test"
 	"github.com/stretchr/testify/require"
 )
 
 func TestRedemptionSubmission(t *testing.T) {
-	keyPath := filepath.Join(t.TempDir(), "key")
-	require.NoError(t, os.WriteFile(keyPath, []byte(strings.Repeat("0", 63)+"1"), 0600))
-	key, err := OpenKeyFile(keyPath)
+	keyPath, passwordPath := test.WriteFixedKeystore(t)
+	key, err := OpenKeystoreFile(keyPath, passwordPath)
 	require.NoError(t, err)
 	controller, broker, sender := common.HexToAddress("0x1000"), common.HexToAddress("0x2000"), common.HexToAddress("0x3000")
 	auxData, err := hexutil.Decode("0x" + word(5) + common.HexToHash("0xabcd").Hex()[2:])

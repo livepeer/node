@@ -3,7 +3,6 @@ package orchestrator
 import (
 	"bytes"
 	"context"
-	"encoding/hex"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -21,9 +20,9 @@ import (
 	"time"
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/livepeer/node/destination"
 	"github.com/livepeer/node/eth"
+	"github.com/livepeer/node/internal/test"
 	"github.com/livepeer/node/pm"
 	"github.com/livepeer/node/signer"
 	"github.com/stretchr/testify/require"
@@ -44,11 +43,8 @@ func (paymentTestChain) IsActiveAt(context.Context, ethcommon.Address, pm.ChainS
 
 func paymentTestKey(t *testing.T) *eth.Key {
 	t.Helper()
-	private, err := crypto.GenerateKey()
-	require.NoError(t, err)
-	path := filepath.Join(t.TempDir(), "key")
-	require.NoError(t, os.WriteFile(path, []byte(hex.EncodeToString(crypto.FromECDSA(private))), 0600))
-	key, err := eth.OpenKeyFile(path)
+	path, passwordPath := test.WriteKeystore(t, nil)
+	key, err := eth.OpenKeystoreFile(path, passwordPath)
 	require.NoError(t, err)
 	return key
 }

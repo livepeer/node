@@ -106,8 +106,8 @@ func executeActions(ctx context.Context, operator OperatorParams, display Displa
 	if tx.Wait && !tx.Submit {
 		return errors.New("wait requires submit")
 	}
-	if tx.Submit && operator.KeyFile == "" {
-		return errors.New("private-key-file is required with submit")
+	if tx.Submit && (operator.KeystoreFile == "" || operator.KeystorePasswordFile == "") {
+		return errors.New("keystore-file and keystore-password-file are required with submit")
 	}
 	from, err := operator.senderAddress()
 	if err != nil {
@@ -115,7 +115,7 @@ func executeActions(ctx context.Context, operator OperatorParams, display Displa
 	}
 	var key *eth.Key
 	if tx.Submit {
-		key, err = eth.OpenKeyFile(operator.KeyFile)
+		key, err = eth.OpenKeystoreFile(operator.KeystoreFile, operator.KeystorePasswordFile)
 		if err != nil {
 			return err
 		}

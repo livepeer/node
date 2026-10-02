@@ -26,7 +26,9 @@ behind_tls = false
 # for a fixed conversion OR eth_usd_feed for an ETH/USD feed on the payment
 # chain. The fee ceiling and price_max_age are optional. See docs/orchestrator.md.
 # payment_db = "/var/lib/livepeer/orchestrator-payment.sqlite"
-# payment_key_file = "/run/secrets/livepeer-orchestrator-key"
+# keystore_file = "/run/secrets/livepeer-orchestrator-keystore.json"
+# keystore_password_file = "/run/secrets/livepeer-orchestrator-keystore-password"
+# Both files must be owner-only; the password is read as exact bytes (no newline).
 # payment_rpc_url_file = "/run/secrets/livepeer-payment-rpc-url"
 # payment_max_fee_per_gas = "1000000000" # Optional ceiling, wei per gas
 # payment_chain_id = "42161"

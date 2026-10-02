@@ -4,8 +4,7 @@ Routes are unversioned. Orchestrator routes support a deployment base path;
 signer routes are served at the listener root. A proxy exposing the signer under
 a base path must strip that prefix before forwarding requests.
 See [orchestrator setup](orchestrator.md) and [signer setup](signer.md) for
-configuration, and [source revisions](provenance/source-revision.md) for
-compatibility baselines.
+configuration.
 
 ## Live Runner HTTP
 

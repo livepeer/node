@@ -20,6 +20,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/livepeer/node/eth"
+	"github.com/livepeer/node/internal/test"
 	"github.com/stretchr/testify/require"
 )
 
@@ -27,6 +28,7 @@ import (
 func TestTransactionCommands(t *testing.T) {
 	for _, tc := range []struct {
 		name          string
+		keySource     int
 		flags         []string
 		broadcastErr  bool
 		receiptErr    bool
@@ -38,7 +40,10 @@ func TestTransactionCommands(t *testing.T) {
 		mode          string
 	}{
 		{name: "simulate without a key"},
+		{name: "simulate with unavailable keystore", flags: []string{"--keystore-file", "/missing/account.json", "--keystore-password-file", "/missing/password"}},
 		{name: "explicit submission", flags: []string{"--submit"}, wantSent: 1},
+		{name: "keystore environment overrides config", keySource: 1, flags: []string{"--submit"}, wantSent: 1},
+		{name: "keystore CLI overrides environment", keySource: 2, flags: []string{"--submit"}, wantSent: 1},
 		{name: "successful receipt", mode: "text", flags: []string{"--submit", "--wait"}, wantReceipt: true, wantSent: 1},
 		{name: "receipt failure", flags: []string{"--submit", "--wait"}, receiptErr: true, wantReceipt: true, wantErr: "receipt", wantSent: 1},
 		{name: "reverted receipt", flags: []string{"--submit", "--wait"}, receiptRevert: true, wantReceipt: true, wantErr: "reverted", wantSent: 1},
@@ -52,9 +57,8 @@ func TestTransactionCommands(t *testing.T) {
 				mode = "json"
 			}
 			dir := t.TempDir()
-			keyFile := filepath.Join(dir, "key")
-			require.NoError(t, os.WriteFile(keyFile, []byte(strings.Repeat("0", 63)+"1"), 0600))
-			key, err := eth.OpenKeyFile(keyFile)
+			keyFile, passwordPath := test.WriteFixedKeystore(t)
+			key, err := eth.OpenKeystoreFile(keyFile, passwordPath)
 			require.NoError(t, err)
 			controller := ethcommon.HexToAddress("0xD8E8328501E9645d16Cf49539efC04f734606ee4")
 			broker := ethcommon.HexToAddress("0x2000")
@@ -149,7 +153,16 @@ func TestTransactionCommands(t *testing.T) {
 			configFile := filepath.Join(dir, "chain.toml")
 			config := fmt.Sprintf("RPCURLFile = %q\nSender = %q\n", rpcFile, key.Address().Hex())
 			if slices.Contains(tc.flags, "--submit") {
-				config += fmt.Sprintf("KeyFile = %q\n", keyFile)
+				paths := [3][2]string{{"/missing/key", "/missing/password"}, {"/missing/key", "/missing/password"}, {"/missing/key", "/missing/password"}}
+				paths[tc.keySource] = [2]string{keyFile, passwordPath}
+				config += fmt.Sprintf("KeystoreFile = %q\nKeystorePasswordFile = %q\n", paths[0][0], paths[0][1])
+				if tc.keySource > 0 {
+					t.Setenv("LIVEPEER_CHAIN_KEYSTORE_FILE", paths[1][0])
+					t.Setenv("LIVEPEER_CHAIN_KEYSTORE_PASSWORD_FILE", paths[1][1])
+				}
+				if tc.keySource > 1 {
+					tc.flags = append(tc.flags, "--keystore-file", paths[2][0], "--keystore-password-file", paths[2][1])
+				}
 			}
 			require.NoError(t, os.WriteFile(configFile, []byte(config), 0600))
 			var output bytes.Buffer
@@ -228,9 +241,8 @@ func TestBondApprovalSequencing(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			quiet := tc.quiet
-			keyFile := filepath.Join(t.TempDir(), "key")
-			require.NoError(t, os.WriteFile(keyFile, []byte(strings.Repeat("0", 63)+"1"), 0600))
-			key, err := eth.OpenKeyFile(keyFile)
+			keyFile, passwordPath := test.WriteFixedKeystore(t)
+			key, err := eth.OpenKeystoreFile(keyFile, passwordPath)
 			require.NoError(t, err)
 			controller := ethcommon.HexToAddress("0xD8E8328501E9645d16Cf49539efC04f734606ee4")
 			token := ethcommon.HexToAddress("0x2000")
@@ -337,7 +349,7 @@ func TestBondApprovalSequencing(t *testing.T) {
 			args := []string{"stake", "bond", testSender, "--amount", "5", "--sender", key.Address().Hex(), "--output", "json"}
 			args = append(args, tc.flags...)
 			if slices.Contains(tc.flags, "--submit") {
-				args = append(args, "--private-key-file", keyFile)
+				args = append(args, "--keystore-file", keyFile, "--keystore-password-file", passwordPath)
 			}
 			if quiet {
 				args = append(args, "--quiet")

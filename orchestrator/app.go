@@ -33,39 +33,40 @@ func init() {
 }
 
 type Params struct {
-	ETHUSDFeed          string        `name:"eth-usd-feed" optional:"true" toml:"eth_usd_feed" descr:"ETH/USD oracle address, alternative to a fixed wei-per-usd rate"`
-	PriceMaxAge         time.Duration `name:"price-max-age" default:"2h" toml:"price_max_age" descr:"Maximum age of the oracle observation"`
-	ConfigFile          string        `name:"config" configfile:"true" file:"true" optional:"true" toml:"-" descr:"TOML configuration path"`
-	Listen              string        `name:"listen" default:"127.0.0.1:8935" toml:"listen" descr:"Public HTTP listener"`
-	MetricsListen       string        `name:"metrics-listen" default:"127.0.0.1:8936" toml:"metrics_listen" descr:"Loopback metrics listener"`
-	ServiceURL          string        `name:"service-url" default:"http://127.0.0.1:8935" toml:"service_url" descr:"Public orchestrator base URL"`
-	RunnerServiceURL    string        `name:"runner-service-url" optional:"true" toml:"runner_service_url" descr:"Runner-facing base URL for callbacks and trickle; defaults to service-url"`
-	ProxyURLTemplate    string        `name:"proxy-url-template" optional:"true" toml:"proxy_url_template" descr:"Generated proxy URL with {proxy} in a hostname label or final path segment"`
-	BootstrapSecret     string        `name:"bootstrap-secret" secret:"true" optional:"true" toml:"bootstrap_secret" descr:"Dynamic runner bootstrap credential"`
-	BootstrapSecretFile string        `name:"bootstrap-secret-file" secretfor:"BootstrapSecret" toml:"bootstrap_secret_file" descr:"File containing runner bootstrap credential"`
-	RunnerConfig        string        `name:"runner-config" optional:"true" file:"true" toml:"runner_config" descr:"Static runner TOML path"`
-	PaymentDB           string        `name:"payment-db" optional:"true" toml:"payment_db"`
-	PaymentKeyFile      string        `name:"payment-key-file" optional:"true" file:"true" toml:"payment_key_file"`
-	PaymentRPCURL       string        `name:"payment-rpc-url" secret:"true" optional:"true" toml:"payment_rpc_url"`
-	PaymentRPCURLFile   string        `name:"payment-rpc-url-file" secretfor:"PaymentRPCURL" toml:"payment_rpc_url_file"`
-	PaymentChainID      string        `name:"payment-chain-id" optional:"true" toml:"payment_chain_id"`
-	PaymentMaxFeePerGas *uint256.Int  `name:"payment-max-fee-per-gas" optional:"true" toml:"payment_max_fee_per_gas" descr:"Optional maximum redemption fee in wei per gas"`
-	PaymentController   string        `name:"payment-controller-address" optional:"true" toml:"payment_controller_address"`
-	WeiPerUSD           string        `name:"wei-per-usd" optional:"true" toml:"wei_per_usd"`
-	TicketFaceValue     string        `name:"ticket-face-value" optional:"true" toml:"ticket_face_value"`
-	TicketWinProb       string        `name:"ticket-win-prob" optional:"true" toml:"ticket_win_prob"`
-	RunnerGrants        []string      `name:"runner-grants" optional:"true" toml:"runner_grants" descr:"Exact private runner host:port grants"`
-	RunnerCAFile        string        `name:"runner-ca-file" optional:"true" file:"true" toml:"runner_ca_file" descr:"Custom runner CA bundle"`
-	SessionProxyGrants  []string      `name:"session-proxy-grants" optional:"true" toml:"session_proxy_grants" descr:"Exact private generated proxy target grants"`
-	SessionProxyCAFile  string        `name:"session-proxy-ca-file" optional:"true" file:"true" toml:"session_proxy_ca_file" descr:"Custom session proxy CA bundle"`
-	HealthGrants        []string      `name:"health-grants" optional:"true" toml:"health_grants" descr:"Exact private static runner health grants"`
-	HealthCAFile        string        `name:"health-ca-file" optional:"true" file:"true" toml:"health_ca_file" descr:"Custom static runner health CA bundle"`
-	HeartbeatInterval   time.Duration `name:"heartbeat-interval" default:"5s" toml:"heartbeat_interval" descr:"Runner heartbeat interval"`
-	HeartbeatTTL        time.Duration `name:"heartbeat-ttl" default:"30s" toml:"heartbeat_ttl" descr:"Runner heartbeat expiry"`
-	BehindTLS           bool          `name:"behind-tls" optional:"true" toml:"behind_tls" descr:"Listener is behind an operator TLS terminator"`
-	TLSCertFile         string        `name:"tls-cert-file" optional:"true" file:"true" toml:"tls_cert_file" descr:"Operator-supplied TLS certificate PEM"`
-	TLSKeyFile          string        `name:"tls-key-file" optional:"true" file:"true" toml:"tls_key_file" descr:"Operator-supplied TLS private key PEM"`
-	PrintConfig         bool          `name:"print-config" optional:"true" boa:"noconfig" toml:"-" descr:"Print audited redacted TOML configuration"`
+	ETHUSDFeed           string        `name:"eth-usd-feed" optional:"true" toml:"eth_usd_feed" descr:"ETH/USD oracle address, alternative to a fixed wei-per-usd rate"`
+	PriceMaxAge          time.Duration `name:"price-max-age" default:"2h" toml:"price_max_age" descr:"Maximum age of the oracle observation"`
+	ConfigFile           string        `name:"config" configfile:"true" file:"true" optional:"true" toml:"-" descr:"TOML configuration path"`
+	Listen               string        `name:"listen" default:"127.0.0.1:8935" toml:"listen" descr:"Public HTTP listener"`
+	MetricsListen        string        `name:"metrics-listen" default:"127.0.0.1:8936" toml:"metrics_listen" descr:"Loopback metrics listener"`
+	ServiceURL           string        `name:"service-url" default:"http://127.0.0.1:8935" toml:"service_url" descr:"Public orchestrator base URL"`
+	RunnerServiceURL     string        `name:"runner-service-url" optional:"true" toml:"runner_service_url" descr:"Runner-facing base URL for callbacks and trickle; defaults to service-url"`
+	ProxyURLTemplate     string        `name:"proxy-url-template" optional:"true" toml:"proxy_url_template" descr:"Generated proxy URL with {proxy} in a hostname label or final path segment"`
+	BootstrapSecret      string        `name:"bootstrap-secret" secret:"true" optional:"true" toml:"bootstrap_secret" descr:"Dynamic runner bootstrap credential"`
+	BootstrapSecretFile  string        `name:"bootstrap-secret-file" secretfor:"BootstrapSecret" toml:"bootstrap_secret_file" descr:"File containing runner bootstrap credential"`
+	RunnerConfig         string        `name:"runner-config" optional:"true" file:"true" toml:"runner_config" descr:"Static runner TOML path"`
+	PaymentDB            string        `name:"payment-db" optional:"true" toml:"payment_db"`
+	KeystoreFile         string        `optional:"true" toml:"keystore_file" descr:"Encrypted geth redemption account JSON file"`
+	KeystorePasswordFile string        `optional:"true" toml:"keystore_password_file" descr:"Owner-only file containing the exact keystore password bytes"`
+	PaymentRPCURL        string        `name:"payment-rpc-url" secret:"true" optional:"true" toml:"payment_rpc_url"`
+	PaymentRPCURLFile    string        `name:"payment-rpc-url-file" secretfor:"PaymentRPCURL" toml:"payment_rpc_url_file"`
+	PaymentChainID       string        `name:"payment-chain-id" optional:"true" toml:"payment_chain_id"`
+	PaymentMaxFeePerGas  *uint256.Int  `name:"payment-max-fee-per-gas" optional:"true" toml:"payment_max_fee_per_gas" descr:"Optional maximum redemption fee in wei per gas"`
+	PaymentController    string        `name:"payment-controller-address" optional:"true" toml:"payment_controller_address"`
+	WeiPerUSD            string        `name:"wei-per-usd" optional:"true" toml:"wei_per_usd"`
+	TicketFaceValue      string        `name:"ticket-face-value" optional:"true" toml:"ticket_face_value"`
+	TicketWinProb        string        `name:"ticket-win-prob" optional:"true" toml:"ticket_win_prob"`
+	RunnerGrants         []string      `name:"runner-grants" optional:"true" toml:"runner_grants" descr:"Exact private runner host:port grants"`
+	RunnerCAFile         string        `name:"runner-ca-file" optional:"true" file:"true" toml:"runner_ca_file" descr:"Custom runner CA bundle"`
+	SessionProxyGrants   []string      `name:"session-proxy-grants" optional:"true" toml:"session_proxy_grants" descr:"Exact private generated proxy target grants"`
+	SessionProxyCAFile   string        `name:"session-proxy-ca-file" optional:"true" file:"true" toml:"session_proxy_ca_file" descr:"Custom session proxy CA bundle"`
+	HealthGrants         []string      `name:"health-grants" optional:"true" toml:"health_grants" descr:"Exact private static runner health grants"`
+	HealthCAFile         string        `name:"health-ca-file" optional:"true" file:"true" toml:"health_ca_file" descr:"Custom static runner health CA bundle"`
+	HeartbeatInterval    time.Duration `name:"heartbeat-interval" default:"5s" toml:"heartbeat_interval" descr:"Runner heartbeat interval"`
+	HeartbeatTTL         time.Duration `name:"heartbeat-ttl" default:"30s" toml:"heartbeat_ttl" descr:"Runner heartbeat expiry"`
+	BehindTLS            bool          `name:"behind-tls" optional:"true" toml:"behind_tls" descr:"Listener is behind an operator TLS terminator"`
+	TLSCertFile          string        `name:"tls-cert-file" optional:"true" file:"true" toml:"tls_cert_file" descr:"Operator-supplied TLS certificate PEM"`
+	TLSKeyFile           string        `name:"tls-key-file" optional:"true" file:"true" toml:"tls_key_file" descr:"Operator-supplied TLS private key PEM"`
+	PrintConfig          bool          `name:"print-config" optional:"true" boa:"noconfig" toml:"-" descr:"Print audited redacted TOML configuration"`
 }
 
 func (p Params) Validate() error {
@@ -75,13 +76,13 @@ func (p Params) Validate() error {
 	if p.BootstrapSecret == "" && p.RunnerConfig == "" {
 		return errors.New("bootstrap secret or static runner config is required")
 	}
-	paymentRequested := p.PaymentKeyFile != "" || p.PaymentDB != "" || p.PaymentRPCURL != "" || p.PaymentChainID != "" || p.PaymentController != "" || p.WeiPerUSD != "" || p.ETHUSDFeed != "" || p.TicketFaceValue != "" || p.TicketWinProb != "" || p.PaymentMaxFeePerGas != nil
+	paymentRequested := p.KeystoreFile != "" || p.KeystorePasswordFile != "" || p.PaymentDB != "" || p.PaymentRPCURL != "" || p.PaymentChainID != "" || p.PaymentController != "" || p.WeiPerUSD != "" || p.ETHUSDFeed != "" || p.TicketFaceValue != "" || p.TicketWinProb != "" || p.PaymentMaxFeePerGas != nil
 	if paymentRequested {
 		if p.PaymentMaxFeePerGas != nil && p.PaymentMaxFeePerGas.IsZero() {
 			return errors.New("payment-max-fee-per-gas must be positive")
 		}
-		if p.PaymentKeyFile == "" || p.PaymentDB == "" || p.PaymentRPCURL == "" || p.PaymentChainID == "" || p.PaymentController == "" || (p.WeiPerUSD == "" && p.ETHUSDFeed == "") || p.TicketFaceValue == "" || p.TicketWinProb == "" {
-			return errors.New("on-chain payment requires payment-db, key, RPC, chain-id, controller, a fixed rate or ETH/USD feed, face-value and win-prob")
+		if p.KeystoreFile == "" || p.KeystorePasswordFile == "" || p.PaymentDB == "" || p.PaymentRPCURL == "" || p.PaymentChainID == "" || p.PaymentController == "" || (p.WeiPerUSD == "" && p.ETHUSDFeed == "") || p.TicketFaceValue == "" || p.TicketWinProb == "" {
+			return errors.New("on-chain payment requires payment-db, keystore-file, keystore-password-file, RPC, chain-id, controller, a fixed rate or ETH/USD feed, face-value and win-prob")
 		}
 		if !eth.ValidAddress(p.PaymentController) {
 			return errors.New("invalid payment controller address")
@@ -186,9 +187,6 @@ func Root(out, errOut io.Writer) *cobra.Command {
 			if p.PrintConfig {
 				return printConfig(ctx, cmd.OutOrStdout())
 			}
-			if err := p.Validate(); err != nil {
-				return err
-			}
 			return Serve(cmd.Context(), *p, cmd.ErrOrStderr())
 		},
 	}).ToCobra()
@@ -248,6 +246,9 @@ func loadStatic(path string, registry *Registry) error {
 }
 
 func Serve(parent context.Context, p Params, logOut io.Writer) (result error) {
+	if err := p.Validate(); err != nil {
+		return err
+	}
 	runnerPolicy, err := destination.New("runner", p.RunnerGrants)
 	if err != nil {
 		return err
@@ -279,10 +280,10 @@ func Serve(parent context.Context, p Params, logOut io.Writer) (result error) {
 	var paymentChain eth.PaymentChain
 	var paymentKey *eth.Key
 	var paymentChainID *big.Int
-	if p.PaymentKeyFile != "" {
+	if p.KeystoreFile != "" {
 		rate, _ := new(big.Rat).SetString(p.WeiPerUSD)
 		registry.SetWeiPerUSD(rate)
-		paymentKey, err = eth.OpenKeyFile(p.PaymentKeyFile)
+		paymentKey, err = eth.OpenKeystoreFile(p.KeystoreFile, p.KeystorePasswordFile)
 		if err != nil {
 			return err
 		}

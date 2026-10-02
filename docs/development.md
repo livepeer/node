@@ -25,7 +25,6 @@ go build ./...
 [CI](../.github/workflows/ci.yml) also runs Staticcheck and Govulncheck, provisions
 the SDK fixtures below, and saves test artifacts. Import boundaries are checked
 by `TestImportLattice` in [cmd/livepeer/imports_test.go](../cmd/livepeer/imports_test.go).
-See [architecture](architecture.md) for package responsibilities.
 
 ## SDK integration fixtures
 

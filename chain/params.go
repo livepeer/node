@@ -14,13 +14,14 @@ import (
 
 // OperatorParams is the persistent operator context shared by chain commands.
 type OperatorParams struct {
-	RPCURL       *url.URL           `name:"rpc-url" secret:"true" optional:"true" persistent:"true"`
-	RPCURLFile   string             `name:"rpc-url-file" secretfor:"RPCURL" persistent:"true"`
-	ChainID      *uint64            `min:"1" persistent:"true" descr:"Optional expected RPC chain ID"`
-	Sender       *ethcommon.Address `persistent:"true"`
-	Controller   ethcommon.Address  `name:"controller-address" required:"true" persistent:"true" default:"0xD8E8328501E9645d16Cf49539efC04f734606ee4" descr:"Livepeer Controller (Arbitrum mainnet)"`
-	KeyFile      string             `name:"private-key-file" optional:"true" file:"true" persistent:"true"`
-	MaxFeePerGas *uint256.Int       `persistent:"true" descr:"Optional maximum transaction fee in wei per gas"`
+	RPCURL               *url.URL           `name:"rpc-url" secret:"true" optional:"true" persistent:"true"`
+	RPCURLFile           string             `name:"rpc-url-file" secretfor:"RPCURL" persistent:"true"`
+	ChainID              *uint64            `min:"1" persistent:"true" descr:"Optional expected RPC chain ID"`
+	Sender               *ethcommon.Address `persistent:"true"`
+	Controller           ethcommon.Address  `name:"controller-address" required:"true" persistent:"true" default:"0xD8E8328501E9645d16Cf49539efC04f734606ee4" descr:"Livepeer Controller (Arbitrum mainnet)"`
+	KeystoreFile         string             `optional:"true" persistent:"true" descr:"Encrypted geth account JSON file"`
+	KeystorePasswordFile string             `optional:"true" persistent:"true" descr:"Owner-only file containing the exact keystore password bytes"`
+	MaxFeePerGas         *uint256.Int       `persistent:"true" descr:"Optional maximum transaction fee in wei per gas"`
 }
 
 func (p OperatorParams) Validate() error {

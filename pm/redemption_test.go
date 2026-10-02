@@ -2,20 +2,18 @@ package pm
 
 import (
 	"math/big"
-	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/livepeer/node/eth"
+	"github.com/livepeer/node/internal/test"
 	"github.com/stretchr/testify/require"
 )
 
 func TestOldCreationRoundIsNotBroadcast(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "key")
-	require.NoError(t, os.WriteFile(path, []byte(strings.Repeat("0", 63)+"1"), 0600))
-	key, err := eth.OpenKeyFile(path)
+	path, passwordPath := test.WriteFixedKeystore(t)
+	key, err := eth.OpenKeystoreFile(path, passwordPath)
 	require.NoError(t, err)
 	store, err := OpenSQLite(filepath.Join(t.TempDir(), "payment.sqlite"))
 	require.NoError(t, err)

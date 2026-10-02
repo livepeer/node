@@ -22,6 +22,7 @@ import (
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/j0sh/boa/pkg/boa"
+	"github.com/livepeer/node/internal/test"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 )
@@ -31,7 +32,7 @@ func validParams(t *testing.T) Params {
 	return Params{
 		Listen:        netip.MustParseAddrPort("0.0.0.0:8937"),
 		MetricsListen: netip.MustParseAddrPort("127.0.0.1:8938"),
-		KeyFile:       "key", DepositMultiplier: 1,
+		KeystoreFile:  "key", KeystorePasswordFile: "password", DepositMultiplier: 1,
 		RPCURL:         testURL(t, "http://localhost:8545"),
 		Controller:     ethcommon.HexToAddress("0x1234567890123456789012345678901234567890"),
 		ETHUSDFeed:     ethcommon.HexToAddress("0x639Fe6ab55C921f74e7fac1ee960C0B6293ba612"),
@@ -48,6 +49,8 @@ func TestSignerConfigurationValidation(t *testing.T) {
 		change func(*Params)
 		want   string
 	}{
+		{"missing keystore", func(p *Params) { p.KeystoreFile = "" }, "keystore-file"},
+		{"missing password file", func(p *Params) { p.KeystorePasswordFile = "" }, "keystore-password-file"},
 		{"empty Kafka", func(p *Params) { p.Kafka = &KafkaConfig{} }, "kafka broker"},
 		{"RPC scheme", func(p *Params) { p.RPCURL = testURL(t, "file:///rpc") }, "RPC URL"},
 		{"Controller", func(p *Params) { p.Controller = ethcommon.Address{} }, "controller-address"},
@@ -69,19 +72,54 @@ func TestSignerConfigurationValidation(t *testing.T) {
 	}
 }
 
+func TestSignerKeystoreSourcesFailBeforeStartup(t *testing.T) {
+	path, passwordPath := test.WriteKeystore(t, nil)
+	require.NoError(t, os.WriteFile(passwordPath, []byte("wrong-secret"), 0600))
+	var requests atomic.Int32
+	rpc := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests.Add(1) }))
+	defer rpc.Close()
+	t.Setenv("LIVEPEER_SIGNER_RPC_URL", rpc.URL)
+	// Occupied ports would produce a different error if startup reached listeners.
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer listener.Close()
+	for source, name := range []string{"config", "env", "cli"} {
+		t.Run(name, func(t *testing.T) {
+			paths := [3][2]string{{"/missing/key", "/missing/password"}, {"/missing/key", "/missing/password"}, {"/missing/key", "/missing/password"}}
+			paths[source] = [2]string{path, passwordPath}
+			config := filepath.Join(t.TempDir(), "signer.toml")
+			require.NoError(t, os.WriteFile(config, []byte(fmt.Sprintf("KeystoreFile = %q\nKeystorePasswordFile = %q\nMaxHourlyPrice = '36'\nMaxFixedPrice = '1'\n", paths[0][0], paths[0][1])), 0600))
+			args := []string{"--config", config, "--listen", listener.Addr().String()}
+			if source > 0 {
+				t.Setenv("LIVEPEER_SIGNER_KEYSTORE_FILE", paths[1][0])
+				t.Setenv("LIVEPEER_SIGNER_KEYSTORE_PASSWORD_FILE", paths[1][1])
+			}
+			if source > 1 {
+				args = append(args, "--keystore-file", paths[2][0], "--keystore-password-file", paths[2][1])
+			}
+			root := Root(io.Discard, io.Discard)
+			root.SetArgs(args)
+			err := root.Execute()
+			require.ErrorContains(t, err, "cannot decrypt keystore")
+			require.NotContains(t, err.Error(), "wrong-secret")
+			require.Zero(t, requests.Load())
+		})
+	}
+}
+
 func TestSignerLoadsConfigAndSecretFiles(t *testing.T) {
 	folder := t.TempDir()
 	rpcFile := filepath.Join(folder, "rpc")
-	keyFile := filepath.Join(folder, "key")
+	keyFile, passwordPath := "/missing/account.json", "/missing/password"
 	headersFile := filepath.Join(folder, "headers")
 	webhookFile := filepath.Join(folder, "webhook")
 	require.NoError(t, os.WriteFile(rpcFile, []byte("http://localhost:8545?key=private-token"), 0600))
-	require.NoError(t, os.WriteFile(keyFile, []byte("key"), 0600))
 	require.NoError(t, os.WriteFile(webhookFile, []byte("http://localhost:9000/auth"), 0600))
 	require.NoError(t, os.WriteFile(headersFile, []byte("Authorization: Bearer private-token, X-User: alice"), 0600))
 	config := fmt.Sprintf(`Listen = "127.0.0.1:9001"
 MetricsListen = "127.0.0.1:9002"
-KeyFile = %q
+KeystoreFile = %q
+KeystorePasswordFile = %q
 RPCURLFile = %q
 AuthWebhookFile = %q
 AuthWebhookHeadersFile = %q
@@ -92,7 +130,7 @@ MaxFixedPrice = "1/2"
 MaxTicketEV = "3000000000000"
 Orchestrators = ["http://localhost:8935"]
 DiscoveryGrants = ["localhost:8935"]
-`, keyFile, rpcFile, webhookFile, headersFile)
+`, keyFile, passwordPath, rpcFile, webhookFile, headersFile)
 	configFile := filepath.Join(folder, "signer.toml")
 	require.NoError(t, os.WriteFile(configFile, []byte(config), 0600))
 	var p Params
@@ -102,7 +140,8 @@ DiscoveryGrants = ["localhost:8935"]
 	require.Equal(t, "0xD8E8328501E9645d16Cf49539efC04f734606ee4", p.Controller.Hex())
 	require.Equal(t, "0x639Fe6ab55C921f74e7fac1ee960C0B6293ba612", p.ETHUSDFeed.Hex())
 	require.Equal(t, netip.MustParseAddrPort("127.0.0.1:9001"), p.Listen)
-	require.Equal(t, keyFile, p.KeyFile)
+	require.Equal(t, keyFile, p.KeystoreFile)
+	require.Equal(t, passwordPath, p.KeystorePasswordFile)
 	require.Equal(t, "private-token", p.RPCURL.Query().Get("key"))
 	require.Equal(t, "http://localhost:9000/auth", p.AuthWebhook.String())
 	require.Equal(t, "Bearer private-token", http.Header(p.AuthWebhookHeaders).Get("Authorization"))
@@ -117,8 +156,6 @@ DiscoveryGrants = ["localhost:8935"]
 func loadSignerParams(t *testing.T, args []string, config string) (Params, error) {
 	t.Helper()
 	p := validParams(t)
-	p.KeyFile = filepath.Join(t.TempDir(), "key")
-	require.NoError(t, os.WriteFile(p.KeyFile, []byte("key"), 0600))
 	args = append([]string(nil), args...)
 	if config != "" {
 		path := filepath.Join(t.TempDir(), "signer.toml")
@@ -171,8 +208,8 @@ func TestSignerReadiness(t *testing.T) {
 			if !fixedRate {
 				p.WeiPerUSD, p.ETHUSDMaxAge = nil, time.Hour
 			}
-			key, keyFile := testSignerKey(t)
-			p.KeyFile = keyFile
+			key, keyFile, passwordPath := testSignerKey(t)
+			p.KeystoreFile, p.KeystorePasswordFile = keyFile, passwordPath
 			var failure atomic.Int32
 			rpc := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				var req struct {

@@ -10,7 +10,7 @@ use absolute paths in deployed configurations.
 ## Names and environment variables
 
 Orchestrator TOML keys use snake case, such as `service_url`. Signer and chain
-keys use names such as `RPCURLFile` and `KeyFile`. Command-line flags use kebab
+keys use names such as `RPCURLFile` and `KeystoreFile`. Command-line flags use kebab
 case. Environment variables use the component prefix and underscores:
 
 | Component | Prefix | Example |
@@ -60,24 +60,68 @@ Set `bootstrap_secret_file` to that file's absolute path and give the same
 credential to runners during initial registration. Secret-manager mounts must
 also contain exactly the intended bytes.
 
-## Ethereum key files
+## Ethereum keystores
 
-`KeyFile` on the signer and chain, and `payment_key_file` on the orchestrator,
-contain a raw Ethereum private key: 64 hexadecimal digits, optionally prefixed
-with `0x`. Encrypted JSON keystores are not accepted. The key loader trims
-surrounding whitespace, unlike the credential-file loader above.
+All three apps load one encrypted geth account JSON file, including Web3 v3
+files created by go-livepeer. Point to the individual account file inside the
+keystore directory. Directory discovery and account creation are handled by
+external tooling.
 
-Keep the file readable only by its owner, for example:
+| App | Keystore TOML key | Password-file TOML key |
+| --- | --- | --- |
+| Signer and chain | `KeystoreFile` | `KeystorePasswordFile` |
+| Orchestrator | `keystore_file` | `keystore_password_file` |
+
+All three apps use `--keystore-file` and `--keystore-password-file`. Path
+environment variables use the existing app prefix, such as
+`LIVEPEER_SIGNER_KEYSTORE_PASSWORD_FILE`. CLI values override environment
+values, which override TOML.
+
+Both inputs must be regular files readable only by their owner; `0400` and
+`0600` are accepted. Secret-manager symlinks are accepted when their target
+files meet these requirements. Password files are read as exact bytes, including
+whitespace and trailing newlines. Supply the actual password without an
+unintended newline. There is no literal-password flag, password environment
+value, or interactive unlock prompt. An existing keystore using an empty
+password requires an explicitly supplied empty password file.
+
+The signer requires both files at startup. The orchestrator requires both when
+payments are configured. The chain requires both only with `--submit`; reads,
+simulations, help, completion, and `--print-config` do not open signing files.
+Configuration printing omits both paths. Decrypted keys remain in process
+memory and are never written back to disk. Changing either file requires a
+service restart, or a new chain invocation.
+
+The signer account supplies the TicketBroker deposit and reserve. The
+orchestrator account receives and redeems tickets. A chain sender must match
+its signing account. Keep a redemption key exclusive to its orchestrator worker;
+using it concurrently from a CLI or another process can conflict with nonce
+tracking.
+
+### Migrate raw-key configurations
+
+Raw hexadecimal key files are no longer accepted. The former `KeyFile`,
+`--private-key-file`, `payment_key_file`, and `--payment-key-file` settings are
+removed. Update deployments to the new keystore path environment variables
+when configuring paths through the environment.
+
+Reuse the account's existing go-livepeer encrypted JSON file when available.
+Otherwise, import the existing raw key with trusted geth tooling, using its
+standard encryption parameters:
 
 ```sh
-chmod 600 /run/secrets/livepeer-signer-key
+umask 077
+geth --keystore /path/to/encrypted-keystore account import /path/to/raw-key
 ```
 
-The signer key signs outgoing tickets; its account supplies the TicketBroker
-deposit and reserve. The orchestrator key receives and redeems tickets.
-A chain sender must match its signing key. Keep a redemption key exclusive
-to its orchestrator worker; using it concurrently from a CLI or another process
-can conflict with nonce tracking.
+This external command asks for the encryption password and creates an account
+JSON file. Select that file, prepare an owner-only file containing exactly the
+password used during import, and replace the old raw-key configuration with the
+two new paths. Preserve the Ethereum address: do not create a new account or
+change the signer sender, recipient, deposits, or payment database. Confirm the
+address printed by geth matches the current account before restarting. Back up
+the encrypted account and its password separately before retiring the raw-key
+file. Payment and accounting databases need no schema migration.
 
 ## Local storage and probes
 

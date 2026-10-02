@@ -4,23 +4,20 @@ import (
 	"encoding/json"
 	"errors"
 	"math/big"
-	"os"
-	"path/filepath"
 	"sort"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/livepeer/node/internal/test"
 	"github.com/stretchr/testify/require"
 )
 
 func TestTransactionFeesAndNonceReservations(t *testing.T) {
-	keyFile := filepath.Join(t.TempDir(), "key")
-	require.NoError(t, os.WriteFile(keyFile, []byte(strings.Repeat("0", 63)+"1"), 0600))
-	key, err := OpenKeyFile(keyFile)
+	keyFile, passwordPath := test.WriteFixedKeystore(t)
+	key, err := OpenKeystoreFile(keyFile, passwordPath)
 	require.NoError(t, err)
 	var nonceReads, sends atomic.Int32
 	var missingBaseFee atomic.Bool

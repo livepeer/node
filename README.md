@@ -66,8 +66,9 @@ runner and orchestrator with Ctrl-C in their terminals.
 
 ## Configure a deployment
 
-Use [configuration and secrets](docs/configuration.md) for credentials, raw
-Ethereum key files, and probe addresses. Then follow the component guides:
+Use [configuration and secrets](docs/configuration.md) for credentials, encrypted
+Ethereum keystores and password files, and probe addresses. Then follow the
+component guides:
 
 - [Orchestrator](docs/orchestrator.md): dynamic/static runners, networking, TLS,
   proxy URLs, limits, and payments.
@@ -84,9 +85,8 @@ to broadcast; `--wait` waits for successful inclusion. Trickle retains five
 segments per channel, with a 10 MB limit per segment and no global byte cap.
 
 For tests, SDK fixtures, and packaging, see [development](docs/development.md).
-The [documentation index](docs/README.md) links architecture and protocol
-references as well as historical records.
+The [documentation index](docs/README.md) links the operating guides and protocol
+references.
 
 Code imported or adapted from `go-livepeer` retains its MIT notice in
-[LICENSE.go-livepeer](LICENSE.go-livepeer). See [extraction provenance](docs/provenance/README.md)
-for source revisions and attribution.
+[LICENSE.go-livepeer](LICENSE.go-livepeer).

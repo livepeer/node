@@ -3,9 +3,10 @@ RPCURLFile = "/run/secrets/livepeer-chain-rpc-url"
 # Sender = "0x0123456789abcdef0123456789abcdef01234567"
 # Controller = "0xD8E8328501E9645d16Cf49539efC04f734606ee4" # Arbitrum mainnet default
 # MaxFeePerGas = "1000000000" # Optional ceiling, wei per gas
-# KeyFile = "/run/secrets/livepeer-chain-key"
-# KeyFile contains a raw Ethereum key: 64 hex digits, optional 0x prefix,
-# owner-only permissions. See docs/configuration.md and docs/chain.md.
+# KeystoreFile = "/run/secrets/livepeer-chain-keystore.json"
+# KeystorePasswordFile = "/run/secrets/livepeer-chain-keystore-password"
+# Both files must be owner-only. The password is read as exact bytes (no newline).
+# Needed only with --submit; see docs/configuration.md and docs/chain.md.
 
 # Action inputs and output controls must be provided on the command line.
 # Example dry run:

@@ -6,7 +6,6 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -15,15 +14,15 @@ import (
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/livepeer/node/eth"
+	"github.com/livepeer/node/internal/test"
 	"github.com/stretchr/testify/require"
 )
 
 func TestRedemptionRecoveryBeforeAndAfterBroadcast(t *testing.T) {
 	for _, failure := range []string{"preparation", "prepared-crash", "uncertain-broadcast"} {
 		t.Run(failure, func(t *testing.T) {
-			keyFile := filepath.Join(t.TempDir(), "key")
-			require.NoError(t, os.WriteFile(keyFile, []byte(strings.Repeat("0", 63)+"1"), 0600))
-			key, err := eth.OpenKeyFile(keyFile)
+			keyFile, passwordPath := test.WriteFixedKeystore(t)
+			key, err := eth.OpenKeystoreFile(keyFile, passwordPath)
 			require.NoError(t, err)
 			path := filepath.Join(t.TempDir(), "payments.sqlite")
 			store, err := OpenSQLite(path)
