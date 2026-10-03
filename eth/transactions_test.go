@@ -15,12 +15,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestTransactionFeesAndNonceReservations(t *testing.T) {
+func TestTransactionNonceReservationsAndPersistence(t *testing.T) {
 	keyFile, passwordPath := test.WriteFixedKeystore(t)
 	key, err := OpenKeystoreFile(keyFile, passwordPath)
 	require.NoError(t, err)
 	var nonceReads, sends atomic.Int32
-	var missingBaseFee atomic.Bool
 	rpc := testRPC(t, func(method string, params []json.RawMessage) any {
 		var result any
 		switch method {
@@ -29,13 +28,8 @@ func TestTransactionFeesAndNonceReservations(t *testing.T) {
 		case "eth_estimateGas":
 			result = "0x5208"
 		case "eth_getBlockByNumber":
-			header := &types.Header{Number: big.NewInt(1), Difficulty: new(big.Int)}
-			if !missingBaseFee.Load() {
-				header.BaseFee = big.NewInt(100)
-			}
-			result = header
+			result = &types.Header{Number: big.NewInt(1), Difficulty: new(big.Int), BaseFee: big.NewInt(100)}
 		case "eth_maxPriorityFeePerGas":
-			require.False(t, missingBaseFee.Load())
 			result = "0x3"
 		case "eth_getTransactionCount":
 			nonceReads.Add(1)
@@ -51,40 +45,10 @@ func TestTransactionFeesAndNonceReservations(t *testing.T) {
 	})
 	c, err := NewContracts(rpc, common.HexToAddress("0x1000"))
 	require.NoError(t, err)
-	var plan TransactionPlan
-	for _, tc := range []struct {
-		name           string
-		missingBaseFee bool
-		ceiling        int64
-		wantErr        string
-	}{
-		{"dynamic fees", false, 0, ""},
-		{"fee at ceiling", false, 203, ""},
-		{"fee exceeds ceiling", false, 200, "exceeds maximum"},
-		{"missing base fee", true, 0, "missing base fee"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			missingBaseFee.Store(tc.missingBaseFee)
-			c.MaxFeePerGas = nil
-			if tc.ceiling > 0 {
-				c.MaxFeePerGas = big.NewInt(tc.ceiling)
-			}
-			candidate, err := c.PlanTransaction(t.Context(), key.Address(), common.HexToAddress("0x2000"), []byte{1, 2}, big.NewInt(5))
-			require.Zero(t, nonceReads.Load(), "planning must not reserve a nonce")
-			require.Zero(t, sends.Load(), "planning must not broadcast")
-			if tc.wantErr != "" {
-				require.ErrorContains(t, err, tc.wantErr)
-				return
-			}
-			require.NoError(t, err)
-			require.Equal(t, "203", candidate.FeeCapWei)
-			require.Equal(t, "3", candidate.TipCapWei)
-			plan = candidate
-		})
-	}
-
-	// Fee boundaries share the same nonce and persistence behavior; check it once.
-	missingBaseFee.Store(false)
+	plan, err := c.PlanTransaction(t.Context(), key.Address(), common.HexToAddress("0x2000"), []byte{1, 2}, big.NewInt(5))
+	require.NoError(t, err)
+	require.Zero(t, nonceReads.Load(), "planning must not reserve a nonce")
+	require.Zero(t, sends.Load(), "planning must not broadcast")
 	c.MaxFeePerGas = big.NewInt(203)
 	c.SetNonceFloor(key.Address(), 40)
 	saveErr := errors.New("storage unavailable")
@@ -115,9 +79,9 @@ func TestTransactionFeesAndNonceReservations(t *testing.T) {
 		require.Equal(t, big.NewInt(42161), tx.ChainId())
 		require.Equal(t, big.NewInt(5), tx.Value())
 		require.Equal(t, []byte{1, 2}, tx.Data())
-		sender, err := types.Sender(types.LatestSignerForChainID(tx.ChainId()), &tx)
+		recoveredAddress, err := types.Sender(types.LatestSignerForChainID(tx.ChainId()), &tx)
 		require.NoError(t, err)
-		require.Equal(t, key.Address(), sender)
+		require.Equal(t, key.Address(), recoveredAddress)
 		nonces = append(nonces, int(tx.Nonce()))
 		if len(nonces) == 1 {
 			require.ErrorContains(t, c.Broadcast(t.Context(), signed), "does not match signed transaction")

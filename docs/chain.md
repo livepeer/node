@@ -1,77 +1,197 @@
 # Chain commands
 
-The chain CLI inspects Ethereum accounts and Livepeer contracts and manages
-stake, earnings, TicketBroker funds, and rounds. It does not start an HTTP
-server. Use the [configuration example](../configs/chain/config.example.toml)
-and [key and secret guide](configuration.md).
+The `chain` command manages stake, earnings, deposits, and other on-chain state
+related to the Livepeer protocol. Use it to check balances, stake LPT, register
+an orchestrator, withdraw funds, or vote on protocol proposals.
 
-## Commands
+Run it as `bin/livepeer chain` or `bin/livepeer-chain`. Configure the blockchain
+connection (RPC endpoint) and `Account` using a
+[chain config](../configs/chain/config.example.toml) or environment variables.
+Use `--account` or `LIVEPEER_CHAIN_ACCOUNT`; see [configuration and secrets](configuration.md) for setup and keystores.
+
+```sh
+bin/livepeer chain --config /etc/livepeer/chain.toml account
+bin/livepeer chain --config /etc/livepeer/chain.toml stake bond ADDRESS --amount 10
+```
+
+Transaction commands perform a dry run by default. Add `--submit` to sign and broadcast transactions and wait for
+inclusion in a block. Submissions require a keystore matching the configured
+account; reads and dry runs need no key.
+
+Prefix all commands below by `bin/livepeer chain`. Add `--config FILE` to load a configuration file, or `--help` to see a command's flags and defaults.
+
+## Accounts and protocol state
+
+| Command | Purpose |
+| --- | --- |
+| `account` | Configured account's ETH/LPT balances and pending nonce |
+| `status` | Connected chain and block |
+| `round get` | Current round, initialization, and lock status |
+| `round initialize` | Initialize the current round |
+| `protocol get` | Protocol settings, supply, bonded stake, and participation |
+| `contracts` | Protocol contract addresses |
+
+## Amounts and commissions
+
+Amounts use human LPT/ETH units with up to 18 decimal places. Add `--base-units`
+for integer token units or wei. Use positive decimal amounts, without exponent
+notation; TicketBroker funding allows either component to be zero.
+
+`--amount all` uses the wallet LPT balance for bonding, registration, and transfers;
+unbonding uses pending stake, and fee withdrawal uses pending fees, both including
+pending earnings. A zero balance fails. TicketBroker funding requires numeric amounts.
+
+`--reward-cut` and `--fee-cut` are the orchestrator's commissions: 0–100 percent,
+with up to four decimal places. For example, `1.2345` means 1.2345%.
+IDs, rounds, and gas limits are integers; gas prices are always integer wei per gas.
+
+## Stake and withdraw LPT
 
 ```text
-status                         account
-orchestrator get               orchestrator activate
-orchestrator set-config        orchestrator reward
-stake bond                     stake unbond
-stake rebond                   stake withdraw
-earnings claim                 earnings withdraw-fees
-ticketbroker fund              ticketbroker unlock
-ticketbroker cancel-unlock     ticketbroker withdraw
-round initialize
+stake get
+stake locks [--withdrawable | --locked] [--from-id ID] [--limit N]
+stake bond ADDRESS --amount N|all
+stake bond ADDRESS --redelegate
+stake unbond --amount N|all
+stake cancel-unbond [ADDRESS] --lock-id ID
+stake withdraw --lock-id ID
 ```
 
-Run `bin/livepeer chain COMMAND --help` for each command's arguments. Shared
-flags can appear before or after subcommands:
+Use `stake get` to inspect stake, pending earnings, and the current orchestrator.
 
-```sh
-bin/livepeer chain status --config /etc/livepeer/chain.toml
-bin/livepeer chain --config /etc/livepeer/chain.toml --output json stake bond ORCHESTRATOR_ADDRESS --amount 1000000000000000000
+Bonding deposits liquid LPT from the wallet and includes any required ERC20 approval transaction. Redelegation
+moves existing stake; choose one mode. Unbonding creates a withdrawal lock.
+
+Cancel-unbond restores the locked LPT to stake. If the account is still staked,
+`ADDRESS` is optional: the LPT returns to the current orchestrator. If fully unbonded, `ADDRESS` is
+required to choose an orchestrator.
+
+List outstanding locks with `stake locks`, filtering by either `--withdrawable`
+or `--locked`. Paginate with `--from-id` and `--limit` (default 100, maximum 1000).
+The limit counts scanned IDs, including spent or filtered locks.
+
+## Register and configure an orchestrator
+
+```text
+orchestrator get
+orchestrator list [--active]
+orchestrator register [--amount N|all | --redelegate | --lock-id ID]
+                      --reward-cut PERCENT --fee-cut PERCENT [--service-uri URL]
+orchestrator set-config [--reward-cut PERCENT] [--fee-cut PERCENT] [--service-uri URL]
+orchestrator reward-caller get
+orchestrator reward-caller set ADDRESS
+orchestrator reward-caller unset
 ```
 
-## Preview and submit
+Use `orchestrator get` for registration status and settings, and `orchestrator list`
+for pool members.
 
-Run a state change without `--submit` to inspect its simulation, gas estimate,
-and call data. Add `--submit`, `KeystoreFile`, and `KeystorePasswordFile` to
-broadcast; add `--wait` to wait
-for inclusion in a successful receipt. The sender must match the signing key,
-and an expected chain ID must match the RPC.
+`register` registers the configured account as an orchestrator. Unless the account is already
+self-bonded, choose one staking source: wallet LPT, existing stake, or an unbonding
+lock. Omitting the optional service URI preserves its current value; supply one
+when none is configured. Supplied URIs
+must be absolute HTTP/HTTPS URLs without credentials, query strings, or fragments.
 
-The submission hash is printed before waiting and remains available on errors.
-JSON output uses separate JSON-line records for submission and receipt.
-`--quiet` suppresses normal transaction output, including dry-run plans,
-submission hashes, and receipts. Errors go to stderr; broadcast and receipt
-errors retain the transaction hash. Exit status is 0 on success and 2 on failure.
+`set-config` preserves omitted values; unchanged settings need no transaction.
+Commission changes require an unlocked round. Calling `reward-caller set` authorizes another account to call
+rewards for the orchestrator; `unset` clears that authorization.
 
-Transaction switches, action inputs, `--output`, and `--print-config` are
-command-line controls. TOML holds shared settings: RPC connection, expected
-chain ID, Controller, sender, keystore paths, and an optional maximum fee per gas.
+## Fund and withdraw TicketBroker ETH
 
-```sh
-bin/livepeer chain ticketbroker fund --config /etc/livepeer/chain.toml --amount 1000000000000000000 --reserve 0 --submit --quiet
+```text
+ticketbroker get
+ticketbroker fund --amount DEPOSIT --reserve RESERVE
+ticketbroker unlock
+ticketbroker cancel-unlock
+ticketbroker withdraw
 ```
 
-Amounts and fee ceilings are decimal integers in the contract's base units;
-for ETH, 1 ETH is 1,000,000,000,000,000,000 wei. Check the command's units before
-submitting. Transactions require dynamic fees and fail if the RPC header has
-no base fee. `--max-fee-per-gas` (TOML `MaxFeePerGas`) caps fees in wei per gas;
-an estimate above the cap fails before signing. This does not cap the total
-transaction cost or cumulative spending.
+Funding sends the sum of deposit and reserve, which must be positive. Unlock
+starts the withdrawal period; cancel-unlock cancels it. Check `ticketbroker get`
+for balances and the withdrawal round, then withdraw once that round is reached.
 
-## Staking and activation
+Orchestrators act as redeemers, submitting winning tickets against the payer's funds. See
+[payment recovery](payment-recovery.md#orchestrator-transaction-recovery) for
+redemption status and retry procedures.
 
-If `stake bond` needs token approval, it submits approval first. Without
-`--wait`, rerun the bond after approval is confirmed. With `--submit --wait`,
-the command continues after the approval's successful receipt. Bonding requires
-a positive amount of new tokens.
+## Earnings, rewards, transfers, and votes
 
-`stake rebond --delegate ADDRESS` uses `rebondFromUnbonded` for an unbonded
-account; omit the delegate for an already bonded account. Staking and reward
-commands calculate sorted-pool position hints.
+```text
+earnings claim [--end-round ROUND]
+earnings withdraw-fees --amount N|all [--recipient ADDRESS]
+reward call [--orchestrator ADDRESS]
+token transfer ADDRESS --amount N|all
+governance poll vote ADDRESS yes|no
+governance proposal vote ID against|for|abstain [--reason TEXT]
+```
 
-Before `orchestrator activate`, self-bond with
-`stake bond YOUR_ADDRESS --amount AMOUNT` and set the public URI with
-`orchestrator set-config --service-uri URL`.
+Claims default to the current round, which must be initialized. Unbonding and
+fee withdrawal claim earnings automatically. Fee withdrawals default to the
+configured account as recipient. Reward calls also default to the configured
+account; the target must be active and the caller authorized.
 
-The Go `eth` APIs also support explicit delegation changes, voting, and
-delegated reward callers. Those operations do not yet have CLI commands.
-CLI receipt waiting checks successful inclusion; payment redemption uses the
-stricter finalized-receipt policy described in [payment recovery](payment-recovery.md).
+## Sign files locally
+
+```text
+sign message --message-file /path/to/message
+sign typed-data --data-file /path/to/typed-data.json
+```
+
+Signing needs a keystore and password file, but no RPC. If an account address is
+configured, it must match the signing account. Message signing preserves exact
+file bytes, including newlines, and uses the Ethereum message prefix. Typed-data signing accepts EIP-712
+JSON with `types`, `primaryType`, `domain`, and `message`. Output includes the
+address, hash, and hex signature with recovery ID 27/28.
+
+## Control fees and waiting
+
+```text
+gas get [--max-priority-fee-per-gas N]
+```
+
+Use `gas get` to check current gas prices and the configured fee ceiling.
+
+| Flag | Effect |
+| --- | --- |
+| `--gas-limit N` | Override gas units for each transaction; otherwise estimate |
+| `--max-priority-fee-per-gas N` | Initial tip; otherwise use the RPC suggestion |
+| `--max-fee-per-gas N` | Reject calculated fee caps above this ceiling |
+| `--transaction-timeout DURATION` | Wait per attempt; default `3m` |
+| `--max-transaction-replacements N` | Allow fee-bumped retries; default `0` |
+| `--no-wait` | Broadcast without waiting; single transactions without replacements only |
+| `--quiet` | Suppress normal transaction output; errors retain known hashes |
+
+The fee cap is twice the base fee plus the tip. Gas limit × fee cap bounds each
+transaction's gas fee, not the total cost of a workflow.
+
+Multi-step workflows show all planned steps, deferring dependent simulations until
+prerequisites confirm. If a later step fails, earlier confirmed steps remain
+applied: inspect state and repeat the dry run before retrying.
+
+Replacements preserve the action and nonce, raising fee and tip caps by at least
+11% using fresh suggestions. An explicit initial tip may rise. Each attempt gets
+a full timeout and must respect the ceiling. Inclusion ends waiting; provider
+errors and reverts fail.
+
+## Scripting
+
+Use `--output json` for scripts. Amounts are exact decimal strings in base units:
+`*_base_units` for LPT and `*_wei` for ETH. Rounds and lock IDs are strings too;
+commissions and participation are decimal percentages. Protocol JSON retains
+integer ratios: 1,000,000,000 represents 100% for inflation, inflation change,
+and target bonding rate; 1,000,000 represents 100% for round lock amount.
+Text output converts amounts and ratios to human units.
+
+Transactions emit multiple JSON records for simulations, broadcasts, submissions,
+and confirmations. Exit status is 0 on success and 2 on failure.
+Action inputs and output/transaction controls are CLI-only, except the fee ceiling
+(`MaxFeePerGas`), which also accepts TOML and environment configuration.
+
+## Help and shell completion
+
+```text
+help [COMMAND]
+completion bash|zsh|fish|powershell
+```
+
+Use `completion SHELL --help` for installation instructions for that shell.

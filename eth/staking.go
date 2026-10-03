@@ -268,6 +268,10 @@ func (c *Contracts) rewardHints(ctx context.Context, bonding *contracts.BondingM
 // PlanContract simulates and estimates a retained operation without signing or
 // broadcasting. Staking operations reuse upstream pool-position preparation.
 func (c *Contracts) PlanContract(ctx context.Context, from common.Address, name, method string, value *big.Int, args ...any) (TransactionPlan, error) {
+	return c.PlanContractWithOptions(ctx, from, name, method, value, FeeOptions{}, args...)
+}
+
+func (c *Contracts) PlanContractWithOptions(ctx context.Context, from common.Address, name, method string, value *big.Int, options FeeOptions, args ...any) (TransactionPlan, error) {
 	var data []byte
 	var address common.Address
 	var err error
@@ -281,7 +285,7 @@ func (c *Contracts) PlanContract(ctx context.Context, from common.Address, name,
 	}
 	var plan TransactionPlan
 	if err == nil {
-		plan, err = c.PlanTransaction(ctx, from, address, data, value)
+		plan, err = c.PlanTransactionWithOptions(ctx, from, address, data, value, options)
 	}
 	if err != nil {
 		return TransactionPlan{}, fmt.Errorf("%s.%s: %w", name, method, err)
@@ -290,11 +294,15 @@ func (c *Contracts) PlanContract(ctx context.Context, from common.Address, name,
 }
 
 func (c *Contracts) ChangeDelegate(ctx context.Context, from, to common.Address) (TransactionPlan, error) {
+	return c.ChangeDelegateWithOptions(ctx, from, to, FeeOptions{})
+}
+
+func (c *Contracts) ChangeDelegateWithOptions(ctx context.Context, from, to common.Address, options FeeOptions) (TransactionPlan, error) {
 	data, address, err := c.bondData(ctx, from, new(big.Int), to)
 	if err != nil {
 		return TransactionPlan{}, fmt.Errorf("change delegate: %w", err)
 	}
-	return c.PlanTransaction(ctx, from, address, data, new(big.Int))
+	return c.PlanTransactionWithOptions(ctx, from, address, data, new(big.Int), options)
 }
 
 // Reward-caller APIs follow Rick Staa's go-livepeer/eth/client.go LIP-118 support

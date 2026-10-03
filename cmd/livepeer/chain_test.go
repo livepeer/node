@@ -56,12 +56,11 @@ func TestChainBinaryQuietExecution(t *testing.T) {
 		wantErr     string
 	}{
 		{name: "quiet dry run"},
-		{name: "quiet submission", flags: []string{"--submit"}, wantSent: 1},
-		{name: "quiet receipt", flags: []string{"--submit", "--wait"}, wantSent: 1, wantReceipt: 1},
+		{name: "quiet submission", flags: []string{"--submit"}, wantSent: 1, wantReceipt: 1},
 		{name: "simulation error", failure: "simulation", wantErr: "simulation failed"},
 		{name: "broadcast error", flags: []string{"--submit"}, failure: "broadcast", wantSent: 1, wantErr: "HTTP 503"},
 		{name: "receipt error", flags: []string{"--submit", "--wait"}, failure: "receipt", wantSent: 1, wantReceipt: 1, wantErr: "receipt"},
-		{name: "validation error", flags: []string{"--wait"}, wantErr: "wait requires submit"},
+		{name: "validation error", flags: []string{"--no-wait", "--max-transaction-replacements", "1"}, wantErr: "no-wait"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var sent, receipts atomic.Int32
@@ -124,7 +123,7 @@ func TestChainBinaryQuietExecution(t *testing.T) {
 			rpcFile := filepath.Join(dir, "rpc")
 			require.NoError(t, os.WriteFile(rpcFile, []byte(server.URL), 0600))
 			config := filepath.Join(dir, "chain.toml")
-			require.NoError(t, os.WriteFile(config, []byte(fmt.Sprintf("RPCURLFile = %q\nSender = %q\nKeystoreFile = %q\nKeystorePasswordFile = %q\n", rpcFile, keyAddress.Hex(), keyFile, passwordPath)), 0600))
+			require.NoError(t, os.WriteFile(config, []byte(fmt.Sprintf("RPCURLFile = %q\nAccount = %q\nKeystoreFile = %q\nKeystorePasswordFile = %q\n", rpcFile, keyAddress.Hex(), keyFile, passwordPath)), 0600))
 			args := append([]string{"chain", "--config", config, "ticketbroker", "unlock", "--quiet", "--output", "json"}, tc.flags...)
 			command := exec.Command(filepath.Join(install, "livepeer"), args...)
 			var stdout, stderr bytes.Buffer

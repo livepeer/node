@@ -5,27 +5,34 @@ Usage:
   livepeer-chain [command]
 
 Available Commands:
-  account      Read the sender's ETH balance and pending nonce
+  account      Read ETH/LPT balances and pending nonce
   completion   Generate the autocompletion script for the specified shell
+  contracts    Read Controller-resolved contract addresses
   earnings     Claim earnings and withdraw fees
+  gas          Inspect transaction gas prices
+  governance   Vote on polls and proposals
   help         Help about any command
   orchestrator Manage orchestrator configuration
+  protocol     Inspect protocol settings
+  reward       Call orchestrator rewards
   round        Manage protocol rounds
+  sign         Sign files locally with the configured keystore
   stake        Manage delegated stake
   status       Read the configured Ethereum chain status
   ticketbroker Manage ticket broker funds
+  token        Manage wallet LPT
 
 Flags:
+      --account string                  Account address to inspect or use for transactions; must match the keystore account when signing (env: LIVEPEER_CHAIN_ACCOUNT)
       --chain-id uint                   Optional expected RPC chain ID (env: LIVEPEER_CHAIN_CHAIN_ID)
   -c, --config string                    (env: LIVEPEER_CHAIN_CONFIG)
       --controller-address string       Livepeer Controller (Arbitrum mainnet) (env: LIVEPEER_CHAIN_CONTROLLER_ADDRESS) (default "0xd8e8328501e9645d16cf49539efc04f734606ee4")
   -k, --keystore-file string            Encrypted geth account JSON file (env: LIVEPEER_CHAIN_KEYSTORE_FILE)
       --keystore-password-file string   Owner-only file containing the exact keystore password bytes (env: LIVEPEER_CHAIN_KEYSTORE_PASSWORD_FILE)
-  -m, --max-fee-per-gas string          Optional maximum transaction fee in wei per gas (env: LIVEPEER_CHAIN_MAX_FEE_PER_GAS)
-  -o, --output string                    (default "text")
+      --max-fee-per-gas string          Ceiling on the calculated transaction fee cap in wei per gas (env: LIVEPEER_CHAIN_MAX_FEE_PER_GAS)
+      --output string                    (default "text")
   -p, --print-config                    Print audited operator configuration and exit
       --rpc-url-file string              (env: LIVEPEER_CHAIN_RPC_URL_FILE)
-      --sender string                    (env: LIVEPEER_CHAIN_SENDER)
   -h, --help                            help for livepeer-chain
   -v, --version                         version for livepeer-chain
 

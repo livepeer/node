@@ -9,7 +9,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/BurntSushi/toml"
@@ -73,50 +72,6 @@ func TestStatusChecksChainID(t *testing.T) {
 	require.Equal(t, []string{"eth_chainId"}, seen, "a mismatched chain must stop the command")
 }
 
-func TestAccountValidatesSenderAndReadsPendingNonce(t *testing.T) {
-	sender := ethcommon.HexToAddress("0x0123456789abcdef0123456789abcdef01234567")
-	var seen []string
-	rpc := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var request struct {
-			Method string `json:"method"`
-			Params []any  `json:"params"`
-		}
-		require.NoError(t, json.NewDecoder(r.Body).Decode(&request))
-		seen = append(seen, request.Method)
-		value := "0x1"
-		switch request.Method {
-		case "eth_chainId":
-		case "eth_getBalance":
-			require.Equal(t, []any{strings.ToLower(sender.Hex()), "latest"}, request.Params)
-			value = "0xde0b6b3a7640000"
-		case "eth_getTransactionCount":
-			require.Equal(t, []any{strings.ToLower(sender.Hex()), "pending"}, request.Params)
-			value = "0x2"
-		default:
-			t.Errorf("unexpected RPC method %s", request.Method)
-		}
-		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"` + value + `"}`))
-	}))
-	defer rpc.Close()
-	params := rpcParams(t, rpc.URL)
-	params.Sender = &sender
-	var out bytes.Buffer
-	for _, mode := range []string{"json", "text"} {
-		seen = nil
-		out.Reset()
-		require.NoError(t, Account(t.Context(), params, DisplayOptions{Output: mode}, &out))
-		if mode == "json" {
-			require.JSONEq(t, `{"address":"`+sender.Hex()+`","balance_wei":"1000000000000000000","nonce":2}`, out.String())
-		} else {
-			require.Equal(t, "Address: "+sender.Hex()+"\nETH balance (wei): 1000000000000000000\nPending nonce: 2\n", out.String())
-		}
-		require.Equal(t, []string{"eth_chainId", "eth_getBalance", "eth_getTransactionCount"}, seen)
-	}
-	params.Sender = nil
-	require.ErrorContains(t, Account(t.Context(), params, DisplayOptions{Output: "json"}, &out), "sender")
-	require.Len(t, seen, 3)
-}
-
 func TestPrintConfigOmitsCredentials(t *testing.T) {
 	dir := t.TempDir()
 	rpcFile := filepath.Join(dir, "rpc")
@@ -129,7 +84,7 @@ KeystorePasswordFile = %q
 ChainID = 42161
 `, rpcFile, keyFile, passwordPath)
 	require.NoError(t, os.WriteFile(configFile, []byte(config), 0600))
-	for _, command := range [][]string{nil, {"status"}, {"stake", "bond"}, {"orchestrator", "activate"}, {"ticketbroker", "fund"}} {
+	for _, command := range [][]string{nil, {"status"}, {"orchestrator"}, {"stake", "locks", "--withdrawable", "--locked"}, {"stake", "bond"}, {"orchestrator", "register"}, {"ticketbroker", "fund"}, {"sign", "message"}, {"sign", "typed-data"}} {
 		t.Run(fmt.Sprint(command), func(t *testing.T) {
 			var output bytes.Buffer
 			root := Root(&output, &output)

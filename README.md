@@ -2,15 +2,15 @@
 
 Livepeer Node contains services and command-line tools for the Livepeer network.
 It includes an orchestrator for Livepeer runners, a remote signer for network
-payments and orchestrator discovery, and a protocol CLI for managing staking,
-earnings, funding and governance on-chain.
+payments and orchestrator discovery, and a protocol CLI for managing wallets,
+staking, earnings, funding, governance, and local signing.
 
 | Executable | Role |
 | --- | --- |
 | `livepeer` | Runs the bundled component commands. |
 | `livepeer-orchestrator` | Registers runners, reserves sessions, proxies traffic, and redeems payment tickets. |
 | `livepeer-signer` | Signs identities and payments, discovers orchestrators, and optionally publishes accounting events. |
-| `livepeer-chain` | Inspects accounts and contracts and manages staking, earnings, funds, and governance. |
+| `livepeer-chain` | Inspects accounts and contracts, manages wallets, staking, earnings, funds, and governance, and signs files locally. |
 
 The orchestrator supports persistent and single-shot sessions, HTTP streaming,
 server-sent events (SSE), WebSockets, and Trickle channels. It can run locally
@@ -74,15 +74,17 @@ component guides:
   proxy URLs, limits, and payments.
 - [Signer](docs/signer.md): chain access, price limits, authorization, and Kafka
   accounting.
-- [Chain commands](docs/chain.md): previewing and submitting transactions.
+- [Chain commands](docs/chain.md): inspecting accounts, previewing and submitting
+  transactions, and signing files locally.
 - [Payment recovery](docs/payment-recovery.md): backups, restart, and uncertain
   transaction recovery.
 - [Staging and cutover](docs/cutover.md): checks against your chain and contracts
   before moving production traffic.
 
-Chain state changes simulate and estimate gas first. They require `--submit`
-to broadcast; `--wait` waits for successful inclusion. Trickle retains five
-segments per channel, with a 10 MB limit per segment and no global byte cap.
+Chain state changes perform a dry run by default. Add `--submit` to broadcast
+and wait for successful inclusion. Use `--no-wait` for a single transaction
+without replacements. Trickle retains five segments per channel, with a 10 MB
+limit per segment and no global byte cap.
 
 For tests, SDK fixtures, and packaging, see [development](docs/development.md).
 The [documentation index](docs/README.md) links the operating guides and protocol

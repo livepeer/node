@@ -162,6 +162,7 @@ func (r *RPC) TransactionReceipt(ctx context.Context, hash ethcommon.Hash) (*typ
 // does not expose. All quantities use geth's JSON decoders.
 type miniHeader struct {
 	Number        *hexutil.Big   `json:"number"`
+	BaseFee       *hexutil.Big   `json:"baseFeePerGas"`
 	L1BlockNumber *hexutil.Big   `json:"l1BlockNumber"`
 	Hash          ethcommon.Hash `json:"hash"`
 }

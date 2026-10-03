@@ -9,6 +9,7 @@ import (
 	"math/big"
 
 	"github.com/BurntSushi/toml"
+	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/j0sh/boa/pkg/boa"
 	"github.com/livepeer/node/eth"
@@ -23,7 +24,7 @@ func unmarshalConfig(data []byte, target any) error {
 	// Detach pointers shared with Boa's CLI/env mirrors before TOML writes
 	// through them. Boa restores higher-priority values after decoding.
 	if p, ok := target.(*RootParams); ok {
-		p.ChainID, p.Sender, p.MaxFeePerGas = nil, nil, nil
+		p.ChainID, p.Account, p.MaxFeePerGas = nil, nil, nil
 	}
 	return toml.Unmarshal(data, target)
 }
@@ -66,27 +67,6 @@ func checkedClient(ctx context.Context, p OperatorParams) (*eth.RPC, *big.Int, e
 	return rpc, id, nil
 }
 
-func Account(ctx context.Context, p OperatorParams, display DisplayOptions, out io.Writer) error {
-	sender, err := p.senderAddress()
-	if err != nil {
-		return err
-	}
-	client, _, err := checkedClient(ctx, p)
-	if err != nil {
-		return err
-	}
-	defer client.Close()
-	balance, err := client.BalanceAt(ctx, sender, nil)
-	if err != nil {
-		return err
-	}
-	nonce, err := client.PendingNonceAt(ctx, sender)
-	if err != nil {
-		return err
-	}
-	if display.Output == "json" {
-		return json.NewEncoder(out).Encode(map[string]any{"address": sender.Hex(), "balance_wei": balance.String(), "nonce": nonce})
-	}
-	_, err = fmt.Fprintf(out, "Address: %s\nETH balance (wei): %s\nPending nonce: %d\n", sender.Hex(), balance.String(), nonce)
-	return err
+func Account(ctx context.Context, p OperatorParams, d DisplayOptions, out io.Writer) error {
+	return accountRead(ctx, p, d, out, func(s *eth.Inspection, a ethcommon.Address) (any, error) { return s.Account(ctx, a) })
 }

@@ -1,14 +1,17 @@
 RPCURLFile = "/run/secrets/livepeer-chain-rpc-url"
 # ChainID = 42161 # Optional expected RPC chain ID
-# Sender = "0x0123456789abcdef0123456789abcdef01234567"
+# Account = "0x0123456789abcdef0123456789abcdef01234567"
 # Controller = "0xD8E8328501E9645d16Cf49539efC04f734606ee4" # Arbitrum mainnet default
 # MaxFeePerGas = "1000000000" # Optional ceiling, wei per gas
 # KeystoreFile = "/run/secrets/livepeer-chain-keystore.json"
 # KeystorePasswordFile = "/run/secrets/livepeer-chain-keystore-password"
 # Both files must be owner-only. The password is read as exact bytes (no newline).
-# Needed only with --submit; see docs/configuration.md and docs/chain.md.
+# Needed for --submit and local signing; see docs/configuration.md and docs/chain.md.
 
 # Action inputs and output controls must be provided on the command line.
 # Example dry run:
-# livepeer chain --config /path/to/chain.toml --output json ticketbroker fund --amount 1000000000000000000 --reserve 0
-# Add --submit to broadcast, --wait for a receipt, or --quiet to suppress output.
+# livepeer chain --config /path/to/chain.toml --output json ticketbroker fund --amount 1 --reserve 0
+# Add --submit to broadcast and wait for inclusion, or --quiet to suppress output.
+# --no-wait broadcasts a single transaction without waiting.
+# Amounts use human ETH/LPT units; --base-units selects integer wei/token units.
+# Gas limit, priority fee, timeout, replacements and no-wait are CLI-only.

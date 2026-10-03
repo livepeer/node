@@ -15,11 +15,12 @@ import (
 
 	"github.com/BurntSushi/toml"
 	ethcommon "github.com/ethereum/go-ethereum/common"
+	"github.com/j0sh/boa/pkg/boa"
 	"github.com/livepeer/node/internal/test"
 	"github.com/stretchr/testify/require"
 )
 
-const testSender = "0x0123456789abcdef0123456789abcdef01234567"
+const testAccount = "0x0123456789abcdef0123456789abcdef01234567"
 
 func TestLeafHelpAndCompletion(t *testing.T) {
 	t.Setenv("LIVEPEER_CHAIN_KEYSTORE_FILE", "/missing/account.json")
@@ -30,7 +31,11 @@ func TestLeafHelpAndCompletion(t *testing.T) {
 	}{
 		{"status", []string{"--config", "--output", "--chain-id"}, []string{"--amount", "--reserve", "--submit", "--quiet"}},
 		{"stake bond", []string{"--amount", "--submit", "--wait", "--quiet"}, []string{"--delegate", "--reserve", "--lock-id"}},
-		{"ticketbroker fund", []string{"--amount", "--reserve", "--quiet"}, []string{"--lock-id", "--fee-share"}},
+		{"ticketbroker fund", []string{"--amount", "--reserve", "--quiet"}, []string{"--lock-id", "--fee-cut"}},
+		{"orchestrator register", []string{"--amount", "--redelegate", "--lock-id", "--reward-cut", "--fee-cut", "--service-uri"}, []string{"--fee-share", "--recipient"}},
+		{"stake locks", []string{"--from-id", "--limit", "--withdrawable", "--locked"}, []string{"--submit", "--amount"}},
+		{"governance proposal vote", []string{"--reason", "--gas-limit", "--max-priority-fee-per-gas", "--max-transaction-replacements"}, []string{"--amount", "--lock-id"}},
+		{"sign typed-data", []string{"--data-file"}, []string{"--message-file", "--submit"}},
 	} {
 		for _, completion := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/completion=%v", tc.command, completion), func(t *testing.T) {
@@ -74,30 +79,41 @@ func TestActionValidationBeforeRPC(t *testing.T) {
 		want string
 	}{
 		{[]string{"stake", "bond", "--amount", "1"}, "arg(s)"},
-		{[]string{"stake", "bond", testSender, testSender, "--amount", "1"}, "arg(s)"},
+		{[]string{"stake", "bond", testAccount, testAccount, "--amount", "1"}, "arg(s)"},
 		{[]string{"stake", "bond", "not-an-address", "--amount", "1"}, "invalid"},
-		{[]string{"stake", "bond", testSender}, "amount"},
-		{[]string{"stake", "bond", "--delegate", testSender, "--amount", "1"}, "unknown flag"},
+		{[]string{"stake", "bond", testAccount}, "amount"},
+		{[]string{"stake", "bond", testAccount, "--amount", "1", "--redelegate"}, "exactly one"},
+		{[]string{"orchestrator", "register", "--amount", "1", "--lock-id", "1", "--reward-cut", "1", "--fee-cut", "2"}, "mutually exclusive"},
+		{[]string{"orchestrator", "register", "--redelegate", "--lock-id", "1", "--reward-cut", "1", "--fee-cut", "2"}, "mutually exclusive"},
+		{[]string{"stake", "rebond"}, "unknown command"},
+		{[]string{"orchestrator", "activate"}, "unknown command"},
+		{[]string{"orchestrator", "reward"}, "unknown command"},
+		{[]string{"ticketbroker", "unlock", "--transaction-timeout", "0s"}, "must be positive"},
+		{[]string{"ticketbroker", "unlock", "--gas-limit", "0"}, "below min"},
+		{[]string{"ticketbroker", "fund", "--amount", "all", "--reserve", "0"}, "not supported"},
+		{[]string{"governance", "poll", "vote", testAccount, "maybe"}, "allowed values"},
+		{[]string{"stake", "locks", "--limit", "1001"}, "exceeds max"},
+		{[]string{"stake", "locks", "--withdrawable", "--locked"}, "mutually exclusive"},
+
+		{[]string{"stake", "bond", "--delegate", testAccount, "--amount", "1"}, "unknown flag"},
 		{[]string{"stake", "unbond", "--amount", "0"}, "must be positive"},
 		{[]string{"stake", "unbond", "--amount", "1", "--reserve", "1"}, "unknown flag"},
-		{[]string{"stake", "rebond"}, "lock-id"},
+		{[]string{"stake", "cancel-unbond"}, "lock-id"},
 		{[]string{"stake", "withdraw"}, "lock-id"},
-		{[]string{"earnings", "claim"}, "end-round"},
-		{[]string{"earnings", "withdraw-fees", "--amount", "1"}, "recipient"},
-		{[]string{"earnings", "withdraw-fees", "--amount", "0", "--recipient", testSender}, "must be positive"},
-		{[]string{"orchestrator", "activate"}, "reward-cut"},
-		{[]string{"orchestrator", "activate", "--reward-cut", "0"}, "fee-share"},
-		{[]string{"orchestrator", "activate", "--reward-cut", "1000001", "--fee-share", "0"}, "exceeds max"},
+		{[]string{"earnings", "withdraw-fees", "--amount", "0", "--recipient", testAccount}, "must be positive"},
+		{[]string{"orchestrator", "register"}, "reward-cut"},
+		{[]string{"orchestrator", "register", "--reward-cut", "0"}, "fee-cut"},
+		{[]string{"orchestrator", "register", "--reward-cut", "100.0001", "--fee-cut", "0"}, "between 0 and 100"},
 		{[]string{"orchestrator", "set-config"}, "is required"},
-		{[]string{"orchestrator", "set-config", "--fee-share", "0"}, "required together"},
+		{[]string{"orchestrator", "set-config", "--fee-share", "0"}, "unknown flag"},
 		{[]string{"orchestrator", "set-config", "--service-uri", "https://user:pass@example.com"}, "absolute HTTP"},
 		{[]string{"orchestrator", "set-config", "--service-uri", "ftp://example.com"}, "absolute HTTP"},
 		{[]string{"orchestrator", "set-config", "--service-uri", "https://example.com?key=secret"}, "absolute HTTP"},
 		{[]string{"orchestrator", "set-config", "--service-uri", "https://example.com#fragment"}, "absolute HTTP"},
 		{[]string{"ticketbroker", "fund", "--amount", "1"}, "reserve"},
 		{[]string{"ticketbroker", "fund", "--amount", "0", "--reserve", "0"}, "cannot both be zero"},
-		{[]string{"ticketbroker", "fund", "--amount", "115792089237316195423570985008687907853269984665640564039457584007913129639935", "--reserve", "1"}, "total exceeds uint256"},
-		{[]string{"ticketbroker", "unlock", "--wait"}, "wait requires submit"},
+		{[]string{"ticketbroker", "fund", "--amount", "115792089237316195423570985008687907853269984665640564039457584007913129639935", "--reserve", "1", "--base-units"}, "total exceeds uint256"},
+		{[]string{"ticketbroker", "unlock", "--no-wait", "--max-transaction-replacements", "1"}, "no-wait"},
 		{[]string{"ticketbroker", "unlock", "--submit"}, "keystore-file"},
 		{[]string{"ticketbroker", "unlock", "--submit", "--keystore-file", path}, "keystore-password-file"},
 		{[]string{"ticketbroker", "unlock", "--submit", "--keystore-password-file", passwordPath}, "keystore-file"},
@@ -111,7 +127,7 @@ func TestActionValidationBeforeRPC(t *testing.T) {
 		t.Run(strings.Join(tc.args, " "), func(t *testing.T) {
 			var output bytes.Buffer
 			root := Root(&output, &output)
-			root.SetArgs(append([]string{"--sender", testSender}, tc.args...))
+			root.SetArgs(append([]string{"--account", testAccount}, tc.args...))
 			err := root.Execute()
 			require.ErrorContains(t, err, tc.want)
 			require.NotContains(t, err.Error(), "wrong-secret")
@@ -121,44 +137,67 @@ func TestActionValidationBeforeRPC(t *testing.T) {
 	}
 }
 
-func TestSenderRequiredBeforeRPC(t *testing.T) {
-	t.Setenv("LIVEPEER_CHAIN_SENDER", "")
+func TestAccountRequiredBeforeRPC(t *testing.T) {
+	t.Setenv("LIVEPEER_CHAIN_ACCOUNT", "")
 	t.Setenv("LIVEPEER_CHAIN_RPC_URL", "http://localhost:1")
 	for _, command := range []string{"account", "orchestrator get", "ticketbroker unlock"} {
 		t.Run(command, func(t *testing.T) {
 			var output bytes.Buffer
 			root := Root(&output, &output)
 			root.SetArgs(strings.Fields(command))
-			require.ErrorContains(t, root.Execute(), "sender is required")
+			require.ErrorContains(t, root.Execute(), "account address is required")
 			require.Empty(t, output.String())
 		})
 	}
 }
 
 func TestConfigRejectsInvocationInputs(t *testing.T) {
-	for _, entry := range []string{
-		`Amount = "1"`, `Reserve = "1"`, `Delegate = "` + testSender + `"`, `Recipient = "` + testSender + `"`,
-		`Orchestrator = "` + testSender + `"`, `LockID = "0"`, `EndRound = "0"`, `RewardCut = 0`, `FeeShare = 0`,
-		`ServiceURI = "https://example.com"`, `Submit = true`, `Wait = true`, `Quiet = true`,
-		`Output = "json"`, `PrintConfig = true`,
+	for _, tc := range []struct {
+		command string
+		load    func([]byte) error
+		entries []string
+	}{
+		{"ticketbroker fund", loadInvocationConfig[FundParams], []string{`Amount = "1"`, `Reserve = "1"`, `BaseUnits = true`}},
+		{"stake bond", loadInvocationConfig[BondParams], []string{`Orchestrator = "` + testAccount + `"`, `Redelegate = true`}},
+		{"stake cancel-unbond", loadInvocationConfig[CancelUnbondParams], []string{`Delegate = "` + testAccount + `"`, `LockID = "0"`}},
+		{"earnings withdraw-fees", loadInvocationConfig[WithdrawFeesParams], []string{`Recipient = "` + testAccount + `"`}},
+		{"earnings claim", loadInvocationConfig[ClaimParams], []string{`EndRound = "0"`}},
+		{"orchestrator register", loadInvocationConfig[RegisterParams], []string{`RewardCut = "0"`, `FeeCut = "0"`, `ServiceURI = "https://example.com"`}},
+		{"orchestrator list", loadInvocationConfig[ListParams], []string{`Active = true`}},
+		{"stake locks", loadInvocationConfig[LocksParams], []string{`FromID = "0"`, `Limit = 10`, `Withdrawable = true`, `Locked = true`}},
+		{"governance poll vote", loadInvocationConfig[PollVoteParams], []string{`Address = "` + testAccount + `"`, `Choice = "yes"`}},
+		{"governance proposal vote", loadInvocationConfig[ProposalVoteParams], []string{`ID = "1"`, `Choice = "for"`, `Reason = "test"`}},
+		{"sign message", loadInvocationConfig[MessageParams], []string{`MessageFile = "message.txt"`}},
+		{"sign typed-data", loadInvocationConfig[TypedDataParams], []string{`DataFile = "data.json"`}},
+		{"ticketbroker unlock", loadInvocationConfig[TransactionOptions], []string{`GasLimit = 100`, `NoWait = true`, `TransactionTimeout = "3m"`, `MaxPriorityFeePerGas = "1"`, `MaxTransactionReplacements = 1`, `Submit = true`, `Wait = true`, `Quiet = true`}},
+		{"status", loadInvocationConfig[DisplayOptions], []string{`Output = "json"`, `PrintConfig = true`}},
 	} {
-		t.Run(entry, func(t *testing.T) {
-			config := filepath.Join(t.TempDir(), "chain.toml")
-			require.NoError(t, os.WriteFile(config, []byte(entry), 0600))
-			var output bytes.Buffer
-			root := Root(&output, &output)
-			root.SetArgs([]string{"ticketbroker", "unlock", "--config", config, "--print-config"})
-			err := root.Execute()
-			require.Error(t, err)
-			require.Contains(t, err.Error(), strconv.Quote(strings.Fields(entry)[0]))
-			require.Regexp(t, "unknown config field|forbidden by boa", err.Error())
-			require.Empty(t, output.String())
-		})
+		for _, entry := range tc.entries {
+			t.Run(tc.command+"/"+entry, func(t *testing.T) {
+				config := filepath.Join(t.TempDir(), "chain.toml")
+				require.NoError(t, os.WriteFile(config, []byte(entry), 0600))
+				var output bytes.Buffer
+				root := Root(&output, &output)
+				root.SetArgs(append(strings.Fields(tc.command), "--config", config, "--print-config"))
+				err := root.Execute()
+				require.Error(t, err)
+				require.Contains(t, err.Error(), strconv.Quote(strings.Fields(entry)[0]))
+				require.Regexp(t, "unknown config field|forbidden by boa", err.Error())
+				// The root file rejects leaf fields as unknown. Check the leaf's
+				// own source tags as well, independently of that root guard.
+				require.ErrorContains(t, tc.load([]byte(entry)), "forbidden by boa")
+				require.Empty(t, output.String())
+			})
+		}
 	}
 }
 
+func loadInvocationConfig[T any](data []byte) error {
+	return boa.LoadConfigBytes(data, ".toml", new(T), nil)
+}
+
 func TestActionEnvironmentCannotSupplyInputs(t *testing.T) {
-	for _, name := range []string{"AMOUNT", "RESERVE", "DELEGATE", "ORCHESTRATOR", "RECIPIENT", "LOCK_ID", "END_ROUND", "REWARD_CUT", "FEE_SHARE", "SERVICE_URI", "OUTPUT"} {
+	for _, name := range []string{"AMOUNT", "RESERVE", "DELEGATE", "ORCHESTRATOR", "RECIPIENT", "LOCK_ID", "END_ROUND", "REWARD_CUT", "FEE_CUT", "MAX_PRIORITY_FEE_PER_GAS", "TRANSACTION_TIMEOUT", "MAX_TRANSACTION_REPLACEMENTS", "GAS_LIMIT", "SERVICE_URI", "OUTPUT"} {
 		t.Setenv("LIVEPEER_CHAIN_"+name, "invalid")
 	}
 	for _, name := range []string{"SUBMIT", "WAIT", "QUIET", "PRINT_CONFIG"} {
@@ -180,23 +219,31 @@ func TestActionEnvironmentCannotSupplyInputs(t *testing.T) {
 }
 
 func TestOperatorSourcesAndFlagPlacement(t *testing.T) {
-	envSender := "0x1111111111111111111111111111111111111111"
-	cliSender := "0x2222222222222222222222222222222222222222"
-	var wantSender, chainID string
+	envAccount := "0x1111111111111111111111111111111111111111"
+	cliAccount := "0x2222222222222222222222222222222222222222"
+	var wantAccount, chainID string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
 			Method string
 			Params []any
 		}
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&request))
-		result := "0x0"
+		var result any = "0x0"
 		switch request.Method {
 		case "eth_chainId":
 			result = chainID
+		case "eth_getBlockByNumber":
+			result = map[string]any{"number": "0x10", "hash": ethcommon.Hash{31: 1}.Hex()}
+		case "eth_call":
+			result = "0x" + uintWord(0)
+			input := request.Params[0].(map[string]any)
+			if strings.HasPrefix(input["input"].(string), calldata("getContract(bytes32)")) {
+				result = "0x" + addressWord("0x0000000000000000000000000000000000001000")
+			}
 		case "eth_getBalance":
-			require.Equal(t, []any{strings.ToLower(wantSender), "latest"}, request.Params)
+			require.Equal(t, strings.ToLower(wantAccount), request.Params[0])
 		case "eth_getTransactionCount":
-			require.Equal(t, []any{strings.ToLower(wantSender), "pending"}, request.Params)
+			require.Equal(t, []any{strings.ToLower(wantAccount), "pending"}, request.Params)
 		default:
 			t.Errorf("unexpected RPC method %s", request.Method)
 		}
@@ -207,41 +254,46 @@ func TestOperatorSourcesAndFlagPlacement(t *testing.T) {
 	rpcFile := filepath.Join(dir, "rpc")
 	require.NoError(t, os.WriteFile(rpcFile, []byte(server.URL), 0600))
 	config := filepath.Join(dir, "chain.toml")
-	require.NoError(t, os.WriteFile(config, []byte(fmt.Sprintf("RPCURLFile = %q\nChainID = 3\nSender = %q\nMaxFeePerGas = '3'\nKeystoreFile = '/missing/account.json'\nKeystorePasswordFile = '/missing/password'\n", rpcFile, testSender)), 0600))
+	require.NoError(t, os.WriteFile(config, []byte(fmt.Sprintf("RPCURLFile = %q\nChainID = 3\nAccount = %q\nMaxFeePerGas = '3'\nKeystoreFile = '/missing/account.json'\nKeystorePasswordFile = '/missing/password'\n", rpcFile, testAccount)), 0600))
 	partialConfig := filepath.Join(dir, "partial.toml")
 	require.NoError(t, os.WriteFile(partialConfig, []byte(fmt.Sprintf("RPCURLFile = %q\n", rpcFile)), 0600))
 
 	for _, tc := range []struct {
-		name       string
-		args       []string
-		env        bool
-		sender, id string
+		name        string
+		args        []string
+		env         bool
+		account, id string
 	}{
-		{"config only", []string{"--config", config, "account", "--output", "json"}, false, testSender, "0x3"},
-		{"CLI before leaf", []string{"--config", config, "--chain-id", "1", "--sender", cliSender, "--max-fee-per-gas", "1", "--output", "json", "account"}, true, cliSender, "0x1"},
-		{"CLI after leaf", []string{"account", "--config", config, "--chain-id", "1", "--sender", cliSender, "--max-fee-per-gas", "1", "--output", "json"}, true, cliSender, "0x1"},
-		{"env over config", []string{"--config", config, "account", "--output", "json"}, true, envSender, "0x2"},
-		{"env only", []string{"account", "--output", "json"}, true, envSender, "0x2"},
-		{"CLI over partial config", []string{"account", "--config", partialConfig, "--chain-id", "1", "--sender", cliSender, "--max-fee-per-gas", "1", "--output", "json"}, false, cliSender, "0x1"},
-		{"env over partial config", []string{"account", "--config", partialConfig, "--output", "json"}, true, envSender, "0x2"},
+		{"config only", []string{"--config", config, "account", "--output", "json"}, false, testAccount, "0x3"},
+		{"CLI before leaf", []string{"--config", config, "--chain-id", "1", "--account", cliAccount, "--max-fee-per-gas", "1", "--output", "json", "account"}, true, cliAccount, "0x1"},
+		{"CLI after leaf", []string{"account", "--config", config, "--chain-id", "1", "--account", cliAccount, "--max-fee-per-gas", "1", "--output", "json"}, true, cliAccount, "0x1"},
+		{"env over config", []string{"--config", config, "account", "--output", "json"}, true, envAccount, "0x2"},
+		{"env only", []string{"account", "--output", "json"}, true, envAccount, "0x2"},
+		{"CLI over partial config", []string{"account", "--config", partialConfig, "--chain-id", "1", "--account", cliAccount, "--max-fee-per-gas", "1", "--output", "json"}, false, cliAccount, "0x1"},
+		{"env over partial config", []string{"account", "--config", partialConfig, "--output", "json"}, true, envAccount, "0x2"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("LIVEPEER_CHAIN_CHAIN_ID", "")
-			t.Setenv("LIVEPEER_CHAIN_SENDER", "")
+			t.Setenv("LIVEPEER_CHAIN_ACCOUNT", "")
 			t.Setenv("LIVEPEER_CHAIN_RPC_URL_FILE", "")
 			t.Setenv("LIVEPEER_CHAIN_MAX_FEE_PER_GAS", "")
 			if tc.env {
 				t.Setenv("LIVEPEER_CHAIN_CHAIN_ID", "2")
-				t.Setenv("LIVEPEER_CHAIN_SENDER", envSender)
+				t.Setenv("LIVEPEER_CHAIN_ACCOUNT", envAccount)
 				t.Setenv("LIVEPEER_CHAIN_RPC_URL_FILE", rpcFile)
 				t.Setenv("LIVEPEER_CHAIN_MAX_FEE_PER_GAS", "2")
 			}
-			wantSender, chainID = ethcommon.HexToAddress(tc.sender).Hex(), tc.id
+			wantAccount, chainID = ethcommon.HexToAddress(tc.account).Hex(), tc.id
 			var output bytes.Buffer
 			root := Root(&output, &output)
 			root.SetArgs(tc.args)
 			require.NoError(t, root.Execute())
-			require.JSONEq(t, fmt.Sprintf(`{"address":%q,"balance_wei":"0","nonce":0}`, wantSender), output.String())
+			var account map[string]any
+			require.NoError(t, json.Unmarshal(output.Bytes(), &account))
+			require.Equal(t, strings.ToLower(wantAccount), account["address"])
+			require.Equal(t, "0", account["balance_wei"])
+			require.Equal(t, "0", account["lpt_balance_base_units"])
+			require.EqualValues(t, 0, account["pending_nonce"])
 			output.Reset()
 			root = Root(&output, &output)
 			root.SetArgs(append(append([]string{}, tc.args...), "--print-config"))

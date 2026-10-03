@@ -7,13 +7,9 @@ import (
 	"fmt"
 	"io"
 	"math/big"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
-	"strings"
 	"testing"
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
@@ -37,121 +33,54 @@ func TestTransactionCommands(t *testing.T) {
 		wantReceipt   bool
 		wantErr       string
 		wantSent      int
-		mode          string
 	}{
 		{name: "simulate without a key"},
 		{name: "simulate with unavailable keystore", flags: []string{"--keystore-file", "/missing/account.json", "--keystore-password-file", "/missing/password"}},
-		{name: "explicit submission", flags: []string{"--submit"}, wantSent: 1},
-		{name: "keystore environment overrides config", keySource: 1, flags: []string{"--submit"}, wantSent: 1},
-		{name: "keystore CLI overrides environment", keySource: 2, flags: []string{"--submit"}, wantSent: 1},
-		{name: "successful receipt", mode: "text", flags: []string{"--submit", "--wait"}, wantReceipt: true, wantSent: 1},
+		{name: "explicit submission", flags: []string{"--submit"}, wantSent: 1, wantReceipt: true},
+		{name: "keystore environment overrides config", keySource: 1, flags: []string{"--submit"}, wantSent: 1, wantReceipt: true},
+		{name: "keystore CLI overrides environment", keySource: 2, flags: []string{"--submit"}, wantSent: 1, wantReceipt: true},
 		{name: "receipt failure", flags: []string{"--submit", "--wait"}, receiptErr: true, wantReceipt: true, wantErr: "receipt", wantSent: 1},
 		{name: "reverted receipt", flags: []string{"--submit", "--wait"}, receiptRevert: true, wantReceipt: true, wantErr: "reverted", wantSent: 1},
 		{name: "failed simulation", flags: []string{"--submit"}, simulationErr: true, wantErr: "simulation failed"},
 		{name: "uncertain broadcast", flags: []string{"--submit"}, broadcastErr: true, wantErr: "HTTP 503", wantSent: 1},
-		{name: "sender differs from key", flags: []string{"--submit", "--sender", "0x0000000000000000000000000000000000001234"}, wantErr: "sender does not match private key"},
+		{name: "account differs from keystore", flags: []string{"--submit", "--account", "0x0000000000000000000000000000000000001234"}, wantErr: "configured account address does not match keystore account"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			mode := tc.mode
-			if mode == "" {
-				mode = "json"
-			}
 			dir := t.TempDir()
 			keyFile, passwordPath := test.WriteFixedKeystore(t)
 			key, err := eth.OpenKeystoreFile(keyFile, passwordPath)
 			require.NoError(t, err)
-			controller := ethcommon.HexToAddress("0xD8E8328501E9645d16Cf49539efC04f734606ee4")
-			broker := ethcommon.HexToAddress("0x2000")
+			f := newManagementFixture(t)
+			f.account = key.Address()
+			broker := f.addresses["TicketBroker"]
 			deposit, ok := new(big.Int).SetString("100000000000000000001", 10)
 			require.True(t, ok)
 			reserve := big.NewInt(5)
 			value := new(big.Int).Add(deposit, reserve)
 			data := append(crypto.Keccak256([]byte("fundDepositAndReserve(uint256,uint256)"))[:4], ethcommon.LeftPadBytes(deposit.Bytes(), 32)...)
 			data = append(data, ethcommon.LeftPadBytes(reserve.Bytes(), 32)...)
-			var sent, receipts int
-			var hash ethcommon.Hash
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				var req struct {
-					Method string
-					Params []json.RawMessage
-				}
-				require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
-				var result any = "0x1"
-				switch req.Method {
-				case "eth_chainId":
-					result = "0xa4b1"
-				case "eth_call":
-					var call struct {
-						From, To, Value string
-						Data            string `json:"input"`
-					}
-					require.NoError(t, json.Unmarshal(req.Params[0], &call))
-					call.To = ethcommon.HexToAddress(call.To).Hex()
-					call.From = ethcommon.HexToAddress(call.From).Hex()
-					if call.To == controller.Hex() {
-						result = "0x" + hex.EncodeToString(ethcommon.LeftPadBytes(broker.Bytes(), 32))
-					} else {
-						if tc.simulationErr {
-							http.Error(w, "simulation unavailable", http.StatusServiceUnavailable)
-							return
-						}
-						require.Equal(t, broker.Hex(), call.To)
-						require.Equal(t, key.Address().Hex(), call.From)
-						require.Equal(t, "0x"+hex.EncodeToString(data), call.Data)
-						require.Equal(t, "0x"+value.Text(16), call.Value)
-						result = "0x"
-					}
-				case "eth_getBlockByNumber":
-					result = &types.Header{Number: big.NewInt(1), Difficulty: new(big.Int), BaseFee: big.NewInt(1)}
-				case "eth_estimateGas":
-					result = "0x5208"
-				case "eth_maxPriorityFeePerGas":
-				case "eth_getTransactionCount":
-					require.JSONEq(t, `"`+strings.ToLower(key.Address().Hex())+`"`, string(req.Params[0]))
-					require.JSONEq(t, `"pending"`, string(req.Params[1]))
-				case "eth_sendRawTransaction":
-					sent++
-					var encoded string
-					require.NoError(t, json.Unmarshal(req.Params[0], &encoded))
-					raw, err := hex.DecodeString(strings.TrimPrefix(encoded, "0x"))
-					require.NoError(t, err)
-					var tx types.Transaction
-					require.NoError(t, tx.UnmarshalBinary(raw))
-					require.Equal(t, "42161", tx.ChainId().String())
-					require.Equal(t, &broker, tx.To())
-					require.Equal(t, value.String(), tx.Value().String())
-					require.Equal(t, data, tx.Data())
-					require.EqualValues(t, 1, tx.Nonce())
-					sender, err := types.Sender(types.LatestSignerForChainID(tx.ChainId()), &tx)
-					require.NoError(t, err)
-					require.Equal(t, key.Address(), sender)
-					hash = tx.Hash()
-					if tc.broadcastErr {
-						http.Error(w, "broadcast response unavailable", http.StatusServiceUnavailable)
-						return
-					}
-					result = hash.Hex()
-				case "eth_getTransactionReceipt":
-					receipts++
-					if tc.receiptErr {
-						http.Error(w, "receipt unavailable", http.StatusServiceUnavailable)
-						return
-					}
-					status := uint64(1)
-					if tc.receiptRevert {
-						status = 0
-					}
-					result = &types.Receipt{TxHash: hash, Status: status, BlockNumber: big.NewInt(16), BlockHash: ethcommon.Hash{31: 1}, Logs: []*types.Log{}}
-				default:
-					t.Errorf("unexpected RPC method %s", req.Method)
-				}
-				require.NoError(t, json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": result}))
-			}))
-			defer server.Close()
+			f.simulationHook = func(from, to ethcommon.Address, input []byte, amount string) {
+				require.Equal(t, key.Address(), from)
+				require.Equal(t, broker, to)
+				require.Equal(t, data, input)
+				require.Equal(t, "0x"+value.Text(16), amount)
+			}
+			if tc.simulationErr {
+				f.failSimulation = "fundDepositAndReserve"
+			}
+			if tc.broadcastErr {
+				f.failRPC = "eth_sendRawTransaction"
+			}
+			if tc.receiptErr {
+				f.failRPC = "eth_getTransactionReceipt"
+			}
+			if tc.receiptRevert {
+				f.failReceipt = "fundDepositAndReserve"
+			}
 			rpcFile := filepath.Join(dir, "rpc")
-			require.NoError(t, os.WriteFile(rpcFile, []byte(server.URL), 0600))
+			require.NoError(t, os.WriteFile(rpcFile, []byte(f.server.URL), 0600))
 			configFile := filepath.Join(dir, "chain.toml")
-			config := fmt.Sprintf("RPCURLFile = %q\nSender = %q\n", rpcFile, key.Address().Hex())
+			config := fmt.Sprintf("RPCURLFile = %q\nAccount = %q\n", rpcFile, key.Address().Hex())
 			if slices.Contains(tc.flags, "--submit") {
 				paths := [3][2]string{{"/missing/key", "/missing/password"}, {"/missing/key", "/missing/password"}, {"/missing/key", "/missing/password"}}
 				paths[tc.keySource] = [2]string{keyFile, passwordPath}
@@ -167,7 +96,7 @@ func TestTransactionCommands(t *testing.T) {
 			require.NoError(t, os.WriteFile(configFile, []byte(config), 0600))
 			var output bytes.Buffer
 			root := Root(&output, &output)
-			args := append([]string{"ticketbroker", "fund", "--config", configFile, "--amount", deposit.String(), "--reserve", reserve.String(), "--output", mode}, tc.flags...)
+			args := append([]string{"ticketbroker", "fund", "--config", configFile, "--amount", deposit.String(), "--reserve", reserve.String(), "--base-units", "--output", "json"}, tc.flags...)
 			root.SetArgs(args)
 			err = root.Execute()
 			if tc.wantErr == "" {
@@ -175,8 +104,22 @@ func TestTransactionCommands(t *testing.T) {
 			} else {
 				require.ErrorContains(t, err, tc.wantErr)
 			}
+			sent := len(f.sent)
+			var hash ethcommon.Hash
+			if sent > 0 {
+				tx := f.sent[0]
+				hash = tx.Hash()
+				require.Equal(t, "42161", tx.ChainId().String())
+				require.Equal(t, &broker, tx.To())
+				require.Equal(t, value.String(), tx.Value().String())
+				require.Equal(t, data, tx.Data())
+				require.Zero(t, tx.Nonce())
+				recoveredAddress, err := types.Sender(types.LatestSignerForChainID(tx.ChainId()), tx)
+				require.NoError(t, err)
+				require.Equal(t, key.Address(), recoveredAddress)
+			}
 			require.Equal(t, tc.wantSent, sent)
-			require.Equal(t, tc.wantReceipt, receipts > 0)
+			require.Equal(t, tc.wantReceipt, f.receipts > 0)
 			if sent > 0 && tc.wantErr != "" {
 				require.ErrorContains(t, err, hash.Hex(), "the operator must be able to reconcile this transaction")
 			}
@@ -184,29 +127,30 @@ func TestTransactionCommands(t *testing.T) {
 				require.Empty(t, output.String())
 				return
 			}
-			if mode == "text" {
-				require.Contains(t, output.String(), "\n  \"command\":")
-			} else {
-				require.NotContains(t, output.String(), "\n  \"command\":")
-			}
+
 			var record struct {
 				Submitted       bool   `json:"submitted"`
 				TransactionHash string `json:"transaction_hash"`
-				SubmissionError string `json:"submission_error"`
 				Simulation      eth.TransactionPlan
 			}
 			decoder := json.NewDecoder(&output)
 			require.NoError(t, decoder.Decode(&record))
 			require.Equal(t, value.String(), record.Simulation.ValueWei)
-			require.Equal(t, sent == 1 && !tc.broadcastErr, record.Submitted)
-			if sent == 0 {
-				require.Empty(t, record.TransactionHash)
-			} else {
-				require.Equal(t, hash.Hex(), record.TransactionHash)
+			require.False(t, record.Submitted)
+			require.Empty(t, record.TransactionHash)
+			if sent > 0 {
+				var ready map[string]any
+				require.NoError(t, decoder.Decode(&ready))
+				require.Equal(t, hash.Hex(), ready["transaction_hash"])
+				require.Equal(t, "ready", ready["broadcast"])
+				if !tc.broadcastErr {
+					var submitted map[string]any
+					require.NoError(t, decoder.Decode(&submitted))
+					require.Equal(t, true, submitted["submitted"])
+					require.Equal(t, hash.Hex(), submitted["transaction_hash"])
+				}
 			}
-			if tc.broadcastErr {
-				require.Contains(t, record.SubmissionError, tc.wantErr)
-			}
+
 			if tc.wantReceipt && tc.wantErr == "" {
 				var receipt map[string]any
 				require.NoError(t, decoder.Decode(&receipt))
@@ -220,161 +164,95 @@ func TestTransactionCommands(t *testing.T) {
 
 func TestBondApprovalSequencing(t *testing.T) {
 	for _, tc := range []struct {
-		name         string
-		flags        []string
-		allowance    uint64
-		balance      *uint64
-		revert       bool
-		wantErr      string
-		wantMethods  []string
-		wantSent     int
-		wantReceipts int
-		quiet        bool
+		name                 string
+		flags                []string
+		allowance            int64
+		balance              *int64
+		failReceipt, wantErr string
+		methods              []string
+		sent                 int
 	}{
-		{name: "dry run plans approval", wantMethods: []string{"approve"}},
-		{name: "submit stops after approval", flags: []string{"--submit"}, wantMethods: []string{"approve"}, wantSent: 1},
-		{name: "wait confirms approval before bond", flags: []string{"--submit", "--wait"}, wantMethods: []string{"approve", "bond"}, wantSent: 2, wantReceipts: 2},
-		{name: "existing allowance", allowance: 5, wantMethods: []string{"bond"}},
-		{name: "insufficient balance", balance: pointer(uint64(4)), wantErr: "insufficient Livepeer token balance"},
-		{name: "approval reverts", flags: []string{"--submit", "--wait"}, revert: true, wantMethods: []string{"approve"}, wantSent: 1, wantReceipts: 1, wantErr: "reverted"},
-		{name: "quiet approval and bond", flags: []string{"--submit", "--wait"}, quiet: true, wantMethods: []string{"approve", "bond"}, wantSent: 2, wantReceipts: 2},
+		{name: "dry run plans approval", methods: []string{"approve"}},
+		{name: "no wait rejects sequence", flags: []string{"--submit", "--no-wait"}, wantErr: "multi-step"},
+		{name: "confirms approval before bond", flags: []string{"--submit"}, methods: []string{"approve", "bondWithHint"}, sent: 2},
+		{name: "gas and tip overrides on each step", flags: []string{"--submit", "--gas-limit", "50000", "--max-priority-fee-per-gas", "9"}, methods: []string{"approve", "bondWithHint"}, sent: 2},
+		{name: "existing allowance", allowance: 5, methods: []string{"bondWithHint"}},
+		{name: "insufficient balance", balance: pointer(int64(4)), wantErr: "insufficient Livepeer token balance"},
+		{name: "approval reverts", flags: []string{"--submit"}, failReceipt: "approve", methods: []string{"approve"}, sent: 1, wantErr: "reverted"},
+		{name: "bond reverts quietly", flags: []string{"--submit", "--quiet"}, failReceipt: "bondWithHint", methods: []string{"approve", "bondWithHint"}, sent: 2, wantErr: "reverted"},
+		{name: "quiet approval and bond", flags: []string{"--submit", "--quiet"}, methods: []string{"approve", "bondWithHint"}, sent: 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			quiet := tc.quiet
+			f := newManagementFixture(t)
 			keyFile, passwordPath := test.WriteFixedKeystore(t)
 			key, err := eth.OpenKeystoreFile(keyFile, passwordPath)
 			require.NoError(t, err)
-			controller := ethcommon.HexToAddress("0xD8E8328501E9645d16Cf49539efC04f734606ee4")
-			token := ethcommon.HexToAddress("0x2000")
-			bonding := ethcommon.HexToAddress("0x3000")
-			var planned []string
-			var sent, receipts int
-			var lastHash string
-			approved := tc.allowance >= 5
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				var req struct {
-					Method string
-					Params []json.RawMessage
-				}
-				require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
-				var result any = "0x1"
-				switch req.Method {
-				case "eth_getBlockByNumber":
-					result = &types.Header{Number: big.NewInt(1), Difficulty: new(big.Int), BaseFee: big.NewInt(1)}
-				case "eth_chainId", "eth_maxPriorityFeePerGas":
-				case "eth_getTransactionCount":
-					result = fmt.Sprintf("0x%x", sent)
-				case "eth_estimateGas":
-					result = "0x5208"
-				case "eth_call":
-					var call struct {
-						To   string
-						Data string `json:"input"`
-					}
-					require.NoError(t, json.Unmarshal(req.Params[0], &call))
-					call.To = ethcommon.HexToAddress(call.To).Hex()
-					if call.To == bonding.Hex() {
-						if read, ok := stakingReadResult(call.Data); ok {
-							result = read
-							break
-						}
-					}
-					switch call.To {
-					case controller.Hex():
-						address := bonding
-						if strings.HasSuffix(call.Data, hex.EncodeToString(crypto.Keccak256([]byte("LivepeerToken")))) {
-							address = token
-						}
-						result = "0x" + hex.EncodeToString(ethcommon.LeftPadBytes(address.Bytes(), 32))
-					case token.Hex():
-						selector := call.Data[:10]
-						switch selector {
-						case "0x" + hex.EncodeToString(crypto.Keccak256([]byte("balanceOf(address)"))[:4]):
-							require.Equal(t, calldata("balanceOf(address)", addressWord(key.Address().Hex())), call.Data)
-							balance := uint64(5)
-							if tc.balance != nil {
-								balance = *tc.balance
-							}
-							result = "0x" + uintWord(balance)
-						case "0x" + hex.EncodeToString(crypto.Keccak256([]byte("allowance(address,address)"))[:4]):
-							require.Equal(t, calldata("allowance(address,address)", addressWord(key.Address().Hex()), addressWord(bonding.Hex())), call.Data)
-							result = "0x" + uintWord(tc.allowance)
-						default:
-							require.Equal(t, calldata("approve(address,uint256)", addressWord(bonding.Hex()), uintWord(5)), call.Data)
-							planned = append(planned, "approve")
-							result = "0x" + uintWord(1)
-						}
-					case bonding.Hex():
-						require.True(t, approved, "bond must not run before approval confirms")
-						require.Equal(t, calldata("bondWithHint(uint256,address,address,address,address,address)", uintWord(5), addressWord(testSender), uintWord(0), uintWord(0), uintWord(0), uintWord(0)), call.Data, "positional target and amount must reach the bond ABI")
-						planned = append(planned, "bond")
-						result = "0x"
-					default:
-						t.Errorf("unexpected contract %s", call.To)
-					}
-				case "eth_sendRawTransaction":
-					var encoded string
-					require.NoError(t, json.Unmarshal(req.Params[0], &encoded))
-					raw, err := hex.DecodeString(strings.TrimPrefix(encoded, "0x"))
-					require.NoError(t, err)
-					var tx types.Transaction
-					require.NoError(t, tx.UnmarshalBinary(raw))
-					require.Equal(t, uint64(sent), tx.Nonce())
-					expectedTo, expectedData := bonding, calldata("bondWithHint(uint256,address,address,address,address,address)", uintWord(5), addressWord(testSender), uintWord(0), uintWord(0), uintWord(0), uintWord(0))
-					if planned[len(planned)-1] == "approve" {
-						expectedTo, expectedData = token, calldata("approve(address,uint256)", addressWord(bonding.Hex()), uintWord(5))
-					}
-					require.Equal(t, &expectedTo, tx.To())
-					require.Equal(t, expectedData, "0x"+hex.EncodeToString(tx.Data()))
-					require.Zero(t, tx.Value().Sign())
-					sent++
-					lastHash = tx.Hash().Hex()
-					result = lastHash
-				case "eth_getTransactionReceipt":
-					require.JSONEq(t, strconv.Quote(lastHash), string(req.Params[0]))
-					receipts++
-					approved = !tc.revert
-					status := uint64(1)
-					if tc.revert {
-						status = 0
-					}
-					result = &types.Receipt{TxHash: ethcommon.HexToHash(lastHash), Status: status, BlockNumber: big.NewInt(16), BlockHash: ethcommon.Hash{31: 1}, Logs: []*types.Log{}}
-				default:
-					t.Errorf("unexpected RPC %s", req.Method)
-				}
-				require.NoError(t, json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": result}))
-			}))
-			defer server.Close()
-			t.Setenv("LIVEPEER_CHAIN_RPC_URL", server.URL)
-			args := []string{"stake", "bond", testSender, "--amount", "5", "--sender", key.Address().Hex(), "--output", "json"}
-			args = append(args, tc.flags...)
-			if slices.Contains(tc.flags, "--submit") {
-				args = append(args, "--keystore-file", keyFile, "--keystore-password-file", passwordPath)
+			f.account = key.Address()
+			f.reads["allowance"] = []any{big.NewInt(tc.allowance)}
+			if tc.balance != nil {
+				f.reads["balanceOf"] = []any{big.NewInt(*tc.balance)}
 			}
-			if quiet {
-				args = append(args, "--quiet")
+			f.failReceipt = tc.failReceipt
+			bonding, token := f.addresses["BondingManager"], f.addresses["LivepeerToken"]
+			approvalData := calldata("approve(address,uint256)", addressWord(bonding.Hex()), uintWord(5))
+			bondData := calldata("bondWithHint(uint256,address,address,address,address,address)", uintWord(5), addressWord(testAccount), uintWord(0), uintWord(0), uintWord(0), uintWord(0))
+			f.readHook = func(method string, args []any) []any {
+				switch method {
+				case "balanceOf":
+					require.Equal(t, []any{f.account}, args)
+				case "allowance":
+					require.Equal(t, []any{f.account, bonding}, args)
+				}
+				return nil
 			}
-			var output bytes.Buffer
-			root := Root(&output, &output)
-			root.SetArgs(args)
-			err = root.Execute()
+			f.simulationHook = func(from, to ethcommon.Address, data []byte, value string) {
+				require.Equal(t, f.account, from)
+				expected := bondData
+				if to == token {
+					expected = approvalData
+				} else {
+					require.Equal(t, bonding, to)
+				}
+				require.Equal(t, expected, "0x"+hex.EncodeToString(data))
+				require.Equal(t, "0x0", value)
+			}
+			args := append([]string{"stake", "bond", testAccount, "--amount", "5", "--base-units", "--keystore-file", keyFile, "--keystore-password-file", passwordPath}, tc.flags...)
+			out, err := f.run(t, args...)
 			if tc.wantErr == "" {
 				require.NoError(t, err)
 			} else {
 				require.ErrorContains(t, err, tc.wantErr)
-				if sent > 0 {
-					require.ErrorContains(t, err, lastHash)
+				for _, tx := range f.sent {
+					require.ErrorContains(t, err, tx.Hash().Hex())
 				}
 			}
-			require.Equal(t, tc.wantMethods, planned)
-			require.Equal(t, tc.wantSent, sent)
-			require.Equal(t, tc.wantReceipts, receipts)
-			if quiet || tc.balance != nil {
-				require.Empty(t, output.String())
+			require.Equal(t, tc.methods, f.simulations)
+			require.Len(t, f.sent, tc.sent)
+			require.Equal(t, tc.sent, f.receipts)
+			for i, tx := range f.sent {
+				require.EqualValues(t, i, tx.Nonce())
+				if slices.Contains(tc.flags, "--gas-limit") {
+					require.Zero(t, f.estimates)
+					require.EqualValues(t, 50000, tx.Gas())
+					require.Equal(t, big.NewInt(9), tx.GasTipCap())
+				} else {
+					require.Equal(t, len(f.simulations), f.estimates)
+					require.EqualValues(t, 21001+i, tx.Gas())
+				}
+				expectedTo, expectedData := bonding, bondData
+				if i == 0 {
+					expectedTo, expectedData = token, approvalData
+				}
+				require.Equal(t, &expectedTo, tx.To())
+				require.Equal(t, expectedData, "0x"+hex.EncodeToString(tx.Data()))
+				require.Zero(t, tx.Value().Sign())
+			}
+			if slices.Contains(tc.flags, "--quiet") || len(tc.methods) == 0 {
+				require.Empty(t, out)
 			} else {
-				require.NotEmpty(t, output.String())
+				require.NotEmpty(t, out)
 				if tc.allowance < 5 {
-					require.Contains(t, output.String(), "bond after approval confirms")
+					require.Contains(t, out, "deferred until preceding transactions confirm")
 				}
 			}
 		})

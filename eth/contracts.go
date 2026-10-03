@@ -162,55 +162,35 @@ type TransactionPlan struct {
 
 var errMissingBaseFee = errors.New("ethereum RPC header is missing base fee")
 
-// Require the base fee in the header geth already fetches for fee selection.
-// The binding still builds the transaction and calculates its fee and tip caps.
-type dynamicFeeTransactor struct{ bind.ContractTransactor }
-
-func (t dynamicFeeTransactor) HeaderByNumber(ctx context.Context, number *big.Int) (*types.Header, error) {
-	header, err := t.ContractTransactor.HeaderByNumber(ctx, number)
-	if err != nil {
-		return nil, err
-	}
-	if header.BaseFee == nil {
-		return nil, errMissingBaseFee
-	}
-	return header, nil
-}
-
 // PlanTransaction simulates a state change and estimates gas before any signing.
 func (c *Contracts) PlanTransaction(ctx context.Context, from, to ethcommon.Address, data []byte, value *big.Int) (TransactionPlan, error) {
-	if value == nil || value.Sign() < 0 {
+	return c.PlanTransactionWithOptions(ctx, from, to, data, value, FeeOptions{})
+}
+
+func (c *Contracts) PlanTransactionWithOptions(ctx context.Context, from, to ethcommon.Address, data []byte, value *big.Int, options FeeOptions) (TransactionPlan, error) {
+	if value == nil || value.Sign() < 0 || value.BitLen() > 256 {
 		return TransactionPlan{}, errors.New("invalid transaction value")
 	}
-	call := ethereum.CallMsg{From: from, To: &to, Data: data, Value: value}
+	call := ethereum.CallMsg{From: from, To: &to, Data: data, Value: value, Gas: options.GasLimit}
 	if _, err := c.RPC.ethereum.PendingCallContract(ctx, call); err != nil {
 		return TransactionPlan{}, fmt.Errorf("transaction simulation failed: %w", safeRPCError(err))
 	}
-	gas, err := c.RPC.ethereum.EstimateGas(ctx, call)
-	if err != nil {
-		return TransactionPlan{}, fmt.Errorf("estimate gas: %w", safeRPCError(err))
+	gas := options.GasLimit
+	if gas == 0 {
+		var err error
+		gas, err = c.RPC.ethereum.EstimateGas(ctx, call)
+		if err != nil {
+			return TransactionPlan{}, fmt.Errorf("estimate gas: %w", safeRPCError(err))
+		}
 	}
 	if gas == 0 {
 		return TransactionPlan{}, errors.New("estimated gas must be positive")
 	}
-	// NoSend and an identity signer let geth select dynamic fees without
-	// signing, querying a nonce, or broadcasting during planning.
-	opts := &bind.TransactOpts{From: from, Context: ctx, Value: value, GasLimit: gas, Nonce: new(big.Int), NoSend: true,
-		Signer: func(_ ethcommon.Address, tx *types.Transaction) (*types.Transaction, error) { return tx, nil }}
-	bound := bind.NewBoundContract(to, abi.ABI{}, nil, dynamicFeeTransactor{c.RPC.ethereum}, nil)
-	tx, err := bound.RawTransact(opts, data)
+	fees, err := c.Fees(ctx, options.PriorityFee)
 	if err != nil {
-		if !errors.Is(err, errMissingBaseFee) {
-			err = safeRPCError(err)
-		}
-		return TransactionPlan{}, fmt.Errorf("select transaction fees: %w", err)
-	}
-	if err := c.checkFee(tx.GasFeeCap()); err != nil {
 		return TransactionPlan{}, err
 	}
-	plan := TransactionPlan{To: to, From: from, Data: hexutil.Encode(data), ValueWei: value.String(), GasLimit: gas,
-		FeeCapWei: tx.GasFeeCap().String(), TipCapWei: tx.GasTipCap().String()}
-	return plan, nil
+	return TransactionPlan{To: to, From: from, Data: hexutil.Encode(data), ValueWei: value.String(), GasLimit: gas, FeeCapWei: fees.FeeCapWei, TipCapWei: fees.TipCapWei}, nil
 }
 
 func (c *Contracts) checkFee(fee *big.Int) error {
@@ -264,7 +244,7 @@ func (c *Contracts) Prepare(ctx context.Context, plan TransactionPlan, key *Key,
 	return c.prepare(ctx, plan, key, chainID, nil)
 }
 
-// PrepareAndStore holds the sender's nonce reservation through persistence.
+// PrepareAndStore holds the transaction account's nonce reservation through persistence.
 // Save must durably store the identity without broadcasting it or calling back
 // into this client's nonce methods. A failed save does not consume a nonce.
 func (c *Contracts) PrepareAndStore(ctx context.Context, plan TransactionPlan, key *Key, chainID *big.Int, save func(SignedTransaction) error) (SignedTransaction, error) {
@@ -276,7 +256,7 @@ func (c *Contracts) PrepareAndStore(ctx context.Context, plan TransactionPlan, k
 
 func (c *Contracts) prepare(ctx context.Context, plan TransactionPlan, key *Key, chainID *big.Int, save func(SignedTransaction) error) (SignedTransaction, error) {
 	if key == nil || key.Address() != plan.From || chainID == nil || chainID.Sign() <= 0 {
-		return SignedTransaction{}, errors.New("sender does not match private key")
+		return SignedTransaction{}, errors.New("transaction account does not match signing key")
 	}
 	data, err := hexutil.Decode(plan.Data)
 	if err != nil {
@@ -325,7 +305,7 @@ func (c *Contracts) prepare(ctx context.Context, plan TransactionPlan, key *Key,
 		nonce = state.next
 	}
 	if nonce == math.MaxUint64 {
-		return SignedTransaction{}, errors.New("sender nonce exhausted")
+		return SignedTransaction{}, errors.New("transaction account nonce exhausted")
 	}
 	opts.Nonce = new(big.Int).SetUint64(nonce)
 	bound := bind.NewBoundContract(plan.To, abi.ABI{}, nil, c.RPC.ethereum, nil)
