@@ -1,16 +1,16 @@
-[[runners]]
-id = "local-runner"
-runner_url = "http://127.0.0.1:9000"
-app = "example"
-mode = "persistent"
-status = "ready"
-capacity = 2
-health_url = "http://127.0.0.1:9000/healthz"
-healthy_status_code = 200
+[[Runners]]
+ID = "local-runner"
+RunnerURL = "http://127.0.0.1:9000"
+App = "example"
+Mode = "persistent"
+Status = "ready"
+Capacity = 2
+HealthURL = "http://127.0.0.1:9000/healthz"
+HealthCode = 200
 
-# [runners.gpu]
-# id = "0"
-# name = "H100"
-# vram_mb = 80000
+# [Runners.GPU]
+# ID = "0"
+# Name = "H100"
+# VRAMMB = 80000
 
-# Grant 127.0.0.1:9000 separately in runner_grants and health_grants.
+# Grant 127.0.0.1:9000 separately in RunnerGrants and HealthGrants.

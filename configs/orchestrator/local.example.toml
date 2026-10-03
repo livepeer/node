@@ -1,7 +1,7 @@
 # Run from the repository root. See README.md for the local HTTP runner.
-listen = "127.0.0.1:8935"
-metrics_listen = "127.0.0.1:8936"
-service_url = "http://127.0.0.1:8935"
-runner_config = "configs/orchestrator/runners.local.example.toml"
-runner_grants = ["127.0.0.1:9000"]
-health_grants = ["127.0.0.1:9000"]
+Listen = "127.0.0.1:8935"
+MetricsListen = "127.0.0.1:8936"
+ServiceURL = "http://127.0.0.1:8935"
+RunnerConfig = "configs/orchestrator/runners.local.example.toml"
+RunnerGrants = ["127.0.0.1:9000"]
+HealthGrants = ["127.0.0.1:9000"]

@@ -10,18 +10,21 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
+	"net/url"
 	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
 
+	"github.com/j0sh/boa/pkg/boa"
 	"github.com/livepeer/node/destination"
 	"github.com/stretchr/testify/require"
 )
 
 func TestRegressionUnauthenticatedSlowBodiesCannotStarveDiscovery(t *testing.T) {
 	address := fmt.Sprintf("127.0.0.1:%d", freeTCPPort(t))
-	p := Params{Listen: address, MetricsListen: fmt.Sprintf("127.0.0.1:%d", freeTCPPort(t)), ServiceURL: "http://" + address, BootstrapSecret: "bootstrap", HeartbeatInterval: time.Second, HeartbeatTTL: time.Minute}
+	p := Params{Listen: netip.MustParseAddrPort(address), MetricsListen: netip.MustParseAddrPort(fmt.Sprintf("127.0.0.1:%d", freeTCPPort(t))), ServiceURL: boa.Text[*url.URL]{Value: mustURL(t, "http://"+address)}, BootstrapSecret: "bootstrap", HeartbeatInterval: time.Second, HeartbeatTTL: time.Minute}
 	require.NoError(t, p.Validate())
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
@@ -36,7 +39,7 @@ func TestRegressionUnauthenticatedSlowBodiesCannotStarveDiscovery(t *testing.T) 
 	})
 	client := &http.Client{Timeout: time.Second}
 	discoveryStatus := func() int {
-		r, e := client.Get(p.ServiceURL + "/discovery")
+		r, e := client.Get(p.ServiceURL.String() + "/discovery")
 		if e != nil {
 			return 0
 		}

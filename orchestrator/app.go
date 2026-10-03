@@ -2,7 +2,6 @@ package orchestrator
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -10,6 +9,8 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"os/signal"
 	"strings"
 	"sync"
@@ -27,165 +28,130 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func init() {
-	boa.RegisterConfigFormat(".toml", toml.Unmarshal)
-	boa.RegisterConfigMarshaler(".toml", toml.Marshal)
+type Params struct {
+	ETHUSDFeed           *ethcommon.Address `name:"eth-usd-feed" descr:"ETH/USD oracle address, alternative to a fixed wei-per-usd rate"`
+	PriceMaxAge          time.Duration      `default:"2h" descr:"Maximum age of the oracle observation"`
+	ConfigFile           string             `name:"config" configfile:"true" file:"true" optional:"true" boa:"noconfig" descr:"TOML configuration path"`
+	Listen               netip.AddrPort     `default:"127.0.0.1:8935" descr:"Public HTTP listener"`
+	MetricsListen        netip.AddrPort     `default:"127.0.0.1:8936" descr:"Loopback metrics listener"`
+	ServiceURL           boa.Text[*url.URL] `default:"http://127.0.0.1:8935" descr:"Public orchestrator base URL"`
+	RunnerServiceURL     boa.Text[*url.URL] `optional:"true" descr:"Runner-facing base URL for callbacks and trickle; defaults to service-url"`
+	ProxyURLTemplate     string             `optional:"true" descr:"Generated proxy URL with {proxy} in a hostname label or final path segment"`
+	BootstrapSecret      string             `secret:"true" optional:"true" descr:"Dynamic runner bootstrap credential"`
+	BootstrapSecretFile  string             `secretfor:"BootstrapSecret" descr:"File containing runner bootstrap credential"`
+	RunnerConfig         string             `optional:"true" file:"true" descr:"Static runner TOML path"`
+	PaymentDB            string             `optional:"true"`
+	KeystoreFile         string             `optional:"true" descr:"Encrypted geth redemption account JSON file"`
+	KeystorePasswordFile string             `optional:"true" descr:"Owner-only file containing the exact keystore password bytes"`
+	PaymentRPCURL        *url.URL           `name:"payment-rpc-url" secret:"true" optional:"true"`
+	PaymentRPCURLFile    string             `name:"payment-rpc-url-file" secretfor:"PaymentRPCURL"`
+	PaymentChainID       *uint64            `min:"1"`
+	PaymentMaxFeePerGas  *uint256.Int       `descr:"Optional maximum redemption fee in wei per gas"`
+	PaymentController    *ethcommon.Address `name:"payment-controller-address"`
+	WeiPerUSD            *big.Rat
+	TicketFaceValue      *uint256.Int
+	TicketWinProb        *uint256.Int
+	RunnerGrants         []string      `optional:"true" descr:"Exact private runner host:port grants"`
+	SessionProxyGrants   []string      `optional:"true" descr:"Exact private generated proxy target grants"`
+	HealthGrants         []string      `optional:"true" descr:"Exact private static runner health grants"`
+	HeartbeatInterval    time.Duration `default:"5s" descr:"Runner heartbeat interval"`
+	HeartbeatTTL         time.Duration `default:"30s" descr:"Runner heartbeat expiry"`
+	PrintConfig          bool          `optional:"true" boa:"noconfig,noenv" descr:"Print audited redacted TOML configuration"`
 }
 
-type Params struct {
-	ETHUSDFeed           string        `name:"eth-usd-feed" optional:"true" toml:"eth_usd_feed" descr:"ETH/USD oracle address, alternative to a fixed wei-per-usd rate"`
-	PriceMaxAge          time.Duration `name:"price-max-age" default:"2h" toml:"price_max_age" descr:"Maximum age of the oracle observation"`
-	ConfigFile           string        `name:"config" configfile:"true" file:"true" optional:"true" toml:"-" descr:"TOML configuration path"`
-	Listen               string        `name:"listen" default:"127.0.0.1:8935" toml:"listen" descr:"Public HTTP listener"`
-	MetricsListen        string        `name:"metrics-listen" default:"127.0.0.1:8936" toml:"metrics_listen" descr:"Loopback metrics listener"`
-	ServiceURL           string        `name:"service-url" default:"http://127.0.0.1:8935" toml:"service_url" descr:"Public orchestrator base URL"`
-	RunnerServiceURL     string        `name:"runner-service-url" optional:"true" toml:"runner_service_url" descr:"Runner-facing base URL for callbacks and trickle; defaults to service-url"`
-	ProxyURLTemplate     string        `name:"proxy-url-template" optional:"true" toml:"proxy_url_template" descr:"Generated proxy URL with {proxy} in a hostname label or final path segment"`
-	BootstrapSecret      string        `name:"bootstrap-secret" secret:"true" optional:"true" toml:"bootstrap_secret" descr:"Dynamic runner bootstrap credential"`
-	BootstrapSecretFile  string        `name:"bootstrap-secret-file" secretfor:"BootstrapSecret" toml:"bootstrap_secret_file" descr:"File containing runner bootstrap credential"`
-	RunnerConfig         string        `name:"runner-config" optional:"true" file:"true" toml:"runner_config" descr:"Static runner TOML path"`
-	PaymentDB            string        `name:"payment-db" optional:"true" toml:"payment_db"`
-	KeystoreFile         string        `optional:"true" toml:"keystore_file" descr:"Encrypted geth redemption account JSON file"`
-	KeystorePasswordFile string        `optional:"true" toml:"keystore_password_file" descr:"Owner-only file containing the exact keystore password bytes"`
-	PaymentRPCURL        string        `name:"payment-rpc-url" secret:"true" optional:"true" toml:"payment_rpc_url"`
-	PaymentRPCURLFile    string        `name:"payment-rpc-url-file" secretfor:"PaymentRPCURL" toml:"payment_rpc_url_file"`
-	PaymentChainID       string        `name:"payment-chain-id" optional:"true" toml:"payment_chain_id"`
-	PaymentMaxFeePerGas  *uint256.Int  `name:"payment-max-fee-per-gas" optional:"true" toml:"payment_max_fee_per_gas" descr:"Optional maximum redemption fee in wei per gas"`
-	PaymentController    string        `name:"payment-controller-address" optional:"true" toml:"payment_controller_address"`
-	WeiPerUSD            string        `name:"wei-per-usd" optional:"true" toml:"wei_per_usd"`
-	TicketFaceValue      string        `name:"ticket-face-value" optional:"true" toml:"ticket_face_value"`
-	TicketWinProb        string        `name:"ticket-win-prob" optional:"true" toml:"ticket_win_prob"`
-	RunnerGrants         []string      `name:"runner-grants" optional:"true" toml:"runner_grants" descr:"Exact private runner host:port grants"`
-	RunnerCAFile         string        `name:"runner-ca-file" optional:"true" file:"true" toml:"runner_ca_file" descr:"Custom runner CA bundle"`
-	SessionProxyGrants   []string      `name:"session-proxy-grants" optional:"true" toml:"session_proxy_grants" descr:"Exact private generated proxy target grants"`
-	SessionProxyCAFile   string        `name:"session-proxy-ca-file" optional:"true" file:"true" toml:"session_proxy_ca_file" descr:"Custom session proxy CA bundle"`
-	HealthGrants         []string      `name:"health-grants" optional:"true" toml:"health_grants" descr:"Exact private static runner health grants"`
-	HealthCAFile         string        `name:"health-ca-file" optional:"true" file:"true" toml:"health_ca_file" descr:"Custom static runner health CA bundle"`
-	HeartbeatInterval    time.Duration `name:"heartbeat-interval" default:"5s" toml:"heartbeat_interval" descr:"Runner heartbeat interval"`
-	HeartbeatTTL         time.Duration `name:"heartbeat-ttl" default:"30s" toml:"heartbeat_ttl" descr:"Runner heartbeat expiry"`
-	BehindTLS            bool          `name:"behind-tls" optional:"true" toml:"behind_tls" descr:"Listener is behind an operator TLS terminator"`
-	TLSCertFile          string        `name:"tls-cert-file" optional:"true" file:"true" toml:"tls_cert_file" descr:"Operator-supplied TLS certificate PEM"`
-	TLSKeyFile           string        `name:"tls-key-file" optional:"true" file:"true" toml:"tls_key_file" descr:"Operator-supplied TLS private key PEM"`
-	PrintConfig          bool          `name:"print-config" optional:"true" boa:"noconfig" toml:"-" descr:"Print audited redacted TOML configuration"`
+func unmarshalConfig(data []byte, target any) error {
+	// Detach pointers shared with Boa's CLI/env mirrors before TOML writes
+	// through them. Boa restores higher-priority values after decoding.
+	if p, ok := target.(*Params); ok {
+		p.PaymentChainID, p.PaymentController, p.ETHUSDFeed = nil, nil, nil
+		p.PaymentMaxFeePerGas, p.TicketFaceValue, p.TicketWinProb = nil, nil, nil
+		p.WeiPerUSD = nil
+	}
+	return toml.Unmarshal(data, target)
 }
 
 func (p Params) Validate() error {
-	if p.PrintConfig {
-		return nil
-	}
 	if p.BootstrapSecret == "" && p.RunnerConfig == "" {
 		return errors.New("bootstrap secret or static runner config is required")
 	}
-	paymentRequested := p.KeystoreFile != "" || p.KeystorePasswordFile != "" || p.PaymentDB != "" || p.PaymentRPCURL != "" || p.PaymentChainID != "" || p.PaymentController != "" || p.WeiPerUSD != "" || p.ETHUSDFeed != "" || p.TicketFaceValue != "" || p.TicketWinProb != "" || p.PaymentMaxFeePerGas != nil
+	paymentRequested := p.KeystoreFile != "" || p.KeystorePasswordFile != "" || p.PaymentDB != "" || p.PaymentRPCURL != nil || p.PaymentChainID != nil || p.PaymentController != nil || p.WeiPerUSD != nil || p.ETHUSDFeed != nil || p.TicketFaceValue != nil || p.TicketWinProb != nil || p.PaymentMaxFeePerGas != nil
 	if paymentRequested {
+		if p.KeystoreFile == "" || p.KeystorePasswordFile == "" || p.PaymentDB == "" || p.PaymentRPCURL == nil || p.PaymentChainID == nil || p.PaymentController == nil || (p.WeiPerUSD == nil && p.ETHUSDFeed == nil) || p.TicketFaceValue == nil || p.TicketWinProb == nil {
+			return errors.New("on-chain payment requires payment-db, keystore-file, keystore-password-file, RPC, chain-id, controller, a fixed rate or ETH/USD feed, face-value and win-prob")
+		}
+		if *p.PaymentController == (ethcommon.Address{}) {
+			return errors.New("payment-controller-address must be nonzero")
+		}
+		if *p.PaymentChainID == 0 || p.TicketFaceValue.IsZero() || p.TicketWinProb.IsZero() {
+			return errors.New("payment chain ID and ticket values must be positive")
+		}
+		if p.TicketWinProb.Eq(new(uint256.Int).SetAllOne()) {
+			return errors.New("ticket-win-prob must be less than 2^256 - 1")
+		}
 		if p.PaymentMaxFeePerGas != nil && p.PaymentMaxFeePerGas.IsZero() {
 			return errors.New("payment-max-fee-per-gas must be positive")
 		}
-		if p.KeystoreFile == "" || p.KeystorePasswordFile == "" || p.PaymentDB == "" || p.PaymentRPCURL == "" || p.PaymentChainID == "" || p.PaymentController == "" || (p.WeiPerUSD == "" && p.ETHUSDFeed == "") || p.TicketFaceValue == "" || p.TicketWinProb == "" {
-			return errors.New("on-chain payment requires payment-db, keystore-file, keystore-password-file, RPC, chain-id, controller, a fixed rate or ETH/USD feed, face-value and win-prob")
-		}
-		if !eth.ValidAddress(p.PaymentController) {
-			return errors.New("invalid payment controller address")
-		}
-		for _, value := range []string{p.PaymentChainID, p.TicketFaceValue, p.TicketWinProb} {
-			n, ok := new(big.Int).SetString(value, 10)
-			if !ok || n.Sign() <= 0 {
-				return errors.New("payment chain ID and ticket values must be positive decimal integers")
+		if p.ETHUSDFeed != nil {
+			if p.WeiPerUSD != nil || *p.ETHUSDFeed == (ethcommon.Address{}) || p.PriceMaxAge <= 0 {
+				return errors.New("eth-usd-feed requires a nonzero address, positive price-max-age and no fixed wei-per-usd")
 			}
-		}
-		if p.ETHUSDFeed != "" {
-			if p.WeiPerUSD != "" || !eth.ValidAddress(p.ETHUSDFeed) || p.PriceMaxAge < 0 {
-				return errors.New("eth-usd-feed requires a valid address, positive price-max-age and no fixed wei-per-usd")
-			}
-		} else if rate, ok := new(big.Rat).SetString(p.WeiPerUSD); !ok || rate.Sign() <= 0 {
+		} else if p.WeiPerUSD.Sign() <= 0 {
 			return errors.New("wei-per-usd must be positive")
 		}
-		if _, err := destination.ParseURL(p.PaymentRPCURL); err != nil {
+		if err := destination.ValidateURL(p.PaymentRPCURL); err != nil {
 			return errors.New("invalid payment RPC URL")
 		}
 	}
 	if err := validateProxyTemplate(p.ProxyURLTemplate); err != nil {
 		return err
 	}
-	listenHost, _, err := net.SplitHostPort(p.Listen)
-	if err != nil {
-		return errors.New("listen must be host:port")
+	if !p.Listen.IsValid() {
+		return errors.New("listen must be IP:port")
 	}
-	metricsHost, _, err := net.SplitHostPort(p.MetricsListen)
-	if err != nil {
-		return errors.New("metrics-listen must be host:port")
-	}
-	if !isLoopbackHost(metricsHost) {
+	if !p.MetricsListen.Addr().IsLoopback() {
 		return errors.New("metrics listener must bind loopback")
 	}
-	if (p.TLSCertFile == "") != (p.TLSKeyFile == "") {
-		return errors.New("tls-cert-file and tls-key-file must be configured together")
-	}
-	if p.TLSCertFile != "" && p.BehindTLS {
-		return errors.New("direct TLS and behind-tls cannot be combined")
-	}
-	if p.TLSCertFile != "" {
-		if _, err := tls.LoadX509KeyPair(p.TLSCertFile, p.TLSKeyFile); err != nil {
-			return errors.New("invalid direct TLS certificate or private key")
+	for _, endpoint := range []struct {
+		name string
+		url  *url.URL
+	}{{"service-url", p.ServiceURL.Value}, {"runner-service-url", p.RunnerServiceURL.Value}} {
+		if endpoint.name == "runner-service-url" && endpoint.url == nil {
+			continue
 		}
-	}
-	if !isLoopbackHost(listenHost) && !p.BehindTLS && p.TLSCertFile == "" {
-		return errors.New("non-loopback listener requires direct TLS or behind-tls")
-	}
-	base, err := destination.ParseURL(p.ServiceURL)
-	if err != nil || base.User != nil || base.RawQuery != "" || base.Fragment != "" {
-		return errors.New("service-url must be an absolute HTTP or HTTPS URL without credentials, query or fragment")
-	}
-	if p.TLSCertFile != "" && base.Scheme != "https" {
-		return errors.New("service-url must use https with direct TLS")
-	}
-	if p.RunnerServiceURL != "" {
-		runnerBase, err := destination.ParseURL(p.RunnerServiceURL)
-		if err != nil || runnerBase.User != nil || runnerBase.RawQuery != "" || runnerBase.Fragment != "" {
-			return errors.New("runner-service-url must be an absolute HTTP or HTTPS URL without credentials, query or fragment")
+		if u := endpoint.url; destination.ValidateURL(u) != nil || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+			return fmt.Errorf("%s must be an absolute HTTP or HTTPS URL without credentials, query or fragment", endpoint.name)
 		}
 	}
 	if p.HeartbeatInterval <= 0 || p.HeartbeatTTL <= p.HeartbeatInterval {
 		return errors.New("heartbeat-ttl must exceed positive heartbeat-interval")
 	}
-	runnerPolicy, err := destination.New("runner", p.RunnerGrants)
-	if err != nil {
-		return err
-	}
-	if _, err := runnerPolicy.WithCAFile(p.RunnerCAFile); err != nil {
-		return err
-	}
-	proxyPolicy, err := destination.New("session-proxy", p.SessionProxyGrants)
-	if err != nil {
-		return err
-	}
-	if _, err := proxyPolicy.WithCAFile(p.SessionProxyCAFile); err != nil {
-		return err
-	}
-	healthPolicy, err := destination.New("static-runner-health", p.HealthGrants)
-	if err != nil {
-		return err
-	}
-	if _, err := healthPolicy.WithCAFile(p.HealthCAFile); err != nil {
-		return err
+	for _, item := range []struct {
+		purpose string
+		grants  []string
+	}{{"runner", p.RunnerGrants}, {"session-proxy", p.SessionProxyGrants}, {"static-runner-health", p.HealthGrants}} {
+		if _, err := destination.New(item.purpose, item.grants); err != nil {
+			return err
+		}
 	}
 	return nil
-}
-
-func isLoopbackHost(host string) bool {
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
 }
 
 func Root(out, errOut io.Writer) *cobra.Command {
 	cmd := (boa.Cmd[Params]{
 		Use: "livepeer-orchestrator", Short: "Standalone Live Runner orchestrator", Version: version.String(),
 		RejectUnknown: true,
-		ParamEnrich:   boa.ParamEnricherCombine(boa.ParamEnricherDefault, boa.ParamEnricherEnv, boa.ParamEnricherEnvPrefix("LIVEPEER_ORCHESTRATOR")),
-		Args:          cobra.NoArgs,
+		ConfigFormat:  boa.UniversalConfigFormat(unmarshalConfig),
+		PreValidateFunc: func(p *Params, _ *cobra.Command, _ []string) error {
+			if p.PrintConfig {
+				return nil
+			}
+			return boa.NewUserInputError(p.Validate())
+		},
+		ParamEnrich: boa.ParamEnricherCombine(boa.ParamEnricherDefault, boa.ParamEnricherEnv, boa.ParamEnricherEnvPrefix("LIVEPEER_ORCHESTRATOR")),
+		Args:        cobra.NoArgs,
 		RunFuncCtxE: func(ctx *boa.HookContext, p *Params, cmd *cobra.Command, _ []string) error {
 			if p.PrintConfig {
-				return printConfig(ctx, cmd.OutOrStdout())
+				return printConfig(ctx, p, cmd.OutOrStdout())
 			}
 			return Serve(cmd.Context(), *p, cmd.ErrOrStderr())
 		},
@@ -199,23 +165,22 @@ func Root(out, errOut io.Writer) *cobra.Command {
 	return cmd
 }
 
-func printConfig(ctx *boa.HookContext, out io.Writer) error {
-	raw, err := ctx.DumpBytes(".toml", nil)
-	if err != nil {
-		return err
+func printConfig(ctx *boa.HookContext, p *Params, out io.Writer) error {
+	// Only audited fields are printed; secrets and sensitive paths stay omitted.
+	values := map[string]any{
+		"Listen": &p.Listen, "MetricsListen": &p.MetricsListen,
+		"RunnerGrants": &p.RunnerGrants, "SessionProxyGrants": &p.SessionProxyGrants, "HealthGrants": &p.HealthGrants,
+		"HeartbeatInterval": &p.HeartbeatInterval, "HeartbeatTTL": &p.HeartbeatTTL,
+		"PaymentDB": &p.PaymentDB, "PaymentChainID": &p.PaymentChainID, "PaymentMaxFeePerGas": &p.PaymentMaxFeePerGas,
+		"PaymentController": &p.PaymentController, "WeiPerUSD": &p.WeiPerUSD, "ETHUSDFeed": &p.ETHUSDFeed,
+		"PriceMaxAge": &p.PriceMaxAge, "TicketFaceValue": &p.TicketFaceValue, "TicketWinProb": &p.TicketWinProb,
 	}
-	var values map[string]any
-	if err := toml.Unmarshal(raw, &values); err != nil {
-		return err
-	}
-	// File paths and any future free-form strings are excluded by this allowlist.
-	allowed := map[string]any{}
-	for _, key := range []string{"listen", "metrics_listen", "runner_grants", "session_proxy_grants", "health_grants", "heartbeat_interval", "heartbeat_ttl", "behind_tls", "payment_db", "payment_chain_id", "payment_max_fee_per_gas", "payment_controller_address", "wei_per_usd", "eth_usd_feed", "price_max_age", "ticket_face_value", "ticket_win_prob"} {
-		if value, exists := values[key]; exists {
-			allowed[key] = value
+	for name, ptr := range values {
+		if !ctx.HasValue(ptr) {
+			delete(values, name)
 		}
 	}
-	data, err := toml.Marshal(allowed)
+	data, err := toml.Marshal(values)
 	if err != nil {
 		return err
 	}
@@ -228,7 +193,7 @@ func loadStatic(path string, registry *Registry) error {
 		return nil
 	}
 	var config struct {
-		Runners []StaticRunner `toml:"runners"`
+		Runners []StaticRunner
 	}
 	meta, err := toml.DecodeFile(path, &config)
 	if err != nil {
@@ -253,15 +218,7 @@ func Serve(parent context.Context, p Params, logOut io.Writer) (result error) {
 	if err != nil {
 		return err
 	}
-	runnerPolicy, err = runnerPolicy.WithCAFile(p.RunnerCAFile)
-	if err != nil {
-		return err
-	}
 	proxyPolicy, err := destination.New("session-proxy", p.SessionProxyGrants)
-	if err != nil {
-		return err
-	}
-	proxyPolicy, err = proxyPolicy.WithCAFile(p.SessionProxyCAFile)
 	if err != nil {
 		return err
 	}
@@ -269,20 +226,15 @@ func Serve(parent context.Context, p Params, logOut io.Writer) (result error) {
 	if err != nil {
 		return err
 	}
-	healthPolicy, err = healthPolicy.WithCAFile(p.HealthCAFile)
-	if err != nil {
-		return err
-	}
-	registry := NewRegistry(p.BootstrapSecret, p.ServiceURL, p.HeartbeatInterval, p.HeartbeatTTL)
-	registry.runnerService = strings.TrimRight(p.RunnerServiceURL, "/")
+	registry := NewRegistry(p.BootstrapSecret, p.ServiceURL.String(), p.HeartbeatInterval, p.HeartbeatTTL)
+	registry.runnerService = strings.TrimRight(p.RunnerServiceURL.String(), "/")
 	var engine *pm.Engine
 	var paymentStore *pm.SQLiteStore
 	var paymentChain eth.PaymentChain
 	var redeemerKey *eth.Key
 	var paymentChainID *big.Int
 	if p.KeystoreFile != "" {
-		rate, _ := new(big.Rat).SetString(p.WeiPerUSD)
-		registry.SetWeiPerUSD(rate)
+		registry.SetWeiPerUSD(p.WeiPerUSD)
 		redeemerKey, err = eth.OpenKeystoreFile(p.KeystoreFile, p.KeystorePasswordFile)
 		if err != nil {
 			return err
@@ -292,16 +244,16 @@ func Serve(parent context.Context, p Params, logOut io.Writer) (result error) {
 			return err
 		}
 		defer paymentStore.Close()
-		rpc, err := eth.OpenRPC(p.PaymentRPCURL)
+		rpc, err := eth.NewRPC(p.PaymentRPCURL, nil)
 		if err != nil {
 			return err
 		}
 		defer rpc.Close()
-		paymentChainID, _ = new(big.Int).SetString(p.PaymentChainID, 10)
+		paymentChainID = new(big.Int).SetUint64(*p.PaymentChainID)
 		if err := rpc.CheckChainID(parent, paymentChainID); err != nil {
 			return err
 		}
-		contracts, err := eth.OpenContracts(rpc, p.PaymentController)
+		contracts, err := eth.NewContracts(rpc, *p.PaymentController)
 		if err != nil {
 			return err
 		}
@@ -309,19 +261,14 @@ func Serve(parent context.Context, p Params, logOut io.Writer) (result error) {
 			contracts.MaxFeePerGas = p.PaymentMaxFeePerGas.ToBig()
 		}
 		paymentChain = eth.PaymentChain{Contracts: contracts}
-		if p.ETHUSDFeed != "" {
-			if p.PriceMaxAge == 0 {
-				p.PriceMaxAge = 2 * time.Hour
-			}
-			rate, until, err := contracts.WeiPerUSD(parent, ethcommon.HexToAddress(p.ETHUSDFeed), p.PriceMaxAge)
+		if p.ETHUSDFeed != nil {
+			rate, until, err := contracts.WeiPerUSD(parent, *p.ETHUSDFeed, p.PriceMaxAge)
 			if err != nil {
 				return err
 			}
 			registry.setRate(rate, until)
 		}
-		face, _ := new(big.Int).SetString(p.TicketFaceValue, 10)
-		prob, _ := new(big.Int).SetString(p.TicketWinProb, 10)
-		engine, err = pm.NewEngine(paymentStore, pm.EthereumChain{Client: paymentChain}, redeemerKey.Address(), face, prob)
+		engine, err = pm.NewEngine(paymentStore, pm.EthereumChain{Client: paymentChain}, redeemerKey.Address(), p.TicketFaceValue.ToBig(), p.TicketWinProb.ToBig())
 		if err != nil {
 			return err
 		}
@@ -334,12 +281,12 @@ func Serve(parent context.Context, p Params, logOut io.Writer) (result error) {
 	app := NewServer(registry, runnerPolicy, proxyPolicy, logger)
 	defer app.Close()
 	app.SetPayment(engine)
-	mainListener, err := net.Listen("tcp", p.Listen)
+	mainListener, err := net.Listen("tcp", p.Listen.String())
 	if err != nil {
 		return err
 	}
 	defer mainListener.Close()
-	metricsListener, err := net.Listen("tcp", p.MetricsListen)
+	metricsListener, err := net.Listen("tcp", p.MetricsListen.String())
 	if err != nil {
 		return err
 	}
@@ -364,13 +311,7 @@ func Serve(parent context.Context, p Params, logOut io.Writer) (result error) {
 	metricsServer := &http.Server{Handler: metricsMux, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 1 << 16, MaxHeaderValueCount: 128}
 	errs := make(chan error, 2)
 	var workers sync.WaitGroup
-	workers.Go(func() {
-		if p.TLSCertFile != "" {
-			errs <- mainServer.ServeTLS(mainListener, p.TLSCertFile, p.TLSKeyFile)
-		} else {
-			errs <- mainServer.Serve(mainListener)
-		}
-	})
+	workers.Go(func() { errs <- mainServer.Serve(mainListener) })
 	workers.Go(func() { errs <- metricsServer.Serve(metricsListener) })
 	logger.Info("orchestrator started", "listen", p.Listen, "metrics_listen", p.MetricsListen)
 	// Independent bounded workers keep slow RPC/health calls off the billing
@@ -394,9 +335,9 @@ func Serve(parent context.Context, p Params, logOut io.Writer) (result error) {
 	startWorker(p.HeartbeatInterval, time.Second, func(context.Context) { registry.Expire() })
 	workers.Go(func() { app.runO2RKeepalives(ctx, 10*time.Second) })
 	if engine != nil {
-		if p.ETHUSDFeed != "" {
+		if p.ETHUSDFeed != nil {
 			startWorker(30*time.Second, 30*time.Second, func(ctx context.Context) {
-				rate, until, err := paymentChain.Contracts.WeiPerUSD(ctx, ethcommon.HexToAddress(p.ETHUSDFeed), p.PriceMaxAge)
+				rate, until, err := paymentChain.Contracts.WeiPerUSD(ctx, *p.ETHUSDFeed, p.PriceMaxAge)
 				if err != nil {
 					logger.Error("price feed unavailable", "error", err)
 					return

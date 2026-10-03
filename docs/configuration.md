@@ -9,9 +9,9 @@ use absolute paths in deployed configurations.
 
 ## Names and environment variables
 
-Orchestrator TOML keys use snake case, such as `service_url`. Signer and chain
-keys use names such as `RPCURLFile` and `KeystoreFile`. Command-line flags use kebab
-case. Environment variables use the component prefix and underscores:
+All component TOML keys use Go field names, such as `ServiceURL`, `RPCURLFile`,
+and `KeystoreFile`. Command-line flags use kebab case. Environment variables use
+the component prefix and underscores:
 
 | Component | Prefix | Example |
 | --- | --- | --- |
@@ -29,7 +29,8 @@ bin/livepeer chain --config /etc/livepeer/chain.toml --print-config
 
 Printed configuration also omits secret file paths and the static runner file
 path. Chain action inputs, transaction switches, `--output`, and `--print-config`
-must be supplied on the command line.
+must be supplied on the command line. Orchestrator `--print-config` and
+redemption `--submit` are also command-line-only controls.
 
 ## Destination grants
 
@@ -56,9 +57,10 @@ umask 077
 openssl rand -hex 32 | tr -d '\n' > runner-bootstrap.secret
 ```
 
-Set `bootstrap_secret_file` to that file's absolute path and give the same
+Set `BootstrapSecretFile` to that file's absolute path and give the same
 credential to runners during initial registration. Secret-manager mounts must
-also contain exactly the intended bytes.
+also contain exactly the intended bytes. URL credential files must contain a
+valid URL without a trailing newline.
 
 ## Ethereum keystores
 
@@ -68,8 +70,7 @@ external tooling.
 
 | App | Keystore TOML key | Password-file TOML key |
 | --- | --- | --- |
-| Signer and chain | `KeystoreFile` | `KeystorePasswordFile` |
-| Orchestrator | `keystore_file` | `keystore_password_file` |
+| All three | `KeystoreFile` | `KeystorePasswordFile` |
 
 All three apps use `--keystore-file` and `--keystore-password-file`. Path
 environment variables use the app prefix, such as

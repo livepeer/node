@@ -28,11 +28,11 @@ configuration.
 SDK revisions, fixture setup, and compatibility test coverage are documented in
 [development](development.md#sdk-integration-fixtures).
 
-`runner_service_url` can advertise a separate runner-facing base URL for the
+`RunnerServiceURL` can advertise a separate runner-facing base URL for the
 heartbeat `orchestrator` and orchestrator-to-runner (O2R) control channel,
 session callback header, and trickle
 `internal_url`. Public discovery, session, proxy and channel URLs use
-`service_url`. The default generated proxy path is `/run/{proxy}`;
+`ServiceURL`. The default generated proxy path is `/run/{proxy}`;
 `/proxy/{proxy}` remains an accepted alias. O2R channels send periodic
 `{"keep":"alive"}` messages while the runner is registered.
 
@@ -110,10 +110,11 @@ Fixed rates never refresh or expire.
 | Batch size | At most 100 tickets; issued credit covers at least the greater of the fee and one ticket's EV. Unused credit remains in signed state. |
 
 Payment generation requires payer deposit and recipient-claimable reserve,
-the last initialized round and its canonical hash, and a ticket recipient
-matching the orchestrator address. Expiring parameters/authentication, obsolete
-rounds, mismatched hashes, or a carried ticket nonce at least 500 require
-refresh (480). A new recipient randomness hash resets the nonce; individual
+complete creation-round metadata, and a ticket recipient matching the
+orchestrator address. The supplied creation round and hash are retained.
+Parameters within one L1 block of expiry, authentication within three minutes
+of expiry, or a carried ticket nonce at least 500 require refresh (480).
+A new recipient randomness hash resets the nonce; individual
 ticket nonces must be from 1 through 599. On Arbitrum, parameter expiry uses the L1
 clock. Parameter expiry is supplied by the caller; these checks do not establish
 the provenance of an arbitrary challenge.
@@ -146,7 +147,7 @@ The webhook must return HTTP 200 with a JSON decision:
 | Field | Required | Meaning |
 | --- | --- | --- |
 | `status` | Yes | 200 approves; a value from 400 through 599 rejects with that signer status. |
-| `reason` | No | Error text returned with rejection. |
+| `reason` | No | Optional string; never returned to the client. The signer generates rejection messages. |
 | `expiry` | No | Unix seconds until approval may be reused. Omitted, zero, negative, or expired values authorize each call. |
 | `auth_id` | No | Authorization identity; takes precedence over the incoming `Signer-Auth-Id`. |
 | `maxPrice` | No | Positive wei ceiling in the request's payment unit; retained during cached approval. |
@@ -160,14 +161,15 @@ Example approval with an optional price ceiling:
 For rejection, still return HTTP 200, with the desired error in `status`:
 
 ```json
-{"status": 403, "reason": "denied"}
+{"status": 403}
 ```
 
-An unavailable webhook, redirect, non-200 HTTP response, or invalid decision
-returns 502. Invalid price ceilings return 400; exceeded ceilings return 481.
+An unavailable webhook, redirect, non-200 HTTP response, invalid decision,
+or malformed webhook price ceiling returns 502. Invalid request price ceilings
+return 400; exceeded ceilings return 481.
 Changing an established auth ID returns 403. Changing the configured webhook
-URL or headers invalidates cached approval. A supplied `Signer-Auth-Id` must
-match established state; omitting it does not authenticate a caller. During
+URL or headers invalidates cached approval. The final auth ID must match
+established state; omitting `Signer-Auth-Id` does not authenticate a caller. During
 cached approval, signed state is a bearer credential.
 
 Webhook header files accept one comma-separated record of `Header: value`
@@ -193,12 +195,13 @@ and the [Trickle protocol](../trickle/README.md) for channel behavior.
 
 | Signer status | Client action |
 | --- | --- |
-| 400 | Correct request fields, price ceilings, or signed-state scope/signature. |
-| 403 | Correct an authorization identity mismatch, or follow the webhook's rejection reason. |
+| 400 | Correct request fields, ticket exposure, price ceilings, signed state, or payer funds/chain access detected during precheck. |
+| 403 | Correct an authorization identity mismatch or review the webhook's rejection policy. |
 | 413 | Reduce the accounting event size; no payment credentials were returned. |
 | 480 | Refresh payment parameters or orchestrator authentication. |
 | 481 | The price exceeds a ceiling or the initial session price. |
-| 482 | No tickets are needed, or payer funds are unavailable. |
+| 482 | No tickets are needed; skip this payment cycle. |
+| 500 | Payment generation or signing failed, including payer funds/chain failures detected after precheck. |
 | 502 | Restore the authorization webhook or correct its response. |
 | 503 | Retry after payment dependencies, discovery sources, or accounting storage recover. |
 
@@ -216,8 +219,8 @@ cache behavior.
 
 ## Accounting events
 
-Optional Kafka accounting uses go-livepeer's `create_signed_ticket` JSON
-envelope and live/fixed fields. Compatibility fields include an empty `gateway`
+Optional Kafka accounting emits `create_signed_ticket` JSON events with
+live/fixed fields. Compatibility fields include an empty `gateway`
 and zero `pixels`. Events describe the generated payment and final authorization
 identity, using the USD rate captured for price validation.
 

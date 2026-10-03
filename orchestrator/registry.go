@@ -20,16 +20,16 @@ import (
 )
 
 type priceInfo struct {
-	Price    json.Number `json:"price" toml:"price"`
+	Price    json.Number `json:"price"`
 	PriceUSD json.Number `json:"price_usd,omitempty" toml:"-"`
-	Currency string      `json:"currency" toml:"currency"`
-	Unit     string      `json:"unit" toml:"unit"`
+	Currency string      `json:"currency"`
+	Unit     string      `json:"unit"`
 }
 
 type runnerGPU struct {
-	ID     string `json:"id,omitempty" toml:"id"`
-	Name   string `json:"name,omitempty" toml:"name"`
-	VRAMMB int    `json:"vram_mb,omitempty" toml:"vram_mb"`
+	ID     string `json:"id,omitempty"`
+	Name   string `json:"name,omitempty"`
+	VRAMMB int    `json:"vram_mb,omitempty"`
 }
 
 func (g *runnerGPU) UnmarshalJSON(data []byte) error {
@@ -675,20 +675,20 @@ func (r *Registry) Expire() {
 }
 
 type StaticRunner struct {
-	ID         string     `toml:"id"`
-	Label      string     `toml:"label"`
-	Proxy      bool       `toml:"proxy"`
-	RunnerURL  string     `toml:"runner_url"`
-	Version    string     `toml:"version"`
-	Metadata   string     `toml:"metadata"`
-	GPU        *runnerGPU `toml:"gpu"`
-	App        string     `toml:"app"`
-	Mode       string     `toml:"mode"`
-	Status     string     `toml:"status"`
-	Capacity   int        `toml:"capacity"`
-	HealthURL  string     `toml:"health_url"`
-	HealthCode int        `toml:"healthy_status_code"`
-	PriceInfo  priceInfo  `toml:"price_info"`
+	ID         string
+	Label      string
+	Proxy      bool
+	RunnerURL  string
+	Version    string
+	Metadata   string
+	GPU        *runnerGPU
+	App        string
+	Mode       string
+	Status     string
+	Capacity   int
+	HealthURL  string
+	HealthCode int
+	PriceInfo  priceInfo
 }
 
 func (r *Registry) AddStatic(config StaticRunner) error {

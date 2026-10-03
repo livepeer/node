@@ -24,24 +24,18 @@ Flags:
   -k, --keystore-file string                Encrypted geth redemption account JSON file (env: LIVEPEER_ORCHESTRATOR_KEYSTORE_FILE)
       --keystore-password-file string       Owner-only file containing the exact keystore password bytes (env: LIVEPEER_ORCHESTRATOR_KEYSTORE_PASSWORD_FILE)
       --payment-rpc-url-file string          (env: LIVEPEER_ORCHESTRATOR_PAYMENT_RPC_URL_FILE)
-      --payment-chain-id string              (env: LIVEPEER_ORCHESTRATOR_PAYMENT_CHAIN_ID)
+      --payment-chain-id uint                (env: LIVEPEER_ORCHESTRATOR_PAYMENT_CHAIN_ID)
       --payment-max-fee-per-gas string      Optional maximum redemption fee in wei per gas (env: LIVEPEER_ORCHESTRATOR_PAYMENT_MAX_FEE_PER_GAS)
       --payment-controller-address string    (env: LIVEPEER_ORCHESTRATOR_PAYMENT_CONTROLLER_ADDRESS)
   -w, --wei-per-usd string                   (env: LIVEPEER_ORCHESTRATOR_WEI_PER_USD)
   -t, --ticket-face-value string             (env: LIVEPEER_ORCHESTRATOR_TICKET_FACE_VALUE)
       --ticket-win-prob string               (env: LIVEPEER_ORCHESTRATOR_TICKET_WIN_PROB)
       --runner-grants strings               Exact private runner host:port grants (env: LIVEPEER_ORCHESTRATOR_RUNNER_GRANTS)
-      --runner-ca-file string               Custom runner CA bundle (env: LIVEPEER_ORCHESTRATOR_RUNNER_CA_FILE)
       --session-proxy-grants strings        Exact private generated proxy target grants (env: LIVEPEER_ORCHESTRATOR_SESSION_PROXY_GRANTS)
-      --session-proxy-ca-file string        Custom session proxy CA bundle (env: LIVEPEER_ORCHESTRATOR_SESSION_PROXY_CA_FILE)
       --health-grants strings               Exact private static runner health grants (env: LIVEPEER_ORCHESTRATOR_HEALTH_GRANTS)
-      --health-ca-file string               Custom static runner health CA bundle (env: LIVEPEER_ORCHESTRATOR_HEALTH_CA_FILE)
       --heartbeat-interval duration         Runner heartbeat interval (env: LIVEPEER_ORCHESTRATOR_HEARTBEAT_INTERVAL) (default 5s)
       --heartbeat-ttl duration              Runner heartbeat expiry (env: LIVEPEER_ORCHESTRATOR_HEARTBEAT_TTL) (default 30s)
-      --behind-tls                          Listener is behind an operator TLS terminator (env: LIVEPEER_ORCHESTRATOR_BEHIND_TLS)
-      --tls-cert-file string                Operator-supplied TLS certificate PEM (env: LIVEPEER_ORCHESTRATOR_TLS_CERT_FILE)
-      --tls-key-file string                 Operator-supplied TLS private key PEM (env: LIVEPEER_ORCHESTRATOR_TLS_KEY_FILE)
-      --print-config                        Print audited redacted TOML configuration (env: LIVEPEER_ORCHESTRATOR_PRINT_CONFIG)
+      --print-config                        Print audited redacted TOML configuration
   -h, --help                                help for livepeer-orchestrator
   -v, --version                             version for livepeer-orchestrator
 

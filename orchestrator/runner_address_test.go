@@ -8,11 +8,14 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
+	"net/url"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/j0sh/boa/pkg/boa"
 	"github.com/livepeer/node/destination"
 	"github.com/stretchr/testify/require"
 )
@@ -134,13 +137,13 @@ func TestO2RKeepaliveRepeatsUntilShutdown(t *testing.T) {
 
 func TestRunnerServiceURLValidation(t *testing.T) {
 	p := Params{
-		Listen: "127.0.0.1:8935", MetricsListen: "127.0.0.1:8936",
-		ServiceURL: "https://public.example/external", RunnerServiceURL: "http://runner.internal/internal",
+		Listen: netip.MustParseAddrPort("[::]:8935"), MetricsListen: netip.MustParseAddrPort("[::1]:8936"),
+		ServiceURL: boa.Text[*url.URL]{Value: mustURL(t, "https://public.example/external")}, RunnerServiceURL: boa.Text[*url.URL]{Value: mustURL(t, "http://runner.internal/internal")},
 		BootstrapSecret: "bootstrap", HeartbeatInterval: time.Second, HeartbeatTTL: time.Minute,
 	}
 	require.NoError(t, p.Validate())
-	p.RunnerServiceURL = "http://user:secret@runner.internal/internal"
+	p.RunnerServiceURL.Value = mustURL(t, "http://user:secret@runner.internal/internal")
 	require.ErrorContains(t, p.Validate(), "runner-service-url")
-	p.RunnerServiceURL = "http://runner.internal/internal?token=secret"
+	p.RunnerServiceURL.Value = mustURL(t, "http://runner.internal/internal?token=secret")
 	require.ErrorContains(t, p.Validate(), "runner-service-url")
 }

@@ -1,9 +1,9 @@
-[[runners]]
-id = "local-runner"
-runner_url = "http://127.0.0.1:9000"
-app = "example"
-mode = "single-shot"
-status = "ready"
-capacity = 2
-health_url = "http://127.0.0.1:9000/healthz"
-healthy_status_code = 200
+[[Runners]]
+ID = "local-runner"
+RunnerURL = "http://127.0.0.1:9000"
+App = "example"
+Mode = "single-shot"
+Status = "ready"
+Capacity = 2
+HealthURL = "http://127.0.0.1:9000/healthz"
+HealthCode = 200

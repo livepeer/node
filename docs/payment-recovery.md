@@ -100,7 +100,7 @@ and monitor database disk use independently of these control-state quotas.
 
 Redemption planning uses geth's dynamic-fee selection and requires a base fee
 in the RPC header; a missing base fee leaves the ticket queued with an error.
-`payment_max_fee_per_gas` optionally caps the fee in wei per gas; a plan above
+`PaymentMaxFeePerGas` optionally caps the fee in wei per gas; a plan above
 that ceiling remains queued without signing or broadcasting. Prepared and
 submitted identities reserve their nonces, including after restart. Keep the
 redemption key exclusive to this database/worker; local nonce tracking does not

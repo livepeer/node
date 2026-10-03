@@ -19,15 +19,17 @@ Configure a bootstrap credential, a static runner file, or both.
 
 Dynamic runners register through `POST /runners/heartbeat` using the bootstrap
 credential. The response supplies a credential scoped to that runner for later
-heartbeats and unregister requests. Set `bootstrap_secret_file` as described in
+heartbeats and unregister requests. Set `BootstrapSecretFile` as described in
 [configuration and secrets](configuration.md#credential-files). If you use only
-dynamic runners, omit `runner_config`.
+dynamic runners, omit `RunnerConfig`.
 
-Static runners are loaded from `runner_config`. Use the
+Static runners are loaded from `RunnerConfig` using `[[Runners]]` tables with
+Go field names, including `RunnerURL`, `HealthURL`, and `HealthCode`. Optional
+GPU and price tables use `[Runners.GPU]` and `[Runners.PriceInfo]`. Use the
 [runner example](../configs/orchestrator/runners.example.toml) to set each
 runner's ID, URL, application, mode, capacity, and health check. If you use only
-static runners, omit `bootstrap_secret_file`. Their health URLs are checked
-every `heartbeat_interval` (five seconds by default). A runner with a health URL
+static runners, omit `BootstrapSecretFile`. Their health URLs are checked
+every `HeartbeatInterval` (five seconds by default). A runner with a health URL
 is unavailable until its first successful check; failed checks release its
 sessions.
 
@@ -43,33 +45,34 @@ the corresponding setting to allow connections to local or private addresses:
 
 | Setting | Permits private destinations for |
 | --- | --- |
-| `runner_grants` | Application requests to runners |
-| `session_proxy_grants` | Targets supplied when creating a session proxy |
-| `health_grants` | Static runner health checks |
+| `RunnerGrants` | Application requests to runners |
+| `SessionProxyGrants` | Targets supplied when creating a session proxy |
+| `HealthGrants` | Static runner health checks |
 
 For a runner and health endpoint at `127.0.0.1:9000`, set both:
 
 ```toml
-runner_grants = ["127.0.0.1:9000"]
-health_grants = ["127.0.0.1:9000"]
+RunnerGrants = ["127.0.0.1:9000"]
+HealthGrants = ["127.0.0.1:9000"]
 ```
 
-Custom CA bundles use `runner_ca_file`, `session_proxy_ca_file`, or
-`health_ca_file`. Ethereum RPC connections do not require grants.
+Outbound HTTPS uses system certificate trust. Ethereum RPC connections do not
+require grants.
 
 ## Public URLs and TLS
 
-`service_url` is the public base URL advertised to clients. It can include a
-deployment base path. Set `runner_service_url` if runners reach the listener
+`ServiceURL` is the public base URL advertised to clients. It can include a
+deployment base path. Set `RunnerServiceURL` if runners reach the listener
 through a different URL or path. That URL is used for heartbeat responses,
 session callbacks, Trickle `internal_url`, and the orchestrator-to-runner (O2R)
 control channel. Client discovery, session, proxy, and channel URLs continue
-to use `service_url`.
+to use `ServiceURL`.
 
-The application listener defaults to loopback HTTP. For direct HTTPS, set
-`tls_cert_file` and `tls_key_file` to PEM files and use an HTTPS `service_url`.
-For a non-loopback HTTP listener behind a TLS terminator, set `behind_tls = true`.
-The separate metrics listener must remain on loopback; see
+The application listener serves HTTP and defaults to loopback. Use explicit
+IP:port addresses for `Listen` and `MetricsListen`, including IPv6 addresses
+such as `[::1]:8935`. `Listen = "0.0.0.0:8935"` or `"[::]:8935"` binds all
+interfaces. Terminate public HTTPS in a reverse proxy and set `ServiceURL` to
+its HTTPS address. The separate metrics listener must remain on loopback; see
 [probe addresses](configuration.md#local-storage-and-probes).
 
 ## Sessions and proxies
@@ -81,12 +84,12 @@ cancels active HTTP, SSE, and WebSocket requests and removes session channels
 and proxies. Single-shot requests use the same lifecycle. A runner stopping
 its own active request should expect that request to end abruptly.
 
-Setting `proxy = true` on a runner creates an automatic proxy. Without a URL
-template, generated URLs use `service_url/run/{proxy}`. The earlier
+Enabling a runner's proxy creates an automatic proxy. Without a URL
+template, generated URLs use `ServiceURL/run/{proxy}`. The earlier
 `/proxy/{proxy}` path remains an alias for active proxies. A runner can also
 create a session proxy through its callback route with a `target_url`.
 
-`proxy_url_template` accepts a hostname label or final path segment, for example
+`ProxyURLTemplate` accepts a hostname label or final path segment, for example
 `https://{proxy}.apps.example` or `https://apps.example/proxy/{proxy}`. Configure
 DNS, TLS, and forwarding to this listener for those URLs. Hostname routing uses
 the actual Host header. Single-shot domain proxies require a runner ID that is
@@ -96,26 +99,27 @@ a lowercase DNS label of at most 63 characters.
 
 Paid operation requires all of these settings:
 
-- `payment_db`: persistent SQLite path with an existing parent directory.
-- `keystore_file` and `keystore_password_file`: encrypted
+- `PaymentDB`: persistent SQLite path with an existing parent directory.
+- `KeystoreFile` and `KeystorePasswordFile`: encrypted
   recipient account JSON and its password file; see
   [Ethereum keystores](configuration.md#ethereum-keystores).
-- `payment_rpc_url_file` or `LIVEPEER_ORCHESTRATOR_PAYMENT_RPC_URL`: RPC credential.
-- `payment_chain_id` and `payment_controller_address`: the payment chain and Controller.
-- `ticket_face_value` and `ticket_win_prob`: positive decimal ticket parameters.
-- Exactly one conversion source: `wei_per_usd` or `eth_usd_feed`.
+- `PaymentRPCURLFile` or `LIVEPEER_ORCHESTRATOR_PAYMENT_RPC_URL`: RPC credential.
+- `PaymentChainID` and `PaymentController`: a positive uint64 chain ID and nonzero Controller address.
+- `TicketFaceValue` and `TicketWinProb`: positive uint256 ticket parameters.
+  The winning probability must be less than `2^256 - 1`.
+- Exactly one conversion source: `WeiPerUSD` or `ETHUSDFeed`.
 
 Incomplete paid configuration fails startup. The recipient must be active on
 the configured chain. Runner prices use USD per hour for live work or USD per
 fixed request. Hourly discovery prices are normalized to USD and wei per second.
 
-`wei_per_usd` sets a fixed conversion. Alternatively, set `eth_usd_feed` to a
+`WeiPerUSD` sets a fixed conversion. Alternatively, set `ETHUSDFeed` to a
 Chainlink-compatible ETH/USD feed on the payment chain. The feed is checked
-every 30 seconds; `price_max_age` defaults to two hours. Startup requires a
+every 30 seconds; `PriceMaxAge` must be positive and defaults to two hours. Startup requires a
 valid observation. Stale rates suspend new priced discovery and reservations;
 existing sessions retain their agreed wei price.
 
-`payment_max_fee_per_gas` optionally caps redemption fees in wei per gas. The
+`PaymentMaxFeePerGas` optionally caps redemption fees in wei per gas. The
 cap is per gas, not a total spending budget. Winning tickets wait until payment
 parameters expire before redemption exposes their randomness on-chain. Only a
 successful, canonical, finalized receipt settles their liability.

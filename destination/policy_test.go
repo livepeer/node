@@ -2,14 +2,12 @@ package destination
 
 import (
 	"context"
-	"encoding/pem"
+	"crypto/tls"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -100,29 +98,18 @@ func TestRedirectChecksDestinationAndDropsAuthorization(t *testing.T) {
 	require.Equal(t, int32(10), requests.Load())
 }
 
-func TestCustomCAIsScopedAndVerified(t *testing.T) {
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
+func TestHTTPSRejectsUntrustedCertificate(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("untrusted certificate must fail before sending a request")
 	}))
 	defer server.Close()
-	parsed, err := url.Parse(server.URL)
+	policy, err := New("runner", []string{server.URL})
 	require.NoError(t, err)
-	policy, err := New("runner", []string{parsed.Host})
-	require.NoError(t, err)
-	_, err = policy.Client().Get(server.URL)
-	require.Error(t, err, "untrusted certificate must fail")
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
-	path := filepath.Join(t.TempDir(), "runner-ca.pem")
-	require.NoError(t, os.WriteFile(path, certPEM, 0600))
-	trusted, err := policy.WithCAFile(path)
-	require.NoError(t, err)
-	response, err := trusted.Client().Get(server.URL)
-	require.NoError(t, err)
-	require.Equal(t, http.StatusOK, response.StatusCode)
-	require.NoError(t, response.Body.Close())
-	_, err = policy.WithCAFile(filepath.Join(t.TempDir(), "missing"))
-	require.ErrorContains(t, err, "cannot be read")
-	require.NotContains(t, err.Error(), "missing")
+	client := policy.Client()
+	defer client.CloseIdleConnections()
+	_, err = client.Get(server.URL)
+	var certificateError *tls.CertificateVerificationError
+	require.ErrorAs(t, err, &certificateError)
 }
 
 func TestGrants(t *testing.T) {

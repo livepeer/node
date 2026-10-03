@@ -108,16 +108,10 @@ func readCommand(root *RootParams, use, short string, run func(context.Context, 
 
 func Root(out, errOut io.Writer) *cobra.Command {
 	params := new(RootParams)
-	operatorEnv := boa.ParamEnricherCombine(boa.ParamEnricherEnv, boa.ParamEnricherEnvPrefix("LIVEPEER_CHAIN"))
 	root := (boa.Cmd[RootParams]{
 		Use: "livepeer-chain", Short: "Direct Livepeer Ethereum management", Version: version.String(),
 		Params: params, RejectUnknown: true, Args: cobra.NoArgs,
-		ParamEnrich: boa.ParamEnricherCombine(boa.ParamEnricherDefault, func(previous []boa.Parameter, param boa.Parameter, name string) error {
-			if param.IsNoEnv() {
-				return nil
-			}
-			return operatorEnv(previous, param, name)
-		}),
+		ParamEnrich: boa.ParamEnricherCombine(boa.ParamEnricherDefault, boa.ParamEnricherEnv, boa.ParamEnricherEnvPrefix("LIVEPEER_CHAIN")),
 		RunFuncE: func(p *RootParams, cmd *cobra.Command, _ []string) error {
 			if p.PrintConfig {
 				return p.OperatorParams.printConfig(cmd.OutOrStdout())

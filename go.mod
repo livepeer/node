@@ -8,7 +8,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/holiman/uint256 v1.3.2
-	github.com/j0sh/boa v0.0.3-0.20260930225304-334f1793b0a2
+	github.com/j0sh/boa v0.0.3-0.20261003091039-e1d63a07b70e
 	github.com/j0sh/minikafka v0.0.0-20261001174935-0bc8dcedd322
 	github.com/segmentio/kafka-go v0.4.51
 	github.com/spf13/cobra v1.10.2

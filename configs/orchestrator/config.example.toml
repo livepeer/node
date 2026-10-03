@@ -1,42 +1,35 @@
-listen = "127.0.0.1:8935"
-metrics_listen = "127.0.0.1:8936"
-service_url = "http://127.0.0.1:8935"
-# runner_service_url = "http://127.0.0.1:8935" # Runner-facing callbacks and trickle; defaults to service_url.
-bootstrap_secret_file = "/run/secrets/livepeer-runner-bootstrap"
-runner_config = "/etc/livepeer/runners.toml"
-# Use either registration method or both. Omit runner_config for dynamic-only
-# operation; omit bootstrap_secret_file for static-only operation.
-heartbeat_interval = "5s"
-heartbeat_ttl = "30s"
-runner_grants = []
-# runner_ca_file = "/etc/livepeer/runner-ca.pem"
-session_proxy_grants = []
-# session_proxy_ca_file = "/etc/livepeer/proxy-ca.pem"
-health_grants = []
-# health_ca_file = "/etc/livepeer/health-ca.pem"
-# proxy_url_template = "https://{proxy}.apps.example" # Default: service_url/run/{proxy}.
-behind_tls = false
-# For direct HTTPS, set both files and change service_url to https://... .
-# tls_cert_file = "/etc/livepeer/tls/fullchain.pem"
-# tls_key_file = "/run/secrets/livepeer-tls-key.pem"
+Listen = "127.0.0.1:8935"
+MetricsListen = "127.0.0.1:8936"
+ServiceURL = "http://127.0.0.1:8935"
+# RunnerServiceURL = "http://127.0.0.1:8935" # Runner-facing callbacks and trickle; defaults to ServiceURL.
+BootstrapSecretFile = "/run/secrets/livepeer-runner-bootstrap"
+RunnerConfig = "/etc/livepeer/runners.toml"
+# Use either registration method or both. Omit RunnerConfig for dynamic-only
+# operation; omit BootstrapSecretFile for static-only operation.
+HeartbeatInterval = "5s"
+HeartbeatTTL = "30s"
+RunnerGrants = []
+SessionProxyGrants = []
+HealthGrants = []
+# ProxyURLTemplate = "https://{proxy}.apps.example" # Default: ServiceURL/run/{proxy}.
 
 # Paid operation requires the database, key, RPC, chain ID, Controller, face
 # value, winning probability, and exactly one conversion source below.
-# Runner prices are USD per hour or per fixed request. Choose wei_per_usd
-# for a fixed conversion OR eth_usd_feed for an ETH/USD feed on the payment
-# chain. The fee ceiling and price_max_age are optional. See docs/orchestrator.md.
-# payment_db = "/var/lib/livepeer/orchestrator-payment.sqlite"
-# keystore_file = "/run/secrets/livepeer-orchestrator-keystore.json"
-# keystore_password_file = "/run/secrets/livepeer-orchestrator-keystore-password"
+# Runner prices are USD per hour or per fixed request. Choose WeiPerUSD
+# for a fixed conversion OR ETHUSDFeed for an ETH/USD feed on the payment
+# chain. The fee ceiling and PriceMaxAge are optional. See docs/orchestrator.md.
+# PaymentDB = "/var/lib/livepeer/orchestrator-payment.sqlite"
+# KeystoreFile = "/run/secrets/livepeer-orchestrator-keystore.json"
+# KeystorePasswordFile = "/run/secrets/livepeer-orchestrator-keystore-password"
 # Both files must be owner-only; the password is read as exact bytes (no newline).
-# payment_rpc_url_file = "/run/secrets/livepeer-payment-rpc-url"
-# payment_max_fee_per_gas = "1000000000" # Optional ceiling, wei per gas
-# payment_chain_id = "42161"
-# payment_controller_address = "0x0123456789abcdef0123456789abcdef01234567"
-# wei_per_usd = "1000000000000000"
-# eth_usd_feed = "0xYOUR_VERIFIED_ETH_USD_FEED"
-# price_max_age = "2h"
+# PaymentRPCURLFile = "/run/secrets/livepeer-payment-rpc-url"
+# PaymentMaxFeePerGas = "1000000000" # Optional ceiling, wei per gas
+# PaymentChainID = 42161
+# PaymentController = "0x0123456789abcdef0123456789abcdef01234567"
+# WeiPerUSD = "1000000000000000"
+# ETHUSDFeed = "0xYOUR_VERIFIED_ETH_USD_FEED"
+# PriceMaxAge = "2h"
 # Ticket EV is approximately 2e11 wei; a 100-ticket batch fits the signer
 # default 2e13 wei cap. Fund sufficient deposit and recipient-claimable reserve.
-# ticket_face_value = "400000000000"
-# ticket_win_prob = "57896044618658097711785492504343953926634992332820282019728792003956564819967"
+# TicketFaceValue = "400000000000"
+# TicketWinProb = "57896044618658097711785492504343953926634992332820282019728792003956564819967"
