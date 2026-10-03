@@ -175,17 +175,16 @@ func (r *Registry) normalizePrice(price *priceInfo) error {
 
 func normalizePriceAt(price *priceInfo, rate *big.Rat) error {
 	value := strings.TrimSpace(price.Price.String())
-	if value == "" || value == "0" {
+	numeric, ok := new(big.Rat).SetString(value)
+	if rate != nil && (!ok || numeric.Sign() <= 0) {
+		return errors.New("runner price must be positive in on-chain mode")
+	}
+	if value == "" || (ok && numeric.Sign() == 0) {
 		*price = priceInfo{}
 		return nil
 	}
-	numeric, ok := new(big.Rat).SetString(value)
 	if !ok || numeric.Sign() < 0 {
 		return errors.New("runner price must be nonnegative")
-	}
-	if numeric.Sign() == 0 {
-		*price = priceInfo{}
-		return nil
 	}
 	if price.Currency != "" && strings.ToLower(strings.TrimSpace(price.Currency)) != "usd" {
 		return errors.New("runner price currency must be USD")
@@ -193,9 +192,6 @@ func normalizePriceAt(price *priceInfo, rate *big.Rat) error {
 	if rate == nil {
 		// Off-chain registration accepts the runner's usual quote, but does
 		// not advertise or enforce payment requirements.
-		if v, ok := new(big.Rat).SetString(value); !ok || v.Sign() < 0 {
-			return errors.New("runner price must be nonnegative")
-		}
 		*price = priceInfo{}
 		return nil
 	}
@@ -203,7 +199,7 @@ func normalizePriceAt(price *priceInfo, rate *big.Rat) error {
 	if err != nil {
 		return err
 	}
-	usd, _ := new(big.Rat).SetString(value)
+	usd := numeric
 	if unit == "seconds" {
 		usd.Quo(usd, big.NewRat(3600, 1))
 	}

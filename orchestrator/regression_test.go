@@ -132,6 +132,20 @@ func TestRegressionSessionPricePinnedAcrossHeartbeat(t *testing.T) {
 	request.PriceInfo.Price = "2"
 	_, _, err = reg.Heartbeat(request, first.HeartbeatSecret)
 	require.NoError(t, err)
+	for _, price := range []priceInfo{{}, {Price: "0"}, {Price: "0.0"}} {
+		invalid := request
+		invalid.PriceInfo = price
+		_, status, err := reg.Heartbeat(invalid, first.HeartbeatSecret)
+		require.ErrorContains(t, err, "positive")
+		require.Equal(t, 400, status)
+		invalid.RunnerID = "new"
+		_, status, err = reg.Heartbeat(invalid, "bootstrap")
+		require.ErrorContains(t, err, "positive")
+		require.Equal(t, 400, status)
+	}
+	current, _, err := reg.PriceForRunner("r")
+	require.NoError(t, err)
+	require.Equal(t, "2", current.Price.String(), "rejected heartbeat must preserve the current paid price")
 	quote, _, err := reg.PriceForSession("r", sid)
 	require.NoError(t, err)
 	require.Equal(t, "1", quote.Price.String(), "existing session must retain its 1-wei price")

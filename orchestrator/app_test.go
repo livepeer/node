@@ -68,7 +68,7 @@ func TestPaidHTTPStartup(t *testing.T) {
 	p.MetricsListen = netip.MustParseAddrPort(fmt.Sprintf("127.0.0.1:%d", metricsPort))
 	p.ServiceURL = boa.Text[*url.URL]{Value: mustURL(t, "https://public.example/external")}
 	p.RunnerConfig = filepath.Join(t.TempDir(), "runners.toml")
-	require.NoError(t, os.WriteFile(p.RunnerConfig, []byte("[[Runners]]\nID = 'r'\nRunnerURL = 'https://runner.example'\nApp = 'test'\n"), 0600))
+	require.NoError(t, os.WriteFile(p.RunnerConfig, []byte("[[Runners]]\nID = 'r'\nRunnerURL = 'https://runner.example'\nApp = 'test'\n[Runners.PriceInfo]\nPrice = 1\n"), 0600))
 	require.NoError(t, p.Validate())
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
@@ -239,6 +239,10 @@ Unit = "fixed"
 	require.Equal(t, 204, runner.HealthCode)
 	require.Equal(t, "1.5", runner.USDQuote.Price.String())
 	require.Equal(t, &runnerGPU{ID: "0", Name: "H100", VRAMMB: 80000}, runner.GPU)
+	for _, price := range []string{"", "Price = 0\n", "Price = 0.0\n"} {
+		require.NoError(t, os.WriteFile(path, []byte(strings.Replace(config, "Price = 1.5\n", price, 1)), 0600))
+		require.ErrorContains(t, loadStatic(path, registry), "positive")
+	}
 	require.NoError(t, os.WriteFile(path, []byte(config+"PriceUSD = 2\n"), 0600))
 	require.ErrorContains(t, loadStatic(path, registry), "unknown static runner keys")
 }
