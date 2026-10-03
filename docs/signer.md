@@ -209,7 +209,7 @@ allow a budget to be exceeded before authorization stops further signing.
 
 Use the metrics listener (default `127.0.0.1:8938`) for `/healthz`, `/readyz`,
 and `/metrics`.
-Readiness checks chain access, sender funds, exchange-rate freshness, and enabled
+Readiness checks chain access, payer funds, exchange-rate freshness, and enabled
 outbox storage. Monitor pending events, oldest event age, publish errors, and
 filesystem space. Kafka connectivity alone does not determine readiness.
 

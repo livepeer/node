@@ -15,25 +15,25 @@ func (s stubSigVerifier) Verify(ethcommon.Address, []byte, []byte) bool { return
 
 func TestValidateTicket(t *testing.T) {
 	recipient := ethcommon.HexToAddress("73AEd7b5dEb30222fa896f399d46cC99c7BEe57F")
-	sender := ethcommon.HexToAddress("A69cdA26600c155cF2c150964Bdb5371ac3f606F")
+	payer := ethcommon.HexToAddress("A69cdA26600c155cF2c150964Bdb5371ac3f606F")
 	random := big.NewInt(10)
 	commitment := crypto.Keccak256Hash(ethcommon.LeftPadBytes(random.Bytes(), uint256Size))
 	for _, tt := range []struct {
-		name              string
-		recipient, sender ethcommon.Address
-		commitment        ethcommon.Hash
-		validSignature    bool
-		want              error
+		name             string
+		recipient, payer ethcommon.Address
+		commitment       ethcommon.Hash
+		validSignature   bool
+		want             error
 	}{
-		{"valid", recipient, sender, commitment, true, nil},
-		{"wrong recipient", sender, sender, commitment, true, errInvalidTicketRecipient},
-		{"zero sender", recipient, ethcommon.Address{}, commitment, true, errInvalidTicketSender},
-		{"wrong preimage", recipient, sender, ethcommon.Hash{}, true, errInvalidTicketRecipientRand},
-		{"invalid signature", recipient, sender, commitment, false, errInvalidTicketSignature},
+		{"valid", recipient, payer, commitment, true, nil},
+		{"wrong recipient", payer, payer, commitment, true, errInvalidTicketRecipient},
+		{"zero payer", recipient, ethcommon.Address{}, commitment, true, errInvalidTicketPayer},
+		{"wrong preimage", recipient, payer, ethcommon.Hash{}, true, errInvalidTicketRecipientRand},
+		{"invalid signature", recipient, payer, commitment, false, errInvalidTicketSignature},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			v := NewValidator(stubSigVerifier(tt.validSignature))
-			ticket := &Ticket{Recipient: tt.recipient, Sender: tt.sender, RecipientRandHash: tt.commitment, FaceValue: big.NewInt(10), WinProb: big.NewInt(100)}
+			ticket := &Ticket{Recipient: tt.recipient, PayerAddress: tt.payer, RecipientRandHash: tt.commitment, FaceValue: big.NewInt(10), WinProb: big.NewInt(100)}
 			require.ErrorIs(t, v.ValidateTicket(recipient, ticket, []byte("signature"), random), tt.want)
 		})
 	}

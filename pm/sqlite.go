@@ -49,23 +49,23 @@ func OpenSQLite(path string) (*SQLiteStore, error) {
 		"PRAGMA journal_mode=WAL",
 		`CREATE TABLE IF NOT EXISTS winning_tickets (
 			seq INTEGER PRIMARY KEY AUTOINCREMENT,
-			sender TEXT NOT NULL, recipient TEXT NOT NULL,
+			payer_address TEXT NOT NULL, recipient TEXT NOT NULL,
 			face_value BLOB NOT NULL, win_prob BLOB NOT NULL,
-			sender_nonce INTEGER NOT NULL, recipient_rand BLOB NOT NULL,
+			ticket_nonce INTEGER NOT NULL, recipient_rand BLOB NOT NULL,
 			recipient_rand_hash TEXT NOT NULL, sig BLOB NOT NULL UNIQUE,
 			creation_round INTEGER NOT NULL, creation_round_block_hash TEXT NOT NULL,
 			params_expiration_block TEXT NOT NULL,
 			redeemed_at TEXT, tx_hash TEXT)`,
-		"CREATE INDEX IF NOT EXISTS winning_tickets_pending ON winning_tickets(sender, creation_round, seq) WHERE tx_hash IS NULL",
+		"CREATE INDEX IF NOT EXISTS winning_tickets_pending ON winning_tickets(payer_address, creation_round, seq) WHERE tx_hash IS NULL",
 		"CREATE INDEX IF NOT EXISTS winning_tickets_epoch ON winning_tickets(recipient_rand_hash)",
-		"CREATE INDEX IF NOT EXISTS winning_tickets_liability ON winning_tickets(sender,creation_round) WHERE redeemed_at IS NULL",
+		"CREATE INDEX IF NOT EXISTS winning_tickets_liability ON winning_tickets(payer_address,creation_round) WHERE redeemed_at IS NULL",
 		`CREATE TABLE IF NOT EXISTS orchestrator_rounds (
 			address TEXT NOT NULL, round TEXT NOT NULL, active INTEGER NOT NULL,
 			PRIMARY KEY(address, round))`,
 		`CREATE TABLE IF NOT EXISTS redemption_attempts (
 			sig BLOB PRIMARY KEY, attempted_at TEXT NOT NULL, error TEXT,
-			phase TEXT NOT NULL, raw_transaction BLOB, key_address TEXT, nonce TEXT)`,
-		"CREATE UNIQUE INDEX IF NOT EXISTS redemption_nonce ON redemption_attempts(key_address,nonce) WHERE nonce IS NOT NULL",
+			phase TEXT NOT NULL, raw_transaction BLOB, redeemer_address TEXT, nonce TEXT)`,
+		"CREATE UNIQUE INDEX IF NOT EXISTS redemption_nonce ON redemption_attempts(redeemer_address,nonce) WHERE nonce IS NOT NULL",
 	} {
 		if _, err := db.Exec(stmt); err != nil {
 			_ = db.Close()
@@ -82,9 +82,9 @@ func (s *SQLiteStore) StoreWinningTicket(t *SignedTicket) error {
 		return err
 	}
 	_, err := s.db.Exec(`INSERT INTO winning_tickets
-		(sender,recipient,face_value,win_prob,sender_nonce,recipient_rand,recipient_rand_hash,sig,creation_round,creation_round_block_hash,params_expiration_block)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?)`, t.Sender.Hex(), t.Recipient.Hex(), t.FaceValue.Bytes(), t.WinProb.Bytes(),
-		t.SenderNonce, t.RecipientRand.Bytes(), t.RecipientRandHash.Hex(), t.Sig, t.CreationRound,
+		(payer_address,recipient,face_value,win_prob,ticket_nonce,recipient_rand,recipient_rand_hash,sig,creation_round,creation_round_block_hash,params_expiration_block)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?)`, t.PayerAddress.Hex(), t.Recipient.Hex(), t.FaceValue.Bytes(), t.WinProb.Bytes(),
+		t.TicketNonce, t.RecipientRand.Bytes(), t.RecipientRandHash.Hex(), t.Sig, t.CreationRound,
 		t.CreationRoundBlockHash.Hex(), t.ParamsExpirationBlock.String())
 	return err
 }
@@ -99,9 +99,9 @@ func validStoredTicket(t *SignedTicket) error {
 	return nil
 }
 
-func (s *SQLiteStore) SelectEarliestWinningTicket(sender ethcommon.Address, minCreationRound int64) (*SignedTicket, error) {
-	row := s.db.QueryRow(`SELECT recipient,face_value,win_prob,sender_nonce,recipient_rand,recipient_rand_hash,sig,creation_round,creation_round_block_hash,params_expiration_block
-		FROM winning_tickets WHERE sender=? AND creation_round>=? AND tx_hash IS NULL AND sig NOT IN (SELECT sig FROM redemption_attempts) ORDER BY seq LIMIT 1`, sender.Hex(), minCreationRound)
+func (s *SQLiteStore) SelectEarliestWinningTicket(payer ethcommon.Address, minCreationRound int64) (*SignedTicket, error) {
+	row := s.db.QueryRow(`SELECT recipient,face_value,win_prob,ticket_nonce,recipient_rand,recipient_rand_hash,sig,creation_round,creation_round_block_hash,params_expiration_block
+		FROM winning_tickets WHERE payer_address=? AND creation_round>=? AND tx_hash IS NULL AND sig NOT IN (SELECT sig FROM redemption_attempts) ORDER BY seq LIMIT 1`, payer.Hex(), minCreationRound)
 	var recipient, randHash, blockHash, expiration string
 	var face, prob, rand, sig []byte
 	var nonce int64
@@ -116,16 +116,16 @@ func (s *SQLiteStore) SelectEarliestWinningTicket(sender ethcommon.Address, minC
 	if !ok || nonce < 0 || nonce > 1<<32-1 {
 		return nil, errors.New("corrupt winning ticket")
 	}
-	return &SignedTicket{Ticket: &Ticket{Sender: sender, Recipient: ethcommon.HexToAddress(recipient),
-		FaceValue: new(big.Int).SetBytes(face), WinProb: new(big.Int).SetBytes(prob), SenderNonce: uint32(nonce),
+	return &SignedTicket{Ticket: &Ticket{PayerAddress: payer, Recipient: ethcommon.HexToAddress(recipient),
+		FaceValue: new(big.Int).SetBytes(face), WinProb: new(big.Int).SetBytes(prob), TicketNonce: uint32(nonce),
 		RecipientRandHash: ethcommon.HexToHash(randHash), CreationRound: round,
 		CreationRoundBlockHash: ethcommon.HexToHash(blockHash), ParamsExpirationBlock: exp},
 		Sig: sig, RecipientRand: new(big.Int).SetBytes(rand)}, nil
 }
 
-func (s *SQLiteStore) WinningTicketCount(sender ethcommon.Address, minCreationRound int64) (int, error) {
+func (s *SQLiteStore) WinningTicketCount(payer ethcommon.Address, minCreationRound int64) (int, error) {
 	var count int
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM winning_tickets WHERE sender=? AND creation_round>=? AND tx_hash IS NULL`, sender.Hex(), minCreationRound).Scan(&count)
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM winning_tickets WHERE payer_address=? AND creation_round>=? AND tx_hash IS NULL`, payer.Hex(), minCreationRound).Scan(&count)
 	return count, err
 }
 
@@ -225,8 +225,8 @@ func (s *SQLiteStore) IsOrchActive(addr ethcommon.Address, round *big.Int) (bool
 	return active, err
 }
 
-func (s *SQLiteStore) PendingSenders() ([]ethcommon.Address, error) {
-	rows, err := s.db.Query(`SELECT DISTINCT sender FROM winning_tickets WHERE tx_hash IS NULL AND sig NOT IN (SELECT sig FROM redemption_attempts)`)
+func (s *SQLiteStore) PendingPayers() ([]ethcommon.Address, error) {
+	rows, err := s.db.Query(`SELECT DISTINCT payer_address FROM winning_tickets WHERE tx_hash IS NULL AND sig NOT IN (SELECT sig FROM redemption_attempts)`)
 	if err != nil {
 		return nil, err
 	}
@@ -238,7 +238,7 @@ func (s *SQLiteStore) PendingSenders() ([]ethcommon.Address, error) {
 			return nil, err
 		}
 		if !ethcommon.IsHexAddress(raw) {
-			return nil, errors.New("corrupt ticket sender")
+			return nil, errors.New("corrupt ticket payer")
 		}
 		result = append(result, ethcommon.HexToAddress(raw))
 	}

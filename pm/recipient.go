@@ -14,9 +14,9 @@ import (
 // 3159761196f5cafca93cdd6b6b40bead5e4ce80c and 5933bc2cfd57a54799d355aa7c78aa1094074c42.
 // Preserve the HMAC inputs and their encoding: this derives the private lottery
 // value and authenticates the advertised parameters without persisting them.
-func (e *Engine) recipientRand(seed *big.Int, sender ethcommon.Address, faceValue *big.Int, winProb *big.Int, expirationBlock *big.Int, price *big.Rat, ticketExpirationParams *TicketExpirationParams) *big.Int {
+func (e *Engine) recipientRand(seed *big.Int, payer ethcommon.Address, faceValue *big.Int, winProb *big.Int, expirationBlock *big.Int, price *big.Rat, ticketExpirationParams *TicketExpirationParams) *big.Int {
 	h := hmac.New(sha256.New, e.secret[:])
-	msg := append(seed.Bytes(), sender.Bytes()...)
+	msg := append(seed.Bytes(), payer.Bytes()...)
 	msg = append(msg, faceValue.Bytes()...)
 	msg = append(msg, winProb.Bytes()...)
 	msg = append(msg, expirationBlock.Bytes()...)

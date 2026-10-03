@@ -45,16 +45,16 @@ type OrchestratorInfo struct {
 	Auth         AuthToken
 }
 
-type TicketSenderParams struct {
-	SenderNonce uint32
+type TicketPayerParams struct {
+	TicketNonce uint32
 	Sig         []byte
 }
 
 type Payment struct {
 	TicketParams  TicketParams
-	Sender        []byte
+	PayerAddress  []byte
 	Expiration    ExpirationParams
-	SenderParams  []TicketSenderParams
+	PayerParams   []TicketPayerParams
 	ExpectedPrice PriceInfo
 }
 
@@ -289,11 +289,11 @@ func (p *Payment) decode(data []byte) error {
 		case 1:
 			return p.TicketParams.decode(b)
 		case 2:
-			p.Sender = append([]byte(nil), b...)
+			p.PayerAddress = append([]byte(nil), b...)
 		case 3:
 			return p.Expiration.decode(b)
 		case 4:
-			var sp TicketSenderParams
+			var sp TicketPayerParams
 			err := each(b, func(k protowire.Number, typ protowire.Type, b []byte, v uint64) error {
 				switch k {
 				case 1:
@@ -301,9 +301,9 @@ func (p *Payment) decode(data []byte) error {
 						return nil
 					}
 					if v > math.MaxUint32 {
-						return errors.New("sender nonce exceeds uint32")
+						return errors.New("ticket nonce exceeds uint32")
 					}
-					sp.SenderNonce = uint32(v)
+					sp.TicketNonce = uint32(v)
 				case 2:
 					if typ != protowire.BytesType {
 						return nil
@@ -315,7 +315,7 @@ func (p *Payment) decode(data []byte) error {
 			if err != nil {
 				return err
 			}
-			p.SenderParams = append(p.SenderParams, sp)
+			p.PayerParams = append(p.PayerParams, sp)
 		case 5:
 			return p.ExpectedPrice.decode(b)
 		}
@@ -325,10 +325,10 @@ func (p *Payment) decode(data []byte) error {
 func EncodePayment(p Payment) []byte {
 	var out []byte
 	out = append(out, bytesField(1, EncodeTicketParams(p.TicketParams))...)
-	out = append(out, bytesField(2, p.Sender)...)
+	out = append(out, bytesField(2, p.PayerAddress)...)
 	out = append(out, bytesField(3, EncodeExpiration(p.Expiration))...)
-	for _, sp := range p.SenderParams {
-		b := append(intField(1, uint64(sp.SenderNonce)), bytesField(2, sp.Sig)...)
+	for _, sp := range p.PayerParams {
+		b := append(intField(1, uint64(sp.TicketNonce)), bytesField(2, sp.Sig)...)
 		out = append(out, bytesField(4, b)...)
 	}
 	return append(out, bytesField(5, EncodePrice(p.ExpectedPrice))...)

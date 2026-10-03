@@ -278,12 +278,12 @@ func Serve(parent context.Context, p Params, logOut io.Writer) (result error) {
 	var engine *pm.Engine
 	var paymentStore *pm.SQLiteStore
 	var paymentChain eth.PaymentChain
-	var paymentKey *eth.Key
+	var redeemerKey *eth.Key
 	var paymentChainID *big.Int
 	if p.KeystoreFile != "" {
 		rate, _ := new(big.Rat).SetString(p.WeiPerUSD)
 		registry.SetWeiPerUSD(rate)
-		paymentKey, err = eth.OpenKeystoreFile(p.KeystoreFile, p.KeystorePasswordFile)
+		redeemerKey, err = eth.OpenKeystoreFile(p.KeystoreFile, p.KeystorePasswordFile)
 		if err != nil {
 			return err
 		}
@@ -321,7 +321,7 @@ func Serve(parent context.Context, p Params, logOut io.Writer) (result error) {
 		}
 		face, _ := new(big.Int).SetString(p.TicketFaceValue, 10)
 		prob, _ := new(big.Int).SetString(p.TicketWinProb, 10)
-		engine, err = pm.NewEngine(paymentStore, pm.EthereumChain{Client: paymentChain}, paymentKey.Address(), face, prob)
+		engine, err = pm.NewEngine(paymentStore, pm.EthereumChain{Client: paymentChain}, redeemerKey.Address(), face, prob)
 		if err != nil {
 			return err
 		}
@@ -411,7 +411,7 @@ func Serve(parent context.Context, p Params, logOut io.Writer) (result error) {
 			}
 		})
 		startWorker(p.HeartbeatInterval, 30*time.Second, func(ctx context.Context) {
-			for _, err := range pm.ProcessRedemptions(ctx, paymentStore, paymentChain, paymentKey, paymentChainID) {
+			for _, err := range pm.ProcessRedemptions(ctx, paymentStore, paymentChain, redeemerKey, paymentChainID) {
 				logger.Error("payment redemption", "error", err)
 			}
 		})

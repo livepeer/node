@@ -19,16 +19,16 @@ import (
 
 type ChainSnapshot = eth.ChainSnapshot
 
-// SenderChain contains the sender collateral observation used by both payment sides.
-type SenderChain interface {
-	SenderInfo(context.Context, ethcommon.Address, ethcommon.Address) (eth.SenderInfo, error)
+// PayerChain contains the payer collateral observation used by both payment sides.
+type PayerChain interface {
+	PayerFunds(context.Context, ethcommon.Address, ethcommon.Address) (PayerFunds, error)
 }
 
 // PaymentChain contains only the Ethereum reads needed by payment receipt.
 type PaymentChain interface {
 	Snapshot(context.Context) (ChainSnapshot, error)
 	IsActiveAt(context.Context, ethcommon.Address, ChainSnapshot) (bool, error)
-	SenderChain
+	PayerChain
 }
 
 type Engine struct {
@@ -41,7 +41,7 @@ type Engine struct {
 	secret        [32]byte
 	authSecret    [32]byte
 	sessions      map[string]*paymentSession
-	senderNonces  map[string]*recipientNonces
+	ticketNonces  map[string]*recipientNonces
 	nonceCount    int
 	lastSeenBlock *big.Int
 }
@@ -51,7 +51,7 @@ type Engine struct {
 // The cached response serves refresh/retry routes; it does not authenticate PM.
 type paymentSession struct {
 	runner     string
-	sender     ethcommon.Address
+	payer      ethcommon.Address
 	price      wire.PriceInfo
 	unit       string
 	info       []byte
@@ -64,7 +64,7 @@ func NewEngine(store *SQLiteStore, chain PaymentChain, recipient ethcommon.Addre
 	if store == nil || chain == nil || recipient == (ethcommon.Address{}) || faceValue == nil || faceValue.Sign() <= 0 || winProb == nil || winProb.Sign() <= 0 || winProb.Cmp(maxWinProb) >= 0 {
 		return nil, errors.New("invalid payment engine configuration")
 	}
-	e := &Engine{store: store, chain: chain, recipient: recipient, faceValue: new(big.Int).Set(faceValue), winProb: new(big.Int).Set(winProb), sessions: make(map[string]*paymentSession), senderNonces: make(map[string]*recipientNonces), lastSeenBlock: new(big.Int)}
+	e := &Engine{store: store, chain: chain, recipient: recipient, faceValue: new(big.Int).Set(faceValue), winProb: new(big.Int).Set(winProb), sessions: make(map[string]*paymentSession), ticketNonces: make(map[string]*recipientNonces), lastSeenBlock: new(big.Int)}
 	// Port of Yondon Fu's go-livepeer/pm.NewRecipient: a fresh 256-bit HMAC
 	// key per recipient lifetime. AuthToken has its own independent key, as upstream.
 	rand.Read(e.secret[:])
@@ -81,8 +81,8 @@ type Challenge struct {
 
 // MakeChallenge returns a Python/Go runner compatible 402 body. Ticket
 // parameters are authenticated by the recipient HMAC, as in go-livepeer.
-func (e *Engine) MakeChallenge(ctx context.Context, runner, manifest string, sender ethcommon.Address, price int64, unit, service string) (Challenge, error) {
-	if runner == "" || manifest == "" || sender == (ethcommon.Address{}) || price <= 0 || (unit != "seconds" && unit != "fixed") {
+func (e *Engine) MakeChallenge(ctx context.Context, runner, manifest string, payer ethcommon.Address, price int64, unit, service string) (Challenge, error) {
+	if runner == "" || manifest == "" || payer == (ethcommon.Address{}) || price <= 0 || (unit != "seconds" && unit != "fixed") {
 		return Challenge{}, errors.New("invalid payment challenge scope")
 	}
 	snapshot, err := e.chain.Snapshot(ctx)
@@ -104,7 +104,7 @@ func (e *Engine) MakeChallenge(ctx context.Context, runner, manifest string, sen
 	priceInfo := wire.PriceInfo{PricePerUnit: price, UnitsPerPrice: 1}
 	expiration := &TicketExpirationParams{CreationRound: snapshot.Round.Int64(), CreationRoundBlockHash: snapshot.RoundHash}
 	expiresAtBlock := new(big.Int).Add(snapshot.Block, big.NewInt(40))
-	recipientRand := e.recipientRand(new(big.Int).SetBytes(seed), sender, e.faceValue, e.winProb, expiresAtBlock, big.NewRat(price, 1), expiration)
+	recipientRand := e.recipientRand(new(big.Int).SetBytes(seed), payer, e.faceValue, e.winProb, expiresAtBlock, big.NewRat(price, 1), expiration)
 	randHash := crypto.Keccak256Hash(ethcommon.LeftPadBytes(recipientRand.Bytes(), uint256Size))
 	info := wire.OrchestratorInfo{Transcoder: service, Address: e.recipient.Bytes(), Price: priceInfo,
 		TicketParams: wire.TicketParams{Recipient: e.recipient.Bytes(), FaceValue: e.faceValue.Bytes(), WinProb: e.winProb.Bytes(), RecipientRandHash: randHash.Bytes(), Seed: seed, ExpirationBlock: expiresAtBlock.Bytes(), Expiration: wire.ExpirationParams{CreationRound: expiration.CreationRound, CreationRoundBlockHash: expiration.CreationRoundBlockHash.Bytes()}},
@@ -117,9 +117,9 @@ func (e *Engine) MakeChallenge(ctx context.Context, runner, manifest string, sen
 		if len(e.sessions) >= 100000 {
 			return Challenge{}, errors.New("payment session capacity reached")
 		}
-		current = &paymentSession{runner: runner, sender: sender, price: priceInfo, unit: unit, balance: new(big.Rat)}
+		current = &paymentSession{runner: runner, payer: payer, price: priceInfo, unit: unit, balance: new(big.Rat)}
 		e.sessions[manifest] = current
-	} else if current.runner != runner || current.sender != sender || current.price != priceInfo || current.unit != unit {
+	} else if current.runner != runner || current.payer != payer || current.price != priceInfo || current.unit != unit {
 		return Challenge{}, errors.New("payment session scope conflict")
 	}
 	current.info, current.updated = wire.EncodeOrchestratorInfo(info), time.Now()
@@ -150,19 +150,19 @@ func (e *Engine) ChallengeForManifest(runner, manifest, service string) (Challen
 	return paymentChallenge(runner, manifest, service, current.info), nil
 }
 
-func (e *Engine) RefreshChallenge(ctx context.Context, manifest string, sender ethcommon.Address, service string) (Challenge, error) {
+func (e *Engine) RefreshChallenge(ctx context.Context, manifest string, payer ethcommon.Address, service string) (Challenge, error) {
 	e.mu.Lock()
 	current := e.sessions[manifest]
 	if current == nil {
 		e.mu.Unlock()
 		return Challenge{}, ErrMissingChallenge
 	}
-	runner, expectedSender, price, unit := current.runner, current.sender, current.price, current.unit
+	runner, expectedPayer, price, unit := current.runner, current.payer, current.price, current.unit
 	e.mu.Unlock()
-	if sender != expectedSender {
+	if payer != expectedPayer {
 		return Challenge{}, ErrInvalidPayment
 	}
-	return e.MakeChallenge(ctx, runner, manifest, sender, price.PricePerUnit, unit, service)
+	return e.MakeChallenge(ctx, runner, manifest, payer, price.PricePerUnit, unit, service)
 }
 
 func ManifestFromSegment(header string) (string, error) {
@@ -207,28 +207,28 @@ func (e *Engine) Receive(ctx context.Context, runner, manifest, paymentHeader, s
 	if err != nil {
 		return ethcommon.Address{}, nil, err
 	}
-	if len(payment.Sender) != 20 || len(segment.Hash) != 32 || string(segment.ManifestID) != manifest || segment.Auth.SessionID != manifest || len(segment.Signature) != 65 {
+	if len(payment.PayerAddress) != 20 || len(segment.Hash) != 32 || string(segment.ManifestID) != manifest || segment.Auth.SessionID != manifest || len(segment.Signature) != 65 {
 		return ethcommon.Address{}, nil, ErrInvalidPayment
 	}
-	sender := ethcommon.BytesToAddress(payment.Sender)
+	payer := ethcommon.BytesToAddress(payment.PayerAddress)
 	e.mu.Lock()
 	session := e.sessions[manifest]
 	if session == nil {
 		e.mu.Unlock()
 		return ethcommon.Address{}, nil, ErrMissingChallenge
 	}
-	runnerMatches, senderMatches, price := session.runner == runner, session.sender == sender, session.price
+	runnerMatches, payerMatches, price := session.runner == runner, session.payer == payer, session.price
 	e.mu.Unlock()
 	params, recipientRand, err := e.authenticatePayment(payment, segment.Auth)
-	if err != nil || !runnerMatches || !senderMatches || payment.ExpectedPrice != price || len(payment.SenderParams) == 0 || len(payment.SenderParams) > 100 {
+	if err != nil || !runnerMatches || !payerMatches || payment.ExpectedPrice != price || len(payment.PayerParams) == 0 || len(payment.PayerParams) > 100 {
 		return ethcommon.Address{}, nil, ErrInvalidPayment
 	}
 	flatten := append([]byte(manifest), make([]byte, 32)...)
 	flatten = append(flatten, segment.Hash...)
-	if !(DefaultSigVerifier{}).Verify(sender, flatten, segment.Signature) {
+	if !(DefaultSigVerifier{}).Verify(payer, flatten, segment.Signature) {
 		return ethcommon.Address{}, nil, ErrInvalidPayment
 	}
-	funds, err := e.chain.SenderInfo(ctx, sender, e.recipient)
+	funds, err := e.chain.PayerFunds(ctx, payer, e.recipient)
 	if err != nil {
 		return ethcommon.Address{}, nil, err
 	}
@@ -244,11 +244,11 @@ func (e *Engine) Receive(ctx context.Context, runner, manifest, paymentHeader, s
 	if snapshot.Block == nil || snapshot.Round == nil || params.ExpirationParams.CreationRound < snapshot.Round.Int64()-2 || params.ExpirationParams.CreationRound > snapshot.Round.Int64() {
 		return ethcommon.Address{}, nil, ErrInvalidPayment
 	}
-	if err := ValidateSenderFunds(funds); err != nil {
+	if err := ValidatePayerFunds(funds); err != nil {
 		return ethcommon.Address{}, nil, err
 	}
 	if funds.Reserve.Cmp(params.FaceValue) < 0 || funds.Deposit.Cmp(params.FaceValue) < 0 {
-		return ethcommon.Address{}, nil, ErrSenderUnavailable
+		return ethcommon.Address{}, nil, ErrPayerUnavailable
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -261,12 +261,12 @@ func (e *Engine) Receive(ctx context.Context, runner, manifest, paymentHeader, s
 	if params.ExpirationBlock.Cmp(e.lastSeenBlock) <= 0 {
 		return ethcommon.Address{}, nil, ErrInvalidPayment
 	}
-	if e.nonceCount+len(payment.SenderParams) > 1000000 {
+	if e.nonceCount+len(payment.PayerParams) > 1000000 {
 		return ethcommon.Address{}, nil, errors.New("payment ticket capacity reached")
 	}
 	randKey := recipientRand.String()
-	previous := e.senderNonces[randKey]
-	batchNonces := make(map[uint32]bool, len(payment.SenderParams))
+	previous := e.ticketNonces[randKey]
+	batchNonces := make(map[uint32]bool, len(payment.PayerParams))
 	tx, err := e.store.db.BeginTx(ctx, nil)
 	if err != nil {
 		return ethcommon.Address{}, nil, err
@@ -283,30 +283,30 @@ func (e *Engine) Receive(ctx context.Context, runner, manifest, paymentHeader, s
 	}
 	balance := new(big.Rat).Set(session.balance)
 	validator := NewValidator(DefaultSigVerifier{})
-	for _, sp := range payment.SenderParams {
-		if sp.SenderNonce == 0 || sp.SenderNonce >= 600 || len(sp.Sig) != 65 {
+	for _, sp := range payment.PayerParams {
+		if sp.TicketNonce == 0 || sp.TicketNonce >= 600 || len(sp.Sig) != 65 {
 			return ethcommon.Address{}, nil, ErrInvalidPayment
 		}
-		ticket := NewTicket(&params, params.ExpirationParams, sender, sp.SenderNonce)
+		ticket := NewTicket(&params, params.ExpirationParams, payer, sp.TicketNonce)
 		if err := validator.ValidateTicket(e.recipient, ticket, sp.Sig, recipientRand); err != nil {
 			return ethcommon.Address{}, nil, ErrInvalidPayment
 		}
-		if batchNonces[sp.SenderNonce] || (previous != nil && previous.nonceSeen[sp.SenderNonce]) {
+		if batchNonces[sp.TicketNonce] || (previous != nil && previous.nonceSeen[sp.TicketNonce]) {
 			return ethcommon.Address{}, nil, ErrInvalidPayment
 		}
-		batchNonces[sp.SenderNonce] = true
+		batchNonces[sp.TicketNonce] = true
 		balance.Add(balance, ticket.EV())
 		if validator.IsWinningTicket(ticket, sp.Sig, recipientRand) {
-			_, err := tx.Exec(`INSERT INTO winning_tickets(sender,recipient,face_value,win_prob,sender_nonce,recipient_rand,recipient_rand_hash,sig,creation_round,creation_round_block_hash,params_expiration_block)
-				VALUES(?,?,?,?,?,?,?,?,?,?,?)`, sender.Hex(), ticket.Recipient.Hex(), ticket.FaceValue.Bytes(), ticket.WinProb.Bytes(), ticket.SenderNonce, ethcommon.LeftPadBytes(recipientRand.Bytes(), uint256Size), ticket.RecipientRandHash.Hex(), sp.Sig, ticket.CreationRound, ticket.CreationRoundBlockHash.Hex(), ticket.ParamsExpirationBlock.String())
+			_, err := tx.Exec(`INSERT INTO winning_tickets(payer_address,recipient,face_value,win_prob,ticket_nonce,recipient_rand,recipient_rand_hash,sig,creation_round,creation_round_block_hash,params_expiration_block)
+				VALUES(?,?,?,?,?,?,?,?,?,?,?)`, payer.Hex(), ticket.Recipient.Hex(), ticket.FaceValue.Bytes(), ticket.WinProb.Bytes(), ticket.TicketNonce, ethcommon.LeftPadBytes(recipientRand.Bytes(), uint256Size), ticket.RecipientRandHash.Hex(), sp.Sig, ticket.CreationRound, ticket.CreationRoundBlockHash.Hex(), ticket.ParamsExpirationBlock.String())
 			if err != nil {
 				return ethcommon.Address{}, nil, err
 			}
 		}
 	}
-	// Include every unconfirmed winner, across all sessions for this sender.
+	// Include every unconfirmed winner, across all sessions for this payer.
 	// Keep uncertain transactions reserved until finalized receipt reconciliation.
-	rows, err := tx.Query("SELECT face_value FROM winning_tickets WHERE sender=? AND redeemed_at IS NULL AND creation_round>=? AND sig NOT IN (SELECT sig FROM redemption_attempts WHERE phase='reverted')", sender.Hex(), snapshot.Round.Int64()-2)
+	rows, err := tx.Query("SELECT face_value FROM winning_tickets WHERE payer_address=? AND redeemed_at IS NULL AND creation_round>=? AND sig NOT IN (SELECT sig FROM redemption_attempts WHERE phase='reverted')", payer.Hex(), snapshot.Round.Int64()-2)
 	if err != nil {
 		return ethcommon.Address{}, nil, err
 	}
@@ -325,21 +325,21 @@ func (e *Engine) Receive(ctx context.Context, runner, manifest, paymentHeader, s
 		return ethcommon.Address{}, nil, err
 	}
 	if pending.Cmp(new(big.Int).Add(funds.Deposit, funds.Reserve)) > 0 {
-		return ethcommon.Address{}, nil, ErrSenderUnavailable
+		return ethcommon.Address{}, nil, ErrPayerUnavailable
 	}
 	if err := tx.Commit(); err != nil {
 		return ethcommon.Address{}, nil, err
 	}
 	if previous == nil {
 		previous = &recipientNonces{nonceSeen: make(map[uint32]bool), expirationBlock: new(big.Int).Set(params.ExpirationBlock)}
-		e.senderNonces[randKey] = previous
+		e.ticketNonces[randKey] = previous
 	}
 	for nonce := range batchNonces {
 		previous.nonceSeen[nonce] = true
 	}
 	e.nonceCount += len(batchNonces)
 	session.balance, session.updated = balance, time.Now()
-	return sender, new(big.Rat).Set(balance), nil
+	return payer, new(big.Rat).Set(balance), nil
 }
 
 func (e *Engine) Charge(ctx context.Context, manifest string, now time.Time) error {
@@ -404,7 +404,7 @@ func (e *Engine) ChallengePrice(runner, manifest string) (int64, string, error) 
 // using go-livepeer's recipient HMAC.
 func (e *Engine) authenticatePayment(payment wire.Payment, auth wire.AuthToken) (TicketParams, *big.Int, error) {
 	p := payment.TicketParams
-	if len(payment.Sender) != 20 || len(p.Recipient) != 20 || ethcommon.BytesToAddress(p.Recipient) != e.recipient ||
+	if len(payment.PayerAddress) != 20 || len(p.Recipient) != 20 || ethcommon.BytesToAddress(p.Recipient) != e.recipient ||
 		len(p.FaceValue) == 0 || len(p.FaceValue) > 32 || len(p.WinProb) == 0 || len(p.WinProb) > 32 ||
 		len(p.Seed) == 0 || len(p.Seed) > 32 || len(p.ExpirationBlock) == 0 || len(p.ExpirationBlock) > 32 || len(p.RecipientRandHash) != 32 ||
 		payment.Expiration.CreationRound <= 0 || len(payment.Expiration.CreationRoundBlockHash) != 32 ||
@@ -417,7 +417,7 @@ func (e *Engine) authenticatePayment(payment wire.Payment, auth wire.AuthToken) 
 	if params.FaceValue.Sign() <= 0 || params.WinProb.Sign() <= 0 || params.WinProb.Cmp(maxWinProb) >= 0 {
 		return TicketParams{}, nil, ErrInvalidPayment
 	}
-	recipientRand := e.recipientRand(params.Seed, ethcommon.BytesToAddress(payment.Sender), params.FaceValue, params.WinProb, params.ExpirationBlock, big.NewRat(payment.ExpectedPrice.PricePerUnit, payment.ExpectedPrice.UnitsPerPrice), params.ExpirationParams)
+	recipientRand := e.recipientRand(params.Seed, ethcommon.BytesToAddress(payment.PayerAddress), params.FaceValue, params.WinProb, params.ExpirationBlock, big.NewRat(payment.ExpectedPrice.PricePerUnit, payment.ExpectedPrice.UnitsPerPrice), params.ExpirationParams)
 	if crypto.Keccak256Hash(ethcommon.LeftPadBytes(recipientRand.Bytes(), uint256Size)) != params.RecipientRandHash {
 		return TicketParams{}, nil, ErrInvalidPayment
 	}

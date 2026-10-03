@@ -56,8 +56,8 @@ type Params struct {
 	DiscoveryGrants        []string             `name:"discovery-grants" optional:"true" descr:"Private discovery host[:port] grants"`
 }
 
-func (p Params) senderPolicy() (pm.SenderPolicy, error) {
-	policy := pm.DefaultSenderPolicy()
+func (p Params) payerPolicy() (pm.PayerPolicy, error) {
+	policy := pm.DefaultPayerPolicy()
 	if p.MaxTicketEV != nil {
 		policy.MaxTicketEV = p.MaxTicketEV
 	}
@@ -93,7 +93,7 @@ func (p Params) Validate() error {
 	if _, err := p.AuthWebhookHeaders.MarshalText(); err != nil {
 		return err
 	}
-	if _, err := p.senderPolicy(); err != nil {
+	if _, err := p.payerPolicy(); err != nil {
 		return err
 	}
 	if !p.MetricsListen.Addr().IsLoopback() {
@@ -145,7 +145,7 @@ func serve(parent context.Context, p Params) error {
 	}
 	service := newService(key)
 	defer service.Close()
-	service.senderPolicy, _ = p.senderPolicy()
+	service.payerPolicy, _ = p.payerPolicy()
 	rpc, err := eth.NewRPC(p.RPCURL, nil)
 	if err != nil {
 		return err
@@ -162,7 +162,7 @@ func serve(parent context.Context, p Params) error {
 	if err != nil {
 		return err
 	}
-	service.SetPaymentChain(eth.PaymentChain{Contracts: contracts})
+	service.SetPaymentChain(pm.EthereumChain{Client: eth.PaymentChain{Contracts: contracts}})
 	policy, _ := newPricePolicy(p.MaxHourlyPrice, p.MaxFixedPrice)
 	if p.WeiPerUSD == nil {
 		rate, until, err := contracts.WeiPerUSD(ctx, p.ETHUSDFeed, p.ETHUSDMaxAge)
@@ -209,8 +209,8 @@ func serve(parent context.Context, p Params) error {
 	metricsMux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
-		funds, err := service.paymentChain.SenderInfo(ctx, key.Address(), ethcommon.Address{})
-		if err != nil || pm.ValidateSenderFunds(funds) != nil || !service.pricePolicy.ready() || !producer.ready(ctx) {
+		funds, err := service.paymentChain.PayerFunds(ctx, key.Address(), ethcommon.Address{})
+		if err != nil || pm.ValidatePayerFunds(funds) != nil || !service.pricePolicy.ready() || !producer.ready(ctx) {
 			http.Error(w, "signer payment dependencies unavailable", http.StatusServiceUnavailable)
 			return
 		}

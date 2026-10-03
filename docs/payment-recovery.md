@@ -49,7 +49,7 @@ replicas with the same key and webhook configuration; outbox files must not be s
 
 ## Orchestrator transaction recovery
 
-Redemption attempts use these states:
+The orchestrator account is the redeemer. Redemption attempts use these states:
 
 | State | Meaning and recovery |
 | --- | --- |

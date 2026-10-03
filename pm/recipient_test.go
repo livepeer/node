@@ -30,9 +30,9 @@ func TestRecipientHMACMatchesGoLivepeer(t *testing.T) {
 		Revision string `json:"source_revision"`
 		Secret   string
 		Vectors  []struct {
-			Seed, Sender, FaceValue, WinProb, ExpirationBlock, Price, RoundHash, Session string
-			Round, AuthExpiration                                                        int64
-			Random, Commitment, Token                                                    string
+			Seed, PayerAddress, FaceValue, WinProb, ExpirationBlock, Price, RoundHash, Session string
+			Round, AuthExpiration                                                              int64
+			Random, Commitment, Token                                                          string
 		}
 	}
 	require.NoError(t, json.Unmarshal(data, &fixture))
@@ -51,7 +51,7 @@ func TestRecipientHMACMatchesGoLivepeer(t *testing.T) {
 		t.Run(v.Session, func(t *testing.T) {
 			price, ok := new(big.Rat).SetString(v.Price)
 			require.True(t, ok)
-			random := e.recipientRand(num(v.Seed), ethcommon.HexToAddress(v.Sender), num(v.FaceValue), num(v.WinProb), num(v.ExpirationBlock), price, &TicketExpirationParams{CreationRound: v.Round, CreationRoundBlockHash: ethcommon.HexToHash(v.RoundHash)})
+			random := e.recipientRand(num(v.Seed), ethcommon.HexToAddress(v.PayerAddress), num(v.FaceValue), num(v.WinProb), num(v.ExpirationBlock), price, &TicketExpirationParams{CreationRound: v.Round, CreationRoundBlockHash: ethcommon.HexToHash(v.RoundHash)})
 			raw := ethcommon.LeftPadBytes(random.Bytes(), 32)
 			require.Equal(t, v.Random, hex.EncodeToString(raw))
 			require.Equal(t, v.Commitment, crypto.Keccak256Hash(raw).Hex())
@@ -71,9 +71,9 @@ func (c *recipientTestChain) Snapshot(context.Context) (ChainSnapshot, error) {
 func (c *recipientTestChain) IsActiveAt(context.Context, ethcommon.Address, ChainSnapshot) (bool, error) {
 	return c.active, nil
 }
-func (c *recipientTestChain) SenderInfo(ctx context.Context, _, _ ethcommon.Address) (eth.SenderInfo, error) {
+func (c *recipientTestChain) PayerFunds(ctx context.Context, _, _ ethcommon.Address) (PayerFunds, error) {
 	snapshot, err := c.Snapshot(ctx)
-	return eth.SenderInfo{Snapshot: snapshot, Deposit: big.NewInt(1000000000), Reserve: big.NewInt(1000000000), WithdrawRound: new(big.Int)}, err
+	return PayerFunds{Snapshot: snapshot, Deposit: big.NewInt(1000000000), Reserve: big.NewInt(1000000000), WithdrawRound: new(big.Int)}, err
 }
 
 func newRecipientTestEngine(t *testing.T) (*Engine, *recipientTestChain, *ecdsa.PrivateKey, string) {
@@ -103,7 +103,7 @@ func issueRecipientParams(t *testing.T, e *Engine, key *ecdsa.PrivateKey) wire.O
 
 func receiveRecipientPayment(t *testing.T, e *Engine, key *ecdsa.PrivateKey, info wire.OrchestratorInfo, nonces ...uint32) error {
 	t.Helper()
-	sender := crypto.PubkeyToAddress(key.PublicKey)
+	payer := crypto.PubkeyToAddress(key.PublicKey)
 	p := info.TicketParams
 	params := TicketParams{Recipient: ethcommon.BytesToAddress(p.Recipient), FaceValue: new(big.Int).SetBytes(p.FaceValue), WinProb: new(big.Int).SetBytes(p.WinProb), RecipientRandHash: ethcommon.BytesToHash(p.RecipientRandHash), ExpirationBlock: new(big.Int).SetBytes(p.ExpirationBlock)}
 	expiration := &TicketExpirationParams{CreationRound: p.Expiration.CreationRound, CreationRoundBlockHash: ethcommon.BytesToHash(p.Expiration.CreationRoundBlockHash)}
@@ -113,10 +113,10 @@ func receiveRecipientPayment(t *testing.T, e *Engine, key *ecdsa.PrivateKey, inf
 		sig[64] += 27
 		return sig
 	}
-	payment := wire.Payment{Sender: sender.Bytes(), TicketParams: p, Expiration: p.Expiration, ExpectedPrice: info.Price}
+	payment := wire.Payment{PayerAddress: payer.Bytes(), TicketParams: p, Expiration: p.Expiration, ExpectedPrice: info.Price}
 	for _, nonce := range nonces {
-		ticket := NewTicket(&params, expiration, sender, nonce)
-		payment.SenderParams = append(payment.SenderParams, wire.TicketSenderParams{SenderNonce: nonce, Sig: sign(ticket.Hash().Bytes())})
+		ticket := NewTicket(&params, expiration, payer, nonce)
+		payment.PayerParams = append(payment.PayerParams, wire.TicketPayerParams{TicketNonce: nonce, Sig: sign(ticket.Hash().Bytes())})
 	}
 	hash := crypto.Keccak256(nil)
 	flatten := append([]byte(info.Auth.SessionID), make([]byte, 32)...)
@@ -130,7 +130,7 @@ func TestRecipientHMACRejectsTamperedParameters(t *testing.T) {
 	e, _, key, _ := newRecipientTestEngine(t)
 	original := issueRecipientParams(t, e, key)
 	for name, mutate := range map[string]func(*wire.Payment, *wire.AuthToken){
-		"sender":            func(p *wire.Payment, _ *wire.AuthToken) { p.Sender[0] ^= 1 },
+		"payer":             func(p *wire.Payment, _ *wire.AuthToken) { p.PayerAddress[0] ^= 1 },
 		"recipient":         func(p *wire.Payment, _ *wire.AuthToken) { p.TicketParams.Recipient[0] ^= 1 },
 		"seed":              func(p *wire.Payment, _ *wire.AuthToken) { p.TicketParams.Seed[0] ^= 1 },
 		"face value":        func(p *wire.Payment, _ *wire.AuthToken) { p.TicketParams.FaceValue = big.NewInt(11).Bytes() },
@@ -154,7 +154,7 @@ func TestRecipientHMACRejectsTamperedParameters(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			info, err := wire.DecodeOrchestratorInfo(wire.EncodeOrchestratorInfo(original))
 			require.NoError(t, err)
-			p := wire.Payment{Sender: crypto.PubkeyToAddress(key.PublicKey).Bytes(), TicketParams: info.TicketParams, Expiration: info.TicketParams.Expiration, ExpectedPrice: info.Price}
+			p := wire.Payment{PayerAddress: crypto.PubkeyToAddress(key.PublicKey).Bytes(), TicketParams: info.TicketParams, Expiration: info.TicketParams.Expiration, ExpectedPrice: info.Price}
 			_, _, err = e.authenticatePayment(p, info.Auth)
 			require.NoError(t, err)
 			mutate(&p, &info.Auth)
@@ -192,7 +192,7 @@ func TestRecipientBatchReplayAndExpiry(t *testing.T) {
 	require.NoError(t, receiveRecipientPayment(t, e, key, info, 2), "unexpired prior parameters still authenticate after refresh")
 	chain.block = 90
 	require.NoError(t, e.PruneControlState(t.Context()))
-	require.Empty(t, e.senderNonces)
+	require.Empty(t, e.ticketNonces)
 	require.Zero(t, e.nonceCount)
 	chain.block = 89
 	require.ErrorIs(t, receiveRecipientPayment(t, e, key, info, 1), ErrInvalidPayment, "a backward observation cannot revive pruned replay state")

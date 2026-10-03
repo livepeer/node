@@ -80,7 +80,7 @@ func TestSigningEventContract(t *testing.T) {
 				require.Equal(t, state.ManifestID, data.ManifestID)
 				require.Equal(t, state.PMSessionID, data.PMSessionID)
 				require.Equal(t, uint64(i), data.SequenceNumber)
-				require.Equal(t, len(payment.SenderParams), data.NumTickets)
+				require.Equal(t, len(payment.PayerParams), data.NumTickets)
 				require.Equal(t, state.LastUpdate, data.CurrentTime)
 				require.Equal(t, state.LastUpdate.UnixMilli(), data.CurrentTimeUnix)
 				require.Equal(t, int64(0), data.Pixels)
@@ -157,7 +157,7 @@ func TestRejectedPaymentsEmitNoEvent(t *testing.T) {
 				info.Auth.Expiration = time.Now().Unix()
 				request["orchestrator"] = wire.EncodeOrchestratorInfo(info)
 			case "funds":
-				s.SetPaymentChain(unavailableSender{})
+				s.SetPaymentChain(unavailablePayer{})
 			case "authorization":
 				webhook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 					_, _ = io.WriteString(w, `{"status":403,"reason":"denied"}`)

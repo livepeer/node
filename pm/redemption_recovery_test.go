@@ -28,7 +28,7 @@ func TestRedemptionRecoveryBeforeAndAfterBroadcast(t *testing.T) {
 			store, err := OpenSQLite(path)
 			require.NoError(t, err)
 			defer func() { _ = store.Close() }()
-			ticket := &SignedTicket{Ticket: &Ticket{Sender: ethcommon.HexToAddress("0x1234"), Recipient: key.Address(), FaceValue: big.NewInt(10), WinProb: big.NewInt(100), SenderNonce: 1, RecipientRandHash: ethcommon.HexToHash("0xabcd"), CreationRound: 5, ParamsExpirationBlock: big.NewInt(10)}, Sig: []byte{1, 2, 3}, RecipientRand: big.NewInt(4)}
+			ticket := &SignedTicket{Ticket: &Ticket{PayerAddress: ethcommon.HexToAddress("0x1234"), Recipient: key.Address(), FaceValue: big.NewInt(10), WinProb: big.NewInt(100), TicketNonce: 1, RecipientRandHash: ethcommon.HexToHash("0xabcd"), CreationRound: 5, ParamsExpirationBlock: big.NewInt(10)}, Sig: []byte{1, 2, 3}, RecipientRand: big.NewInt(4)}
 			require.NoError(t, store.StoreWinningTicket(ticket))
 			var fail atomic.Bool
 			fail.Store(true)
@@ -87,7 +87,7 @@ func TestRedemptionRecoveryBeforeAndAfterBroadcast(t *testing.T) {
 			chain := eth.PaymentChain{Contracts: contracts}
 			snapshot := eth.ChainSnapshot{Block: big.NewInt(10), Round: big.NewInt(5)}
 			if failure == "prepared-crash" {
-				prepared, err := chain.PrepareRedemption(t.Context(), key, big.NewInt(1), eth.RedeemTicket{Recipient: ticket.Recipient, Sender: ticket.Sender, FaceValue: ticket.FaceValue, WinProb: ticket.WinProb, SenderNonce: ticket.SenderNonce, RecipientRandHash: ticket.RecipientRandHash, AuxData: ticket.AuxData(), Signature: ticket.Sig, RecipientRand: ticket.RecipientRand})
+				prepared, err := chain.PrepareRedemption(t.Context(), key, big.NewInt(1), eth.RedeemTicket{Recipient: ticket.Recipient, Sender: ticket.PayerAddress, FaceValue: ticket.FaceValue, WinProb: ticket.WinProb, SenderNonce: ticket.TicketNonce, RecipientRandHash: ticket.RecipientRandHash, AuxData: ticket.AuxData(), Signature: ticket.Sig, RecipientRand: ticket.RecipientRand})
 				require.NoError(t, err)
 				require.NoError(t, store.recordPrepared(t.Context(), ticket, prepared))
 			} else {
@@ -125,7 +125,7 @@ func TestRedemptionRecoveryBeforeAndAfterBroadcast(t *testing.T) {
 				require.NoError(t, err)
 				chain = eth.PaymentChain{Contracts: contracts}
 				next := *ticket
-				next.Ticket = &Ticket{Sender: ticket.Sender, Recipient: ticket.Recipient, FaceValue: ticket.FaceValue, WinProb: ticket.WinProb, SenderNonce: 2, RecipientRandHash: ticket.RecipientRandHash, CreationRound: 5, ParamsExpirationBlock: big.NewInt(10)}
+				next.Ticket = &Ticket{PayerAddress: ticket.PayerAddress, Recipient: ticket.Recipient, FaceValue: ticket.FaceValue, WinProb: ticket.WinProb, TicketNonce: 2, RecipientRandHash: ticket.RecipientRandHash, CreationRound: 5, ParamsExpirationBlock: big.NewInt(10)}
 				next.Sig = []byte{4, 5, 6}
 				require.NoError(t, store.StoreWinningTicket(&next))
 				firstRaw = ""

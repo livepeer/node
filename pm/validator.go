@@ -12,7 +12,7 @@ import (
 
 var (
 	errInvalidTicketRecipient     = errors.New("invalid ticket recipient")
-	errInvalidTicketSender        = errors.New("invalid ticket sender")
+	errInvalidTicketPayer         = errors.New("invalid ticket payer")
 	errInvalidTicketRecipientRand = errors.New("invalid recipientRand for ticket recipientRandHash")
 	errInvalidTicketSignature     = errors.New("invalid ticket signature")
 )
@@ -46,15 +46,15 @@ func (v *validator) ValidateTicket(recipient ethcommon.Address, ticket *Ticket, 
 		return errInvalidTicketRecipient
 	}
 
-	if (ticket.Sender == ethcommon.Address{}) {
-		return errInvalidTicketSender
+	if (ticket.PayerAddress == ethcommon.Address{}) {
+		return errInvalidTicketPayer
 	}
 
 	if crypto.Keccak256Hash(ethcommon.LeftPadBytes(recipientRand.Bytes(), uint256Size)) != ticket.RecipientRandHash {
 		return errInvalidTicketRecipientRand
 	}
 
-	if !v.sigVerifier.Verify(ticket.Sender, ticket.Hash().Bytes(), sig) {
+	if !v.sigVerifier.Verify(ticket.PayerAddress, ticket.Hash().Bytes(), sig) {
 		return errInvalidTicketSignature
 	}
 

@@ -37,25 +37,25 @@ func TestSQLiteWinningTicketLifecycle(t *testing.T) {
 	store, err := OpenSQLite(filepath.Join(t.TempDir(), "recipient.sqlite"))
 	require.NoError(t, err)
 	defer store.Close()
-	sender := ethcommon.HexToAddress("0x1234")
-	ticket := &SignedTicket{Ticket: &Ticket{Sender: sender, Recipient: ethcommon.HexToAddress("0x5678"),
-		FaceValue: big.NewInt(1234), WinProb: big.NewInt(2345), SenderNonce: 123,
+	payer := ethcommon.HexToAddress("0x1234")
+	ticket := &SignedTicket{Ticket: &Ticket{PayerAddress: payer, Recipient: ethcommon.HexToAddress("0x5678"),
+		FaceValue: big.NewInt(1234), WinProb: big.NewInt(2345), TicketNonce: 123,
 		RecipientRandHash: ethcommon.HexToHash("0xabcd"), CreationRound: 9,
 		CreationRoundBlockHash: ethcommon.HexToHash("0x9876"), ParamsExpirationBlock: big.NewInt(1337)},
 		Sig: []byte{1, 2, 3}, RecipientRand: big.NewInt(4567)}
-	count, err := store.WinningTicketCount(sender, 9)
+	count, err := store.WinningTicketCount(payer, 9)
 	require.NoError(t, err)
 	require.Zero(t, count)
 	require.NoError(t, store.StoreWinningTicket(ticket))
 	require.Error(t, store.StoreWinningTicket(ticket))
-	selected, err := store.SelectEarliestWinningTicket(sender, 9)
+	selected, err := store.SelectEarliestWinningTicket(payer, 9)
 	require.NoError(t, err)
 	require.Equal(t, ticket, selected)
-	selected, err = store.SelectEarliestWinningTicket(sender, 10)
+	selected, err = store.SelectEarliestWinningTicket(payer, 10)
 	require.NoError(t, err)
 	require.Nil(t, selected)
 	require.NoError(t, store.RemoveWinningTicket(ticket))
-	count, err = store.WinningTicketCount(sender, 9)
+	count, err = store.WinningTicketCount(payer, 9)
 	require.NoError(t, err)
 	require.Zero(t, count)
 }
@@ -66,8 +66,8 @@ func TestRedemptionReceiptSettlesAttempt(t *testing.T) {
 			store, err := OpenSQLite(filepath.Join(t.TempDir(), "recipient.sqlite"))
 			require.NoError(t, err)
 			defer store.Close()
-			sender := ethcommon.HexToAddress("0x1234")
-			ticket := &SignedTicket{Ticket: &Ticket{Sender: sender, Recipient: ethcommon.HexToAddress("0x5678"), FaceValue: big.NewInt(1), WinProb: big.NewInt(1), SenderNonce: 1, RecipientRandHash: ethcommon.HexToHash("0xabcd"), CreationRound: 1, ParamsExpirationBlock: big.NewInt(10)}, Sig: []byte{1, 2, 3}, RecipientRand: big.NewInt(4)}
+			payer := ethcommon.HexToAddress("0x1234")
+			ticket := &SignedTicket{Ticket: &Ticket{PayerAddress: payer, Recipient: ethcommon.HexToAddress("0x5678"), FaceValue: big.NewInt(1), WinProb: big.NewInt(1), TicketNonce: 1, RecipientRandHash: ethcommon.HexToHash("0xabcd"), CreationRound: 1, ParamsExpirationBlock: big.NewInt(10)}, Sig: []byte{1, 2, 3}, RecipientRand: big.NewInt(4)}
 			require.NoError(t, store.StoreWinningTicket(ticket))
 			hash := ethcommon.HexToHash("0x1234")
 			require.NoError(t, store.recordPrepared(t.Context(), ticket, eth.SignedTransaction{Hash: hash, Raw: []byte{1}, From: ticket.Recipient, Nonce: 1}))
@@ -88,7 +88,7 @@ func TestRedemptionReceiptSettlesAttempt(t *testing.T) {
 			submitted, err = store.SubmittedRedemptions()
 			require.NoError(t, err)
 			require.Empty(t, submitted)
-			pending, err := store.PendingSenders()
+			pending, err := store.PendingPayers()
 			require.NoError(t, err)
 			require.Empty(t, pending)
 		})

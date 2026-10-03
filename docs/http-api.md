@@ -16,7 +16,7 @@ configuration.
 | `POST /apps/{runner_id}/session` | Reserve persistent session | JSON `session_id`, `app_url`, `control_url`; paid mode may first return a payment challenge. |
 | `POST /apps/{runner_id}/session/{session_id}/stop` | Stop client session | Session authorization and callback reconciliation. |
 | `POST /apps/{runner_id}/session/{session_id}/payment` | Submit a ticket payment | On-chain only. |
-| `POST /refresh-payment` | Refresh ticket parameters for the same sender and manifest | On-chain only; used by the Python remote signer client. |
+| `POST /refresh-payment` | Refresh ticket parameters for the same payer and manifest | On-chain only; JSON `sender` and `manifest_id`. |
 | `* /apps/{runner_id}/session/{session_id}/app/{app_path...}` | Persistent proxy | Preserve HTTP method, streaming, SSE and WebSocket semantics and Livepeer session headers. |
 | `* /apps/{runner_id}/app/{app_path...}` | Single-shot proxy | Transient capacity-limited reservation; identical session/control headers and cancellation ownership. |
 | `POST /runner/{runner_id}/session/{session_id}/channels` | Create generic trickle channels | Scoped session callback token; JSON `channels`. |
@@ -109,10 +109,10 @@ Fixed rates never refresh or expire.
 | `DepositMultiplier` | 1; face value cannot exceed deposit divided by this value. Must be at least 1. |
 | Batch size | At most 100 tickets; issued credit covers at least the greater of the fee and one ticket's EV. Unused credit remains in signed state. |
 
-Payment generation requires sender deposit and recipient-claimable reserve,
+Payment generation requires payer deposit and recipient-claimable reserve,
 the last initialized round and its canonical hash, and a ticket recipient
 matching the orchestrator address. Expiring parameters/authentication, obsolete
-rounds, mismatched hashes, or a carried sender nonce at least 500 require
+rounds, mismatched hashes, or a carried ticket nonce at least 500 require
 refresh (480). A new recipient randomness hash resets the nonce; individual
 ticket nonces must be from 1 through 599. On Arbitrum, parameter expiry uses the L1
 clock. Parameter expiry is supplied by the caller; these checks do not establish
@@ -177,7 +177,7 @@ example `"X-List: a,b",Authorization: Bearer credential`.
 
 `pm/wire` retains only the consumed fields and original field numbers:
 `OrchestratorInfo` 1–4 and 6, `TicketParams` 1–7, `PriceInfo` 1–2,
-`AuthToken` 1–3, `TicketExpirationParams` 1–2, `Payment` 1–5, sender params
+`AuthToken` 1–3, `TicketExpirationParams` 1–2, `Payment` 1–5, payer params
 1–2, and `SegData` 1, 3, 5 and 8. Other fields are skipped on decode.
 Binary fixtures produced by the pinned Python runner check the wire
 format in `pm/wire/wire_test.go`. Capability payloads and `lv2v` requests
@@ -198,13 +198,13 @@ and the [Trickle protocol](../trickle/README.md) for channel behavior.
 | 413 | Reduce the accounting event size; no payment credentials were returned. |
 | 480 | Refresh payment parameters or orchestrator authentication. |
 | 481 | The price exceeds a ceiling or the initial session price. |
-| 482 | No tickets are needed, or sender funds are unavailable. |
+| 482 | No tickets are needed, or payer funds are unavailable. |
 | 502 | Restore the authorization webhook or correct its response. |
 | 503 | Retry after payment dependencies, discovery sources, or accounting storage recover. |
 
 Healthy empty discovery returns HTTP 200 with `[]`. Rate and readiness policy
 are described in [the signer guide](signer.md). Signed state preserves its
-sequence through parameter refresh and resets the sender nonce for new
+sequence through parameter refresh and resets the ticket nonce for new
 randomness. Replicas with the same key and webhook configuration can continue
 that state, but there is no server-side replay database: earlier state can be
 reused and retries can receive different tickets. Recipients reject duplicates.
@@ -276,5 +276,5 @@ conventions:
 
 The selected-field Protobuf decoder is compared with the generated runtime for
 merged message fields, unknown and wrong-wire fields, UTF-8, and bounds.
-Sender nonces outside uint32 are rejected. See [development](development.md)
+Ticket nonces outside uint32 are rejected. See [development](development.md)
 for fixtures and test commands.

@@ -23,7 +23,7 @@ func TestVerifyTicketSignature(t *testing.T) {
 		valid              bool
 	}{
 		{"valid", addr, msg, sig, true},
-		{"wrong sender", ethcommon.HexToAddress("0x1234"), msg, sig, false},
+		{"wrong payer", ethcommon.HexToAddress("0x1234"), msg, sig, false},
 		{"wrong message", addr, []byte("different message"), sig, false},
 		{"truncated signature", addr, msg, sig[:64], false},
 		{"malleable high S", addr, msg, highS, false},

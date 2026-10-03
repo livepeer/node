@@ -52,20 +52,20 @@ type Service struct {
 	mux             *http.ServeMux
 	discoveryURLs   []*url.URL
 	discoveryClient *http.Client
-	paymentChain    pm.SenderChain
-	senderPolicy    pm.SenderPolicy
+	paymentChain    pm.PayerChain
+	payerPolicy     pm.PayerPolicy
 	pricePolicy     *pricePolicy
 	events          signedTicketSink
 	slots           chan struct{}
 }
 
-func (s *Service) SetPaymentChain(chain pm.SenderChain) { s.paymentChain = chain }
+func (s *Service) SetPaymentChain(chain pm.PayerChain) { s.paymentChain = chain }
 
-func (s *Service) SetSenderPolicy(policy pm.SenderPolicy) error {
+func (s *Service) SetPayerPolicy(policy pm.PayerPolicy) error {
 	if err := policy.Validate(); err != nil {
 		return err
 	}
-	s.senderPolicy = policy
+	s.payerPolicy = policy
 	return nil
 }
 
@@ -125,7 +125,7 @@ func (s *Service) Close() error {
 }
 
 func newService(key *eth.Key) *Service {
-	s := &Service{key: key, mux: http.NewServeMux(), senderPolicy: pm.DefaultSenderPolicy(), slots: make(chan struct{}, 64)}
+	s := &Service{key: key, mux: http.NewServeMux(), payerPolicy: pm.DefaultPayerPolicy(), slots: make(chan struct{}, 64)}
 	s.mux.HandleFunc("POST /sign-orchestrator-info", s.signInfo)
 	s.mux.HandleFunc("POST /generate-live-payment", s.generate)
 	s.mux.HandleFunc("GET /discover-orchestrators", s.discover)
@@ -453,12 +453,12 @@ func (s *Service) generate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) makePayment(ctx context.Context, req paymentRequest, info wire.OrchestratorInfo, state paymentState, oldSequence int64) (paymentDraft, error) {
-	payment, err := (remoteSender{Signer: s.key, Chain: s.paymentChain, Policy: s.senderPolicy}).Generate(ctx, req.Type, req.ManifestID, info, state, oldSequence)
+	payment, err := (remotePayer{Signer: s.key, Chain: s.paymentChain, Policy: s.payerPolicy}).Generate(ctx, req.Type, req.ManifestID, info, state, oldSequence)
 	if err != nil {
 		switch {
 		case errors.Is(err, pm.ErrRefreshRequired):
 			return paymentDraft{}, paymentFailure{480, err.Error()}
-		case errors.Is(err, pm.ErrNoTickets), errors.Is(err, pm.ErrSenderUnavailable):
+		case errors.Is(err, pm.ErrNoTickets), errors.Is(err, pm.ErrPayerUnavailable):
 			return paymentDraft{}, paymentFailure{482, err.Error()}
 		default:
 			return paymentDraft{}, invalid(err.Error())

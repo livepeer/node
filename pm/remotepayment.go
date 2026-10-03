@@ -59,7 +59,7 @@ func MakeRemoteBatch(params TicketParams, signer TicketSigner, firstNonce uint32
 	if uint64(firstNonce)+uint64(count) >= 600 {
 		return nil, nil, ErrRefreshRequired
 	}
-	batch := &TicketBatch{TicketParams: &params, TicketExpirationParams: params.ExpirationParams, Sender: signer.Address()}
+	batch := &TicketBatch{TicketParams: &params, TicketExpirationParams: params.ExpirationParams, PayerAddress: signer.Address()}
 	for i := 0; i < count; i++ {
 		nonce := firstNonce + uint32(i) + 1
 		ticket := NewTicket(&params, params.ExpirationParams, signer.Address(), nonce)
@@ -67,7 +67,7 @@ func MakeRemoteBatch(params TicketParams, signer TicketSigner, firstNonce uint32
 		if err != nil {
 			return nil, nil, err
 		}
-		batch.SenderParams = append(batch.SenderParams, &TicketSenderParams{SenderNonce: nonce, Sig: sig})
+		batch.PayerParams = append(batch.PayerParams, &TicketPayerParams{TicketNonce: nonce, Sig: sig})
 	}
 	credit := new(big.Rat).Mul(ev, big.NewRat(int64(count), 1))
 	remaining := new(big.Rat).Sub(new(big.Rat).Add(balance, credit), fee)

@@ -17,7 +17,7 @@ import (
 // including confirmed/reverted attempts that an RPC may omit from pending.
 func (s *SQLiteStore) SavedNonceFloor(ctx context.Context, address ethcommon.Address) (uint64, error) {
 	var raw string
-	err := s.db.QueryRowContext(ctx, "SELECT nonce FROM redemption_attempts WHERE key_address=? AND nonce IS NOT NULL ORDER BY length(nonce) DESC, nonce DESC LIMIT 1", address.Hex()).Scan(&raw)
+	err := s.db.QueryRowContext(ctx, "SELECT nonce FROM redemption_attempts WHERE redeemer_address=? AND nonce IS NOT NULL ORDER BY length(nonce) DESC, nonce DESC LIMIT 1", address.Hex()).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, nil
 	}
@@ -44,7 +44,7 @@ func (s *SQLiteStore) recordPrepared(ctx context.Context, ticket *SignedTicket, 
 	if blocked != 0 {
 		return errors.New("unresolved redemption must be reconciled before preparing another")
 	}
-	_, err = tx.Exec("INSERT INTO redemption_attempts(sig,attempted_at,phase,raw_transaction,key_address,nonce) VALUES(?,?,'prepared',?,?,?)", ticket.Sig, time.Now().UTC().Format(time.RFC3339Nano), prepared.Raw, prepared.From.Hex(), strconv.FormatUint(prepared.Nonce, 10))
+	_, err = tx.Exec("INSERT INTO redemption_attempts(sig,attempted_at,phase,raw_transaction,redeemer_address,nonce) VALUES(?,?,'prepared',?,?,?)", ticket.Sig, time.Now().UTC().Format(time.RFC3339Nano), prepared.Raw, prepared.From.Hex(), strconv.FormatUint(prepared.Nonce, 10))
 	if err != nil {
 		return err
 	}

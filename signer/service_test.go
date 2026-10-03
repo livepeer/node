@@ -45,16 +45,16 @@ func (l *pipeListener) Accept() (net.Conn, error) {
 func (l *pipeListener) Close() error   { l.once.Do(func() { close(l.closed) }); return nil }
 func (l *pipeListener) Addr() net.Addr { return l.conn.LocalAddr() }
 
-type unavailableSender struct{}
+type unavailablePayer struct{}
 
-func (unavailableSender) SenderInfo(context.Context, ethcommon.Address, ethcommon.Address) (eth.SenderInfo, error) {
-	return eth.SenderInfo{}, errors.New("sender has no deposit")
+func (unavailablePayer) PayerFunds(context.Context, ethcommon.Address, ethcommon.Address) (pm.PayerFunds, error) {
+	return pm.PayerFunds{}, errors.New("payer has no deposit")
 }
 
-type fundedSender struct{}
+type fundedPayer struct{}
 
-func (fundedSender) SenderInfo(context.Context, ethcommon.Address, ethcommon.Address) (eth.SenderInfo, error) {
-	return eth.SenderInfo{Snapshot: eth.ChainSnapshot{Block: big.NewInt(50), Round: big.NewInt(5), RoundHash: ethcommon.HexToHash("0x1234")}, Deposit: new(big.Int).Exp(big.NewInt(10), big.NewInt(20), nil), Reserve: new(big.Int).Exp(big.NewInt(10), big.NewInt(20), nil), WithdrawRound: new(big.Int)}, nil
+func (fundedPayer) PayerFunds(context.Context, ethcommon.Address, ethcommon.Address) (pm.PayerFunds, error) {
+	return pm.PayerFunds{Snapshot: eth.ChainSnapshot{Block: big.NewInt(50), Round: big.NewInt(5), RoundHash: ethcommon.HexToHash("0x1234")}, Deposit: new(big.Int).Exp(big.NewInt(10), big.NewInt(20), nil), Reserve: new(big.Int).Exp(big.NewInt(10), big.NewInt(20), nil), WithdrawRound: new(big.Int)}, nil
 }
 
 func testSignerKey(t *testing.T) (*eth.Key, string, string) {
@@ -73,7 +73,7 @@ func testService(t *testing.T) (*Service, wire.OrchestratorInfo) {
 		TicketParams: wire.TicketParams{Recipient: ethcommon.HexToAddress("0x1234").Bytes(), FaceValue: big.NewInt(20).Bytes(), WinProb: new(big.Int).Add(new(big.Int).Quo(max, big.NewInt(2)), big.NewInt(1)).Bytes(), RecipientRandHash: crypto.Keccak256(make([]byte, 32)), Seed: big.NewInt(1).Bytes(), ExpirationBlock: big.NewInt(500).Bytes(), Expiration: wire.ExpirationParams{CreationRound: 5, CreationRoundBlockHash: ethcommon.HexToHash("0x1234").Bytes()}},
 		Auth:         wire.AuthToken{Token: []byte("token"), SessionID: "manifest-1", Expiration: time.Now().Add(time.Hour).Unix()}}
 	service := newService(key)
-	service.SetPaymentChain(fundedSender{})
+	service.SetPaymentChain(fundedPayer{})
 	prices, err := newPricePolicy(new(big.Rat).Mul(testRat(t, "1000000000000"), big.NewRat(3600, 1)), testRat(t, "1000000000000"))
 	require.NoError(t, err)
 	require.NoError(t, prices.setRate(big.NewRat(1, 1), time.Time{}))
@@ -108,15 +108,17 @@ func TestFixedPaymentAndSignedStateContinuation(t *testing.T) {
 	require.Equal(t, 200, w.Code, w.Body.String())
 	var first paymentResponse
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &first))
+	require.Contains(t, string(first.State.State), `"SenderNonce":1`)
+	require.NotContains(t, string(first.State.State), `"TicketNonce"`)
 	decoded, err := base64.StdEncoding.DecodeString(first.Payment)
 	require.NoError(t, err)
 	payment, err := wire.DecodePayment(decoded)
 	require.NoError(t, err)
-	require.Equal(t, s.key.Address().Bytes(), payment.Sender)
-	require.Len(t, payment.SenderParams, 1)
+	require.Equal(t, s.key.Address().Bytes(), payment.PayerAddress)
+	require.Len(t, payment.PayerParams, 1)
 	params := pm.TicketParams{Recipient: ethcommon.BytesToAddress(info.TicketParams.Recipient), FaceValue: new(big.Int).SetBytes(info.TicketParams.FaceValue), WinProb: new(big.Int).SetBytes(info.TicketParams.WinProb), RecipientRandHash: ethcommon.BytesToHash(info.TicketParams.RecipientRandHash), ExpirationBlock: new(big.Int).SetBytes(info.TicketParams.ExpirationBlock), ExpirationParams: &pm.TicketExpirationParams{CreationRound: 5, CreationRoundBlockHash: ethcommon.BytesToHash(info.TicketParams.Expiration.CreationRoundBlockHash)}}
-	ticket := pm.NewTicket(&params, params.ExpirationParams, s.key.Address(), payment.SenderParams[0].SenderNonce)
-	require.True(t, (pm.DefaultSigVerifier{}).Verify(s.key.Address(), ticket.Hash().Bytes(), payment.SenderParams[0].Sig))
+	ticket := pm.NewTicket(&params, params.ExpirationParams, s.key.Address(), payment.PayerParams[0].TicketNonce)
+	require.True(t, (pm.DefaultSigVerifier{}).Verify(s.key.Address(), ticket.Hash().Bytes(), payment.PayerParams[0].Sig))
 	segmentBytes, err := base64.StdEncoding.DecodeString(first.SegCreds)
 	require.NoError(t, err)
 	segment, err := wire.DecodeSegData(segmentBytes)
@@ -130,7 +132,7 @@ func TestFixedPaymentAndSignedStateContinuation(t *testing.T) {
 	var state paymentState
 	require.NoError(t, json.Unmarshal(second.State.State, &state))
 	require.Equal(t, uint64(1), state.SequenceNumber)
-	require.Equal(t, uint32(2), state.SenderNonce)
+	require.Equal(t, uint32(2), state.TicketNonce)
 	request["state"] = second.State
 	info.Price.PricePerUnit++
 	request["orchestrator"] = wire.EncodeOrchestratorInfo(info)
@@ -166,7 +168,7 @@ func TestSignedStateMovesBetweenIndependentSigners(t *testing.T) {
 		var body struct{ State paymentState }
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
 		require.NotEmpty(t, body.State.Balance)
-		require.NotZero(t, body.State.SenderNonce)
+		require.NotZero(t, body.State.TicketNonce)
 		require.False(t, body.State.LastUpdate.IsZero())
 		_ = json.NewEncoder(w).Encode(map[string]any{"status": 200, "expiry": time.Now().Add(time.Hour).Unix(), "auth_id": "replica-user"})
 	}))
@@ -180,7 +182,7 @@ func TestSignedStateMovesBetweenIndependentSigners(t *testing.T) {
 		require.NoError(t, err)
 		require.NoError(t, content.setRate(big.NewRat(1, 1), time.Time{}))
 		replicas[i].pricePolicy = content
-		replicas[i].SetPaymentChain(fundedSender{})
+		replicas[i].SetPaymentChain(fundedPayer{})
 		require.NoError(t, replicas[i].SetAuthWebhook(testURL(t, webhook.URL), nil))
 	}
 	for _, kind := range []string{"fixed", "live"} {
@@ -285,7 +287,7 @@ func TestSignerRefreshResetsNonceAtBatchLimit(t *testing.T) {
 		require.NoError(t, json.Unmarshal(res.State.State, &state))
 		req["state"] = res.State
 	}
-	require.Equal(t, uint32(500), state.SenderNonce)
+	require.Equal(t, uint32(500), state.TicketNonce)
 	require.Equal(t, 480, postPayment(t, s, req).Code, "exhausted parameters must request a refresh")
 	info.TicketParams.RecipientRandHash = crypto.Keccak256([]byte("fresh recipient randomness"))
 	req["orchestrator"] = wire.EncodeOrchestratorInfo(info)
@@ -294,7 +296,7 @@ func TestSignerRefreshResetsNonceAtBatchLimit(t *testing.T) {
 	var refreshed paymentResponse
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &refreshed))
 	require.NoError(t, json.Unmarshal(refreshed.State.State, &state))
-	require.Equal(t, uint32(100), state.SenderNonce)
+	require.Equal(t, uint32(100), state.TicketNonce)
 	require.Equal(t, uint64(5), state.SequenceNumber)
 }
 
@@ -305,7 +307,7 @@ func TestSignerEnforcesTicketExposureLimit(t *testing.T) {
 	req := map[string]any{"type": "fixed", "ManifestID": "manifest-1", "orchestrator": wire.EncodeOrchestratorInfo(info), "maxPrice": map[string]any{"price": "1", "currency": "wei", "unit": "fixed"}}
 	w := postPayment(t, s, req)
 	require.Equal(t, 400, w.Code, w.Body.String())
-	require.Contains(t, w.Body.String(), "ticket expected value exceeds sender policy")
+	require.Contains(t, w.Body.String(), "ticket expected value exceeds payer policy")
 }
 
 func TestPaymentParamsValidation(t *testing.T) {

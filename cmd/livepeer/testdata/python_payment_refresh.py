@@ -9,11 +9,7 @@ from dataclasses import replace
 
 import aiohttp
 from livepeer_gateway import lp_rpc_pb2
-from livepeer_gateway.remote_signer import (
-    LivePaymentChallenge,
-    LivePaymentSession,
-    get_signer_info,
-)
+from livepeer_gateway.remote_signer import LivePaymentChallenge, LivePaymentSession, get_signer_info
 
 
 async def main(orchestrator: str, signer: str) -> None:

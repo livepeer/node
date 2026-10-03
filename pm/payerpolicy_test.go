@@ -9,13 +9,13 @@ import (
 )
 
 // Ported economic boundaries from go-livepeer/pm/sender_test.go, by Yondon Fu,
-// Nico Vergauwen, and Rafał Leszko; see the source credits in senderpolicy.go.
-func TestSenderExposurePolicy(t *testing.T) {
+// Nico Vergauwen, and Rafał Leszko; see the source credits in payerpolicy.go.
+func TestPayerExposurePolicy(t *testing.T) {
 	for _, scenario := range []string{"valid", "certain-win", "ticket-ev", "batch-ev", "face-cap", "unlock-current", "unlock-next", "no-reserve"} {
 		t.Run(scenario, func(t *testing.T) {
 			params := TicketParams{FaceValue: big.NewInt(100), WinProb: new(big.Int).Quo(maxWinProb, big.NewInt(10))}
-			funds := eth.SenderInfo{Snapshot: eth.ChainSnapshot{Round: big.NewInt(5)}, Deposit: big.NewInt(1000), Reserve: big.NewInt(100), WithdrawRound: new(big.Int)}
-			policy := SenderPolicy{MaxTicketEV: big.NewRat(10, 1), MaxBatchEV: big.NewRat(100, 1), DepositMultiplier: 10}
+			funds := PayerFunds{Snapshot: eth.ChainSnapshot{Round: big.NewInt(5)}, Deposit: big.NewInt(1000), Reserve: big.NewInt(100), WithdrawRound: new(big.Int)}
+			policy := PayerPolicy{MaxTicketEV: big.NewRat(10, 1), MaxBatchEV: big.NewRat(100, 1), DepositMultiplier: 10}
 			count := 1
 			switch scenario {
 			case "certain-win":

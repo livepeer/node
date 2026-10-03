@@ -60,7 +60,7 @@ local SDK edits.
 
 The fixtures cover persistent and single-shot sessions, proxy modes, discovery,
 runner callbacks, Trickle, and Python media/control round trips. Payment tests
-cover live/fixed calls, sustained refresh, sender exposure, concurrent liability,
+cover live/fixed calls, sustained refresh, payer exposure, concurrent liability,
 and crash/reorg/finality handling with deterministic Ethereum interfaces. These
 do not replace [staging against real contracts](cutover.md).
 

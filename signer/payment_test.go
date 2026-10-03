@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
-	"github.com/livepeer/node/eth"
 	"github.com/livepeer/node/pm"
 	"github.com/stretchr/testify/require"
 )
@@ -21,9 +20,9 @@ func (c collateralChain) Snapshot(context.Context) (pm.ChainSnapshot, error) {
 func (c collateralChain) IsActiveAt(context.Context, ethcommon.Address, pm.ChainSnapshot) (bool, error) {
 	return true, nil
 }
-func (c collateralChain) SenderInfo(ctx context.Context, _, _ ethcommon.Address) (eth.SenderInfo, error) {
+func (c collateralChain) PayerFunds(ctx context.Context, _, _ ethcommon.Address) (pm.PayerFunds, error) {
 	snapshot, err := c.Snapshot(ctx)
-	return eth.SenderInfo{Snapshot: snapshot, Deposit: big.NewInt(10), Reserve: big.NewInt(10), WithdrawRound: c.withdraw}, err
+	return pm.PayerFunds{Snapshot: snapshot, Deposit: big.NewInt(10), Reserve: big.NewInt(10), WithdrawRound: c.withdraw}, err
 }
 
 func TestRecipientReservesWinningLiabilityAcrossConcurrentSessions(t *testing.T) {
@@ -40,7 +39,7 @@ func TestRecipientReservesWinningLiabilityAcrossConcurrentSessions(t *testing.T)
 		require.NoError(t, err)
 		info, err := engine.ChallengeInfo(manifest)
 		require.NoError(t, err)
-		payment, err := (remoteSender{Signer: key, Chain: chain, Policy: pm.DefaultSenderPolicy()}).Generate(t.Context(), "fixed", manifest, info, paymentState{}, -1)
+		payment, err := (remotePayer{Signer: key, Chain: chain, Policy: pm.DefaultPayerPolicy()}).Generate(t.Context(), "fixed", manifest, info, paymentState{}, -1)
 		require.NoError(t, err)
 		payments[manifest] = payment
 	}
@@ -59,7 +58,7 @@ func TestRecipientReservesWinningLiabilityAcrossConcurrentSessions(t *testing.T)
 		if err == nil {
 			accepted++
 		} else {
-			require.ErrorIs(t, err, pm.ErrSenderUnavailable)
+			require.ErrorIs(t, err, pm.ErrPayerUnavailable)
 			rejected++
 		}
 	}

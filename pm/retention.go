@@ -25,10 +25,10 @@ func (e *Engine) observeBlock(block *big.Int) {
 		return
 	}
 	e.lastSeenBlock.Set(block)
-	for key, nonces := range e.senderNonces {
+	for key, nonces := range e.ticketNonces {
 		if nonces.expirationBlock.Cmp(block) <= 0 {
 			e.nonceCount -= len(nonces.nonceSeen)
-			delete(e.senderNonces, key)
+			delete(e.ticketNonces, key)
 		}
 	}
 }

@@ -7,6 +7,8 @@ import (
 	"github.com/livepeer/node/eth"
 )
 
+type PayerFunds = eth.SenderInfo
+
 // EthereumChain adapts retained Ethereum contract reads to the payment
 // engine's interface. Contract ABI and RPC logic remain in eth.
 type EthereumChain struct{ Client eth.PaymentChain }
@@ -19,8 +21,8 @@ func (c EthereumChain) Snapshot(ctx context.Context) (ChainSnapshot, error) {
 	return state, nil
 }
 
-func (c EthereumChain) SenderInfo(ctx context.Context, sender, recipient ethcommon.Address) (eth.SenderInfo, error) {
-	return c.Client.SenderInfo(ctx, sender, recipient)
+func (c EthereumChain) PayerFunds(ctx context.Context, payer, recipient ethcommon.Address) (PayerFunds, error) {
+	return c.Client.SenderInfo(ctx, payer, recipient)
 }
 
 func (c EthereumChain) IsActiveAt(ctx context.Context, recipient ethcommon.Address, snapshot ChainSnapshot) (bool, error) {

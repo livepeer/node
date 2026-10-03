@@ -46,10 +46,10 @@ func TestMakeRemoteBatchCreditAndNonceBoundaries(t *testing.T) {
 			if tt.want != nil {
 				return
 			}
-			require.Len(t, batch.SenderParams, tt.count)
+			require.Len(t, batch.PayerParams, tt.count)
 			require.Equal(t, tt.remaining.RatString(), remaining.RatString())
-			for i, ticket := range batch.SenderParams {
-				require.Equal(t, tt.firstNonce+uint32(i)+1, ticket.SenderNonce)
+			for i, ticket := range batch.PayerParams {
+				require.Equal(t, tt.firstNonce+uint32(i)+1, ticket.TicketNonce)
 			}
 		})
 	}

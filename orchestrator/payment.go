@@ -27,8 +27,8 @@ func (s *Server) challenge(w http.ResponseWriter, r *http.Request, runnerID stri
 		fail(w, http.StatusServiceUnavailable, "on-chain payment is unavailable")
 		return
 	}
-	senderRaw := r.Header.Get("Livepeer-Payer-Address")
-	if !eth.ValidAddress(senderRaw) {
+	payerRaw := r.Header.Get("Livepeer-Payer-Address")
+	if !eth.ValidAddress(payerRaw) {
 		fail(w, http.StatusPaymentRequired, "Livepeer-Payer-Address is required")
 		return
 	}
@@ -38,7 +38,7 @@ func (s *Server) challenge(w http.ResponseWriter, r *http.Request, runnerID stri
 		return
 	}
 	wei, _ := paymentPrice(price)
-	challenge, err := s.payment.MakeChallenge(r.Context(), runnerID, manifest, ethcommon.HexToAddress(senderRaw), wei, price.Unit, s.registry.service)
+	challenge, err := s.payment.MakeChallenge(r.Context(), runnerID, manifest, ethcommon.HexToAddress(payerRaw), wei, price.Unit, s.registry.service)
 	if err != nil {
 		s.logger.Error("payment challenge failed", "runner_id", runnerID, "error", err)
 		fail(w, 502, "payment challenge unavailable")
@@ -210,14 +210,14 @@ func (s *Server) refreshPayment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request struct {
-		Sender     string `json:"sender"`
-		ManifestID string `json:"manifest_id"`
+		PayerAddress string `json:"sender"`
+		ManifestID   string `json:"manifest_id"`
 	}
-	if err := decode(r, &request); err != nil || !eth.ValidAddress(request.Sender) || !validRouteID(request.ManifestID) {
+	if err := decode(r, &request); err != nil || !eth.ValidAddress(request.PayerAddress) || !validRouteID(request.ManifestID) {
 		fail(w, 400, "invalid refresh request")
 		return
 	}
-	challenge, err := s.payment.RefreshChallenge(r.Context(), request.ManifestID, ethcommon.HexToAddress(request.Sender), s.registry.service)
+	challenge, err := s.payment.RefreshChallenge(r.Context(), request.ManifestID, ethcommon.HexToAddress(request.PayerAddress), s.registry.service)
 	if err != nil {
 		fail(w, 404, "payment challenge not found")
 		return

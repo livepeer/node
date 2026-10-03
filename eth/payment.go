@@ -170,22 +170,22 @@ type RedeemTicket struct {
 	RecipientRand     *big.Int
 }
 
-func (c PaymentChain) PrepareRedemption(ctx context.Context, key *Key, chainID *big.Int, t RedeemTicket) (SignedTransaction, error) {
-	return c.prepareRedemption(ctx, key, chainID, t, nil)
+func (c PaymentChain) PrepareRedemption(ctx context.Context, redeemer *Key, chainID *big.Int, t RedeemTicket) (SignedTransaction, error) {
+	return c.prepareRedemption(ctx, redeemer, chainID, t, nil)
 }
 
 // PrepareRedemptionAndStore reserves the nonce only after the caller saves the
 // signed redemption identity, before any possible broadcast.
-func (c PaymentChain) PrepareRedemptionAndStore(ctx context.Context, key *Key, chainID *big.Int, t RedeemTicket, save func(SignedTransaction) error) (SignedTransaction, error) {
+func (c PaymentChain) PrepareRedemptionAndStore(ctx context.Context, redeemer *Key, chainID *big.Int, t RedeemTicket, save func(SignedTransaction) error) (SignedTransaction, error) {
 	if save == nil {
 		return SignedTransaction{}, errors.New("transaction persistence is required")
 	}
-	return c.prepareRedemption(ctx, key, chainID, t, save)
+	return c.prepareRedemption(ctx, redeemer, chainID, t, save)
 }
 
-func (c PaymentChain) prepareRedemption(ctx context.Context, key *Key, chainID *big.Int, t RedeemTicket, save func(SignedTransaction) error) (SignedTransaction, error) {
-	if key == nil || key.Address() != t.Recipient || t.FaceValue == nil || t.WinProb == nil || t.RecipientRand == nil {
-		return SignedTransaction{}, errors.New("redemption recipient key mismatch")
+func (c PaymentChain) prepareRedemption(ctx context.Context, redeemer *Key, chainID *big.Int, t RedeemTicket, save func(SignedTransaction) error) (SignedTransaction, error) {
+	if redeemer == nil || redeemer.Address() != t.Recipient || t.FaceValue == nil || t.WinProb == nil || t.RecipientRand == nil {
+		return SignedTransaction{}, errors.New("redeemer account does not match ticket recipient")
 	}
 	address, err := c.Contracts.Resolve(ctx, "ticketBroker")
 	if err != nil {
@@ -196,18 +196,18 @@ func (c PaymentChain) prepareRedemption(ctx context.Context, key *Key, chainID *
 	if err != nil {
 		return SignedTransaction{}, err
 	}
-	plan, err := c.Contracts.PlanTransaction(ctx, key.Address(), address, data, big.NewInt(0))
+	plan, err := c.Contracts.PlanTransaction(ctx, redeemer.Address(), address, data, big.NewInt(0))
 	if err != nil {
 		return SignedTransaction{}, err
 	}
 	if save != nil {
-		return c.Contracts.PrepareAndStore(ctx, plan, key, chainID, save)
+		return c.Contracts.PrepareAndStore(ctx, plan, redeemer, chainID, save)
 	}
-	return c.Contracts.Prepare(ctx, plan, key, chainID)
+	return c.Contracts.Prepare(ctx, plan, redeemer, chainID)
 }
 
-func (c PaymentChain) Redeem(ctx context.Context, key *Key, chainID *big.Int, t RedeemTicket) (ethcommon.Hash, error) {
-	tx, err := c.PrepareRedemption(ctx, key, chainID, t)
+func (c PaymentChain) Redeem(ctx context.Context, redeemer *Key, chainID *big.Int, t RedeemTicket) (ethcommon.Hash, error) {
+	tx, err := c.PrepareRedemption(ctx, redeemer, chainID, t)
 	if err != nil {
 		return ethcommon.Hash{}, err
 	}

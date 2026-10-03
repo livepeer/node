@@ -22,7 +22,7 @@ func TestPinnedPythonProtobufFixtures(t *testing.T) {
 	require.Equal(t, decode(orchestrator), EncodeOrchestratorInfo(o))
 	p, err := DecodePayment(decode(payment))
 	require.NoError(t, err)
-	require.Equal(t, uint32(4), p.SenderParams[0].SenderNonce)
+	require.Equal(t, uint32(4), p.PayerParams[0].TicketNonce)
 	require.Equal(t, decode(payment), EncodePayment(p))
 	s, err := DecodeSegData(decode(segment))
 	require.NoError(t, err)

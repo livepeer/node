@@ -11,9 +11,9 @@ import (
 // TicketStore is an interface which describes an object capable
 // of persisting tickets
 type TicketStore interface {
-	// SelectEarliestWinningTicket selects the earliest stored winning ticket for a 'sender'
+	// SelectEarliestWinningTicket selects the earliest stored winning ticket for a 'payer'
 	// which is not yet redeemed
-	SelectEarliestWinningTicket(sender ethcommon.Address, minCreationRound int64) (*SignedTicket, error)
+	SelectEarliestWinningTicket(payer ethcommon.Address, minCreationRound int64) (*SignedTicket, error)
 
 	// RemoveWinningTicket removes a ticket
 	RemoveWinningTicket(ticket *SignedTicket) error
@@ -21,8 +21,8 @@ type TicketStore interface {
 	// StoreWinningTicket stores a signed ticket
 	StoreWinningTicket(ticket *SignedTicket) error
 
-	// WinningTicketCount returns the amount of non-redeemed winning tickets for a sender in the TicketStore
-	WinningTicketCount(sender ethcommon.Address, minCreationRound int64) (int, error)
+	// WinningTicketCount returns the amount of non-redeemed winning tickets for a payer in the TicketStore
+	WinningTicketCount(payer ethcommon.Address, minCreationRound int64) (int, error)
 
 	// IsOrchActive returns true if the given orchestrator addr is active in the given round
 	IsOrchActive(addr ethcommon.Address, round *big.Int) (bool, error)

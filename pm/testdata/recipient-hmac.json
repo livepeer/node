@@ -4,7 +4,7 @@
   "vectors": [
     {
       "Seed": "1",
-      "Sender": "0x1234567890123456789012345678901234567890",
+      "PayerAddress": "0x1234567890123456789012345678901234567890",
       "FaceValue": "10",
       "WinProb": "100",
       "ExpirationBlock": "90",
@@ -19,7 +19,7 @@
     },
     {
       "Seed": "12345678901234567890123456789012345678901234567890",
-      "Sender": "0xffffffffffffffffffffffffffffffffffffffff",
+      "PayerAddress": "0xffffffffffffffffffffffffffffffffffffffff",
       "FaceValue": "1000000000000000000",
       "WinProb": "57896044618658097711785492504343953926634992332820282019728792003956564819967",
       "ExpirationBlock": "123456789",
@@ -34,7 +34,7 @@
     },
     {
       "Seed": "0",
-      "Sender": "0x0000000000000000000000000000000000000001",
+      "PayerAddress": "0x0000000000000000000000000000000000000001",
       "FaceValue": "256",
       "WinProb": "257",
       "ExpirationBlock": "65536",

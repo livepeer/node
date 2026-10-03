@@ -33,9 +33,9 @@ type paymentTestChain struct{}
 func (paymentTestChain) Snapshot(context.Context) (pm.ChainSnapshot, error) {
 	return pm.ChainSnapshot{Block: big.NewInt(50), Round: big.NewInt(5), RoundHash: ethcommon.HexToHash("0x1234")}, nil
 }
-func (c paymentTestChain) SenderInfo(ctx context.Context, _, _ ethcommon.Address) (eth.SenderInfo, error) {
+func (c paymentTestChain) PayerFunds(ctx context.Context, _, _ ethcommon.Address) (pm.PayerFunds, error) {
 	snapshot, err := c.Snapshot(ctx)
-	return eth.SenderInfo{Snapshot: snapshot, Deposit: big.NewInt(1000000000), Reserve: big.NewInt(1000000000), WithdrawRound: new(big.Int)}, err
+	return pm.PayerFunds{Snapshot: snapshot, Deposit: big.NewInt(1000000000), Reserve: big.NewInt(1000000000), WithdrawRound: new(big.Int)}, err
 }
 func (paymentTestChain) IsActiveAt(context.Context, ethcommon.Address, pm.ChainSnapshot) (bool, error) {
 	return true, nil
@@ -255,9 +255,9 @@ type advancingPaymentChain struct{ block atomic.Int64 }
 func (c *advancingPaymentChain) Snapshot(context.Context) (pm.ChainSnapshot, error) {
 	return pm.ChainSnapshot{Block: big.NewInt(c.block.Load()), Round: big.NewInt(5), RoundHash: ethcommon.HexToHash("0x1234")}, nil
 }
-func (c *advancingPaymentChain) SenderInfo(ctx context.Context, _, _ ethcommon.Address) (eth.SenderInfo, error) {
+func (c *advancingPaymentChain) PayerFunds(ctx context.Context, _, _ ethcommon.Address) (pm.PayerFunds, error) {
 	snapshot, err := c.Snapshot(ctx)
-	return eth.SenderInfo{Snapshot: snapshot, Deposit: big.NewInt(1000000000), Reserve: big.NewInt(1000000000), WithdrawRound: new(big.Int)}, err
+	return pm.PayerFunds{Snapshot: snapshot, Deposit: big.NewInt(1000000000), Reserve: big.NewInt(1000000000), WithdrawRound: new(big.Int)}, err
 }
 func (c *advancingPaymentChain) IsActiveAt(context.Context, ethcommon.Address, pm.ChainSnapshot) (bool, error) {
 	return true, nil

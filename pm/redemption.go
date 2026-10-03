@@ -17,8 +17,8 @@ import (
 // durable before broadcasting. Call from one bounded worker per store.
 // The expiry rule follows Nico Vergauwen's go-livepeer/pm/queue.go; L1-clock
 // handling follows Rafał Leszko's 4b6ede31f040a084ff9e55bd798a0d6fffee1e1b.
-func RedeemPending(ctx context.Context, store *SQLiteStore, chain eth.PaymentChain, key *eth.Key, chainID *big.Int, snapshot eth.ChainSnapshot) []error {
-	if store == nil || key == nil || chainID == nil || snapshot.Block == nil || snapshot.Round == nil {
+func RedeemPending(ctx context.Context, store *SQLiteStore, chain eth.PaymentChain, redeemer *eth.Key, chainID *big.Int, snapshot eth.ChainSnapshot) []error {
+	if store == nil || redeemer == nil || chainID == nil || snapshot.Block == nil || snapshot.Round == nil {
 		return []error{fmt.Errorf("redemption is not configured")}
 	}
 	// A crash after preparation but before the broadcast marker is safe to
@@ -39,20 +39,20 @@ func RedeemPending(ctx context.Context, store *SQLiteStore, chain eth.PaymentCha
 	if blocked != 0 {
 		return nil
 	}
-	floor, err := store.SavedNonceFloor(ctx, key.Address())
+	floor, err := store.SavedNonceFloor(ctx, redeemer.Address())
 	if err != nil {
 		return []error{err}
 	}
-	senders, err := store.PendingSenders()
+	payers, err := store.PendingPayers()
 	if err != nil {
 		return []error{err}
 	}
 	var failures []error
-	for _, sender := range senders {
+	for _, payer := range payers {
 		if ctx.Err() != nil {
 			return append(failures, ctx.Err())
 		}
-		ticket, err := store.SelectEarliestWinningTicket(sender, 0)
+		ticket, err := store.SelectEarliestWinningTicket(payer, 0)
 		if err != nil {
 			failures = append(failures, err)
 			continue
@@ -70,19 +70,19 @@ func RedeemPending(ctx context.Context, store *SQLiteStore, chain eth.PaymentCha
 		if ticket.ParamsExpirationBlock.Cmp(snapshot.Block) > 0 {
 			continue
 		}
-		redeemTicket := eth.RedeemTicket{Recipient: ticket.Recipient, Sender: ticket.Sender, FaceValue: ticket.FaceValue, WinProb: ticket.WinProb, SenderNonce: ticket.SenderNonce, RecipientRandHash: ticket.RecipientRandHash, AuxData: ticket.AuxData(), Signature: ticket.Sig, RecipientRand: ticket.RecipientRand}
+		redeemTicket := eth.RedeemTicket{Recipient: ticket.Recipient, Sender: ticket.PayerAddress, FaceValue: ticket.FaceValue, WinProb: ticket.WinProb, SenderNonce: ticket.TicketNonce, RecipientRandHash: ticket.RecipientRandHash, AuxData: ticket.AuxData(), Signature: ticket.Sig, RecipientRand: ticket.RecipientRand}
 		if chain.Contracts == nil {
 			return append(failures, errors.New("redemption is not configured"))
 		}
-		chain.Contracts.SetNonceFloor(key.Address(), floor)
-		prepared, err := chain.PrepareRedemptionAndStore(ctx, key, chainID, redeemTicket, func(prepared eth.SignedTransaction) error {
+		chain.Contracts.SetNonceFloor(redeemer.Address(), floor)
+		prepared, err := chain.PrepareRedemptionAndStore(ctx, redeemer, chainID, redeemTicket, func(prepared eth.SignedTransaction) error {
 			return store.recordPrepared(ctx, ticket, prepared)
 		})
 		if err == nil {
 			err = broadcastRedemption(ctx, store, chain.Contracts, ticket.Sig, prepared)
 		}
 		if err != nil {
-			failures = append(failures, fmt.Errorf("sender %s: %w", sender.Hex(), err))
+			failures = append(failures, fmt.Errorf("payer %s: %w", payer.Hex(), err))
 		}
 	}
 	return failures
@@ -120,24 +120,24 @@ func ReconcileSubmitted(ctx context.Context, store *SQLiteStore, chain ReceiptRe
 	return failures
 }
 
-func ProcessRedemptions(ctx context.Context, store *SQLiteStore, chain eth.PaymentChain, key *eth.Key, chainID *big.Int) []error {
+func ProcessRedemptions(ctx context.Context, store *SQLiteStore, chain eth.PaymentChain, redeemer *eth.Key, chainID *big.Int) []error {
 	var failures []error
-	if store == nil || key == nil {
+	if store == nil || redeemer == nil {
 		return nil
 	}
 	snapshot, err := chain.Snapshot(ctx)
 	if err != nil {
 		failures = append(failures, err)
 	} else {
-		active, err := chain.IsActiveAt(ctx, key.Address(), snapshot)
+		active, err := chain.IsActiveAt(ctx, redeemer.Address(), snapshot)
 		if err != nil {
 			failures = append(failures, err)
 		} else {
-			if err := store.SetOrchestratorActive(key.Address(), snapshot.Round, active); err != nil {
+			if err := store.SetOrchestratorActive(redeemer.Address(), snapshot.Round, active); err != nil {
 				failures = append(failures, err)
 			}
 			if active {
-				failures = append(failures, RedeemPending(ctx, store, chain, key, chainID, snapshot)...)
+				failures = append(failures, RedeemPending(ctx, store, chain, redeemer, chainID, snapshot)...)
 			}
 		}
 	}

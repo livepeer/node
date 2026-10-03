@@ -13,7 +13,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 )
 
-// SigVerifier verifies Ethereum signed-message signatures for ticket senders.
+// SigVerifier verifies Ethereum signed-message signatures for ticket payers.
 type SigVerifier interface {
 	Verify(addr ethcommon.Address, msg, sig []byte) bool
 }

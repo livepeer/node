@@ -57,9 +57,9 @@ func TestHash(t *testing.T) {
 		ticket Ticket
 		hash   string
 	}{
-		{"maximum nonce", Ticket{SenderNonce: math.MaxUint32},
+		{"maximum nonce", Ticket{TicketNonce: math.MaxUint32},
 			"e1393fc7f6de093780674022f96cb8e3872235167d037c04d554e58c0e63d280"},
-		{"nonce", Ticket{SenderNonce: 1},
+		{"nonce", Ticket{TicketNonce: 1},
 			"ce0918ba94518293e9712effbe5fca4f1f431089833a5b8c257cb1e024595f68"},
 		{"probability", Ticket{FaceValue: big.NewInt(1), WinProb: big.NewInt(500)},
 			"87ef13f2d37e4d5352a01d3c77b8179d80e0887f1953bfabfd0bfd7b0f689ddd"},
@@ -88,18 +88,18 @@ func TestTickets(t *testing.T) {
 	batch := &TicketBatch{
 		TicketParams:           &TicketParams{Recipient: RandAddress(), FaceValue: big.NewInt(100), WinProb: big.NewInt(500), RecipientRandHash: RandHash()},
 		TicketExpirationParams: &TicketExpirationParams{CreationRound: 10, CreationRoundBlockHash: RandHash()},
-		Sender:                 RandAddress(),
+		PayerAddress:           RandAddress(),
 	}
 	for _, size := range []int{0, 1, 2} {
-		batch.SenderParams = make([]*TicketSenderParams, size)
+		batch.PayerParams = make([]*TicketPayerParams, size)
 		for i := range size {
-			batch.SenderParams[i] = &TicketSenderParams{SenderNonce: uint32(i)}
+			batch.PayerParams[i] = &TicketPayerParams{TicketNonce: uint32(i)}
 		}
 		tickets := batch.Tickets()
 		require.Len(t, tickets, size)
 		for i, ticket := range tickets {
-			require.Equal(t, &Ticket{Recipient: batch.Recipient, Sender: batch.Sender,
-				FaceValue: batch.FaceValue, WinProb: batch.WinProb, SenderNonce: uint32(i),
+			require.Equal(t, &Ticket{Recipient: batch.Recipient, PayerAddress: batch.PayerAddress,
+				FaceValue: batch.FaceValue, WinProb: batch.WinProb, TicketNonce: uint32(i),
 				RecipientRandHash: batch.RecipientRandHash, CreationRound: batch.CreationRound,
 				CreationRoundBlockHash: batch.CreationRoundBlockHash}, ticket)
 		}

@@ -20,14 +20,14 @@ const (
 // maxWinProb is the largest uint256 and the denominator for ticket odds.
 var maxWinProb = new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
 
-// SignedTicket is a wrapper around a Ticket with the sender's signature over the ticket and
+// SignedTicket is a wrapper around a Ticket with the payer's signature over the ticket and
 // the recipient recipientRand
 type SignedTicket struct {
 	// Ticket contains ticket fields that are directly
 	// accessible on SignedTicket since it is embedded
 	*Ticket
 
-	// Sig is the sender's signature over the ticket
+	// Sig is the payer's signature over the ticket
 	Sig []byte
 
 	// RecipientRand is the recipient's random value that should be
@@ -35,7 +35,7 @@ type SignedTicket struct {
 	RecipientRand *big.Int
 }
 
-// TicketParams represents the parameters defined by a receiver that a sender must adhere to when
+// TicketParams represents the parameters defined by a receiver that a payer must adhere to when
 // sending tickets to receiver.
 type TicketParams struct {
 	Recipient ethcommon.Address
@@ -65,34 +65,34 @@ type TicketExpirationParams struct {
 	CreationRoundBlockHash ethcommon.Hash
 }
 
-// TicketSenderParams identifies a unique ticket based on a sender's nonce and signature over a ticket hash
-type TicketSenderParams struct {
-	SenderNonce uint32
+// TicketPayerParams contains a ticket nonce and the payer's signature over its hash.
+type TicketPayerParams struct {
+	TicketNonce uint32
 
 	Sig []byte
 }
 
-// TicketBatch is a group of tickets that share the same TicketParams, TicketExpirationParams and Sender
-// Each ticket in a batch is identified by a unique TicketSenderParams
+// TicketBatch is a group of tickets that share the same TicketParams, TicketExpirationParams and PayerAddress
+// Each ticket in a batch is identified by a unique TicketPayerParams
 type TicketBatch struct {
 	*TicketParams
 	*TicketExpirationParams
 
-	Sender ethcommon.Address
+	PayerAddress ethcommon.Address
 
-	SenderParams []*TicketSenderParams
+	PayerParams []*TicketPayerParams
 }
 
 // Tickets returns the tickets in the batch
 func (b *TicketBatch) Tickets() []*Ticket {
 	var tickets []*Ticket
-	for i := 0; i < len(b.SenderParams); i++ {
+	for i := 0; i < len(b.PayerParams); i++ {
 		ticket := &Ticket{
 			Recipient:              b.Recipient,
-			Sender:                 b.Sender,
+			PayerAddress:           b.PayerAddress,
 			FaceValue:              b.FaceValue,
 			WinProb:                b.WinProb,
-			SenderNonce:            b.SenderParams[i].SenderNonce,
+			TicketNonce:            b.PayerParams[i].TicketNonce,
 			RecipientRandHash:      b.RecipientRandHash,
 			CreationRound:          b.CreationRound,
 			CreationRoundBlockHash: b.CreationRoundBlockHash,
@@ -110,8 +110,8 @@ type Ticket struct {
 	// Recipient is the ETH address of recipient
 	Recipient ethcommon.Address
 
-	// Sender is the ETH address of sender
-	Sender ethcommon.Address
+	// PayerAddress identifies the account that signs the ticket and funds its payment.
+	PayerAddress ethcommon.Address
 
 	// FaceValue represents the pay out to
 	// the recipient if the ticket wins
@@ -120,9 +120,9 @@ type Ticket struct {
 	// WinProb represents how likely a ticket will win
 	WinProb *big.Int
 
-	// SenderNonce is the monotonically increasing counter that makes
+	// TicketNonce is the monotonically increasing counter that makes
 	// each ticket unique given a particular recipientRand value
-	SenderNonce uint32
+	TicketNonce uint32
 
 	// RecipientRandHash is the 32 byte keccak-256 hash commitment to a random number
 	// provided by the recipient. In order for the recipient to redeem
@@ -141,13 +141,13 @@ type Ticket struct {
 }
 
 // NewTicket creates a Ticket instance
-func NewTicket(params *TicketParams, expirationParams *TicketExpirationParams, sender ethcommon.Address, senderNonce uint32) *Ticket {
+func NewTicket(params *TicketParams, expirationParams *TicketExpirationParams, payer ethcommon.Address, ticketNonce uint32) *Ticket {
 	return &Ticket{
 		Recipient:              params.Recipient,
-		Sender:                 sender,
+		PayerAddress:           payer,
 		FaceValue:              params.FaceValue,
 		WinProb:                params.WinProb,
-		SenderNonce:            senderNonce,
+		TicketNonce:            ticketNonce,
 		RecipientRandHash:      params.RecipientRandHash,
 		CreationRound:          expirationParams.CreationRound,
 		CreationRoundBlockHash: expirationParams.CreationRoundBlockHash,
@@ -188,10 +188,10 @@ func (t *Ticket) flatten() []byte {
 
 	buf := make([]byte, addressSize+addressSize+uint256Size+uint256Size+uint256Size+bytes32Size+len(auxData))
 	i := copy(buf[0:], t.Recipient.Bytes())
-	i += copy(buf[i:], t.Sender.Bytes())
+	i += copy(buf[i:], t.PayerAddress.Bytes())
 	i += copy(buf[i:], ethcommon.LeftPadBytes(t.FaceValue.Bytes(), uint256Size))
 	i += copy(buf[i:], ethcommon.LeftPadBytes(t.WinProb.Bytes(), uint256Size))
-	i += copy(buf[i:], ethcommon.LeftPadBytes(new(big.Int).SetUint64(uint64(t.SenderNonce)).Bytes(), uint256Size))
+	i += copy(buf[i:], ethcommon.LeftPadBytes(new(big.Int).SetUint64(uint64(t.TicketNonce)).Bytes(), uint256Size))
 	i += copy(buf[i:], t.RecipientRandHash.Bytes())
 
 	if len(auxData) > 0 {
