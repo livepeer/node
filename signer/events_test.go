@@ -143,7 +143,7 @@ func TestAccountingRateCapturedBeforeAuthorization(t *testing.T) {
 }
 
 func TestRejectedPaymentsEmitNoEvent(t *testing.T) {
-	for rejection, status := range map[string]int{"invalid": 400, "price": 481, "refresh": 480, "funds": 482, "authorization": 403} {
+	for rejection, status := range map[string]int{"invalid": 400, "price": 481, "refresh": 480, "funds": 400, "authorization": 403} {
 		t.Run(rejection, func(t *testing.T) {
 			s, info := testService(t)
 			s.events = eventSinkFunc(func(context.Context, signingEvent) error { t.Fatal("rejected payment emitted an event"); return nil })

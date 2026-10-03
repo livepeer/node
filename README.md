@@ -90,5 +90,5 @@ For tests, SDK fixtures, and packaging, see [development](docs/development.md).
 The [documentation index](docs/README.md) links the operating guides and protocol
 references.
 
-Code imported or adapted from `go-livepeer` retains its MIT notice in
-[LICENSE.go-livepeer](LICENSE.go-livepeer).
+Imported or adapted code retains its original MIT notice in
+[MIT notice](LICENSE.go-livepeer).

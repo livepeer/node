@@ -16,8 +16,7 @@ type signedTicketSink interface {
 	Enqueue(context.Context, signingEvent) error
 }
 
-// These JSON fields retain the monitor.GatewayEvent and create_signed_ticket
-// contract from go-livepeer bd645a09266833fb859053445d9ac85846330756.
+// signingEvent is the create_signed_ticket Kafka envelope.
 type signingEvent struct {
 	ID        string            `json:"id"`
 	Type      string            `json:"type"`

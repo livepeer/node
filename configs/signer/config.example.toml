@@ -14,7 +14,7 @@ DiscoveryGrants = []
 RPCURLFile = "/run/secrets/livepeer-signer-rpc-url"
 # Optional assertion against eth_chainId; omitted means use the RPC's chain.
 # ChainID = 42161
-# Defaults match go-livepeer on Arbitrum mainnet; override for another chain.
+# Defaults target Arbitrum mainnet; override for another chain.
 # Controller = "0xD8E8328501E9645d16Cf49539efC04f734606ee4"
 
 # USD is implicit. Live quotes are compared with MaxHourlyPrice / 3600.
@@ -42,7 +42,7 @@ DepositMultiplier = 1
 # the webhook should omit expiry or return zero to authorize every payment.
 # The webhook receives proposed payment state; data is returned only after approval.
 # Both webhook values are secret files.
-# Header syntax matches go-livepeer: Authorization: Bearer credential,X-Key: key
+# Header syntax: Authorization: Bearer credential,X-Key: key
 # Quote an entire entry using CSV syntax if its value contains commas:
 # "X-List: a,b",Authorization: Bearer credential
 # AuthWebhookFile = "/run/secrets/livepeer-signer-auth-url"

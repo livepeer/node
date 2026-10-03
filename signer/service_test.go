@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/big"
 	"net"
 	"net/http"
@@ -96,9 +97,29 @@ func requirePaymentFailure(t *testing.T, w *httptest.ResponseRecorder, status in
 	var response map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &response))
 	require.Contains(t, response, "error")
+	// Decode the error envelope independently of signerError.
+	var apiError struct {
+		Message string `json:"message"`
+	}
+	require.NoError(t, json.Unmarshal(response["error"], &apiError))
+	require.NotEmpty(t, apiError.Message)
+	if status == http.StatusInternalServerError {
+		require.Equal(t, "Internal Server Error", apiError.Message)
+	} else if status == http.StatusServiceUnavailable {
+		require.Equal(t, "Service Unavailable Error", apiError.Message)
+	}
 	for _, field := range []string{"payment", "segCreds", "state"} {
 		require.NotContains(t, response, field)
 	}
+}
+
+func captureSignerLogs(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	return &logs
 }
 
 func TestFixedPaymentAndSignedStateContinuation(t *testing.T) {
@@ -157,6 +178,8 @@ func TestSignerRequestPriceCeiling(t *testing.T) {
 	require.Equal(t, 481, postPayment(t, s, request).Code)
 	request["maxPrice"] = map[string]any{"price": "10", "currency": "wei", "unit": "seconds"}
 	require.Equal(t, 200, postPayment(t, s, request).Code)
+	request["maxPrice"] = map[string]any{"price": "10", "currency": "usd", "unit": "seconds"}
+	requirePaymentFailure(t, postPayment(t, s, request), 400)
 }
 
 func TestSignedStateMovesBetweenIndependentSigners(t *testing.T) {
@@ -234,8 +257,7 @@ func TestSignerRejectsCarriedCreditWithoutTickets(t *testing.T) {
 	info.TicketParams.RecipientRandHash = crypto.Keccak256([]byte("lower ticket EV"))
 	request["orchestrator"], request["state"] = wire.EncodeOrchestratorInfo(info), first.State
 	response = postPayment(t, s, request)
-	require.Equal(t, 482, response.Code, response.Body.String())
-	require.NotContains(t, response.Body.String(), `"payment"`)
+	requirePaymentFailure(t, response, 482)
 }
 
 func TestSlowResponseReleasesSlotOnDeadlineOrCancellation(t *testing.T) {
@@ -307,10 +329,11 @@ func TestSignerEnforcesTicketExposureLimit(t *testing.T) {
 	req := map[string]any{"type": "fixed", "ManifestID": "manifest-1", "orchestrator": wire.EncodeOrchestratorInfo(info), "maxPrice": map[string]any{"price": "1", "currency": "wei", "unit": "fixed"}}
 	w := postPayment(t, s, req)
 	require.Equal(t, 400, w.Code, w.Body.String())
-	require.Contains(t, w.Body.String(), "ticket expected value exceeds payer policy")
+	require.Contains(t, w.Body.String(), "ticket parameters violate payer policy")
 }
 
 func TestPaymentParamsValidation(t *testing.T) {
+	s, original := testService(t)
 	for _, tc := range []struct {
 		name   string
 		change func(*wire.OrchestratorInfo)
@@ -318,24 +341,147 @@ func TestPaymentParamsValidation(t *testing.T) {
 	}{
 		{"valid", func(*wire.OrchestratorInfo) {}, 200},
 		{"auth expiry", func(i *wire.OrchestratorInfo) { i.Auth.Expiration = time.Now().Unix() }, 480},
+		{"auth within three minutes", func(i *wire.OrchestratorInfo) { i.Auth.Expiration = time.Now().Add(2 * time.Minute).Unix() }, 480},
+		{"auth beyond three minutes", func(i *wire.OrchestratorInfo) { i.Auth.Expiration = time.Now().Add(4 * time.Minute).Unix() }, 200},
 		{"parameter expiry", func(i *wire.OrchestratorInfo) { i.TicketParams.ExpirationBlock = []byte{51} }, 480},
-		{"older round", func(i *wire.OrchestratorInfo) { i.TicketParams.Expiration.CreationRound-- }, 480},
-		{"future round", func(i *wire.OrchestratorInfo) { i.TicketParams.Expiration.CreationRound++ }, 480},
-		{"zero hash", func(i *wire.OrchestratorInfo) { i.TicketParams.Expiration.CreationRoundBlockHash = make([]byte, 32) }, 480},
+		{"zero expiration block", func(i *wire.OrchestratorInfo) { i.TicketParams.ExpirationBlock = nil }, 400},
+		{"older round", func(i *wire.OrchestratorInfo) { i.TicketParams.Expiration.CreationRound-- }, 200},
+		{"future round", func(i *wire.OrchestratorInfo) { i.TicketParams.Expiration.CreationRound++ }, 200},
+		{"missing expiration metadata", func(i *wire.OrchestratorInfo) { i.TicketParams.Expiration = wire.ExpirationParams{} }, 400},
+		{"zero hash", func(i *wire.OrchestratorInfo) { i.TicketParams.Expiration.CreationRoundBlockHash = make([]byte, 32) }, 400},
 		{"wrong hash", func(i *wire.OrchestratorInfo) {
 			i.TicketParams.Expiration.CreationRoundBlockHash = ethcommon.HexToHash("0xabcd").Bytes()
-		}, 480},
+		}, 200},
 		{"recipient mismatch", func(i *wire.OrchestratorInfo) { i.TicketParams.Recipient = ethcommon.HexToAddress("0xabcd").Bytes() }, 400},
 		{"zero recipient", func(i *wire.OrchestratorInfo) { i.Address = make([]byte, 20); i.TicketParams.Recipient = i.Address }, 400},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			s, info := testService(t)
+			info := original
 			tc.change(&info)
 			w := postPayment(t, s, map[string]any{"orchestrator": base64.StdEncoding.EncodeToString(wire.EncodeOrchestratorInfo(info)), "type": "fixed"})
-			require.Equal(t, tc.status, w.Code, w.Body.String())
+			if tc.status == 200 {
+				require.Equal(t, 200, w.Code, w.Body.String())
+				var response paymentResponse
+				require.NoError(t, json.Unmarshal(w.Body.Bytes(), &response))
+				data, err := base64.StdEncoding.DecodeString(response.Payment)
+				require.NoError(t, err)
+				payment, err := wire.DecodePayment(data)
+				require.NoError(t, err)
+				require.Equal(t, info.TicketParams.Expiration, payment.Expiration, "preserve the supplied creation round and hash")
+			} else {
+				requirePaymentFailure(t, w, tc.status)
+			}
 			if tc.status == 480 {
 				require.Equal(t, info.Transcoder, w.Header().Get("Livepeer-Orchestrator-URL"))
 			}
+		})
+	}
+}
+
+type payerChainFunc func(context.Context, ethcommon.Address, ethcommon.Address) (pm.PayerFunds, error)
+
+func (f payerChainFunc) PayerFunds(ctx context.Context, payer, recipient ethcommon.Address) (pm.PayerFunds, error) {
+	return f(ctx, payer, recipient)
+}
+
+type failingPaymentSigner struct {
+	pm.TicketSigner
+	failAt, calls int
+}
+
+func (s *failingPaymentSigner) SignMessage(message []byte) ([]byte, error) {
+	s.calls++
+	if s.calls == s.failAt {
+		return nil, errors.New("key /private/keys/signer.json: private-signing-detail")
+	}
+	return s.TicketSigner.SignMessage(message)
+}
+
+func TestPaymentFailureStatuses(t *testing.T) {
+	s, original := testService(t)
+	logs := captureSignerLogs(t)
+	key := s.key
+	for _, phase := range []struct {
+		name           string
+		failOn, status int
+	}{{"precheck", 1, 400}, {"generation", 2, 500}} {
+		for _, cause := range []string{"deposit", "reserve", "withdrawal", "chain observation"} {
+			t.Run(phase.name+"/"+cause, func(t *testing.T) {
+				logs.Reset()
+				calls := 0
+				s.SetPaymentChain(payerChainFunc(func(ctx context.Context, payer, recipient ethcommon.Address) (pm.PayerFunds, error) {
+					calls++
+					funds, err := (fundedPayer{}).PayerFunds(ctx, payer, recipient)
+					if calls == phase.failOn {
+						switch cause {
+						case "deposit":
+							funds.Deposit = new(big.Int)
+						case "reserve":
+							funds.Reserve = new(big.Int)
+						case "withdrawal":
+							funds.WithdrawRound = new(big.Int).Add(funds.Snapshot.Round, big.NewInt(1))
+						case "chain observation":
+							err = errors.New("RPC https://rpc.internal/?token=private-rpc-detail failed")
+						}
+					}
+					return funds, err
+				}))
+				response := postPayment(t, s, map[string]any{"orchestrator": wire.EncodeOrchestratorInfo(original), "type": "fixed"})
+				requirePaymentFailure(t, response, phase.status)
+				require.NotContains(t, response.Body.String(), "rpc.internal")
+				require.NotContains(t, response.Body.String(), "private-rpc-detail")
+				require.Contains(t, logs.String(), `"phase":"`+phase.name+`"`)
+				if cause == "chain observation" {
+					require.Contains(t, logs.String(), "RPC https://rpc.internal/?token=private-rpc-detail failed")
+				}
+			})
+		}
+	}
+	s.SetPaymentChain(fundedPayer{})
+	t.Run("batch exposure", func(t *testing.T) {
+		info := original
+		info.Price.PricePerUnit = 20 // One ticket passes precheck; the full batch exceeds the limit.
+		s.payerPolicy.MaxBatchEV = big.NewRat(15, 1)
+		requirePaymentFailure(t, postPayment(t, s, map[string]any{"orchestrator": wire.EncodeOrchestratorInfo(info), "type": "fixed"}), 400)
+	})
+	s.payerPolicy = pm.DefaultPayerPolicy()
+	for _, tc := range []struct {
+		name   string
+		log    string
+		price  int64
+		failAt int
+	}{{"first ticket signing", "ticket batch generation failed", 10, 1}, {"second ticket signing", "ticket batch generation failed", 20, 2}, {"segment signing", "segment credential signing failed", 10, 2}, {"state signing", "payment state signing failed", 10, 3}} {
+		t.Run(tc.name, func(t *testing.T) {
+			logs.Reset()
+			info := original
+			info.Price.PricePerUnit = tc.price
+			s.key = &failingPaymentSigner{TicketSigner: key, failAt: tc.failAt}
+			response := postPayment(t, s, map[string]any{"orchestrator": wire.EncodeOrchestratorInfo(info), "type": "fixed"})
+			requirePaymentFailure(t, response, 500)
+			require.NotContains(t, response.Body.String(), "/private/keys")
+			require.NotContains(t, response.Body.String(), "private-signing-detail")
+			require.Contains(t, logs.String(), tc.log)
+			require.Contains(t, logs.String(), "key /private/keys/signer.json: private-signing-detail")
+		})
+	}
+	s.key = key
+	for _, tc := range []struct {
+		name   string
+		err    error
+		status int
+	}{
+		{"oversized event", fmt.Errorf("outbox /private/accounting.sqlite: private-storage-detail: %w", errEventTooLarge), 413},
+		{"unavailable outbox", errors.New("SQLite /private/accounting.sqlite: private-storage-detail"), 503},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logs.Reset()
+			s.events = eventSinkFunc(func(context.Context, signingEvent) error { return tc.err })
+			response := postPayment(t, s, map[string]any{"orchestrator": wire.EncodeOrchestratorInfo(original), "type": "fixed"})
+			requirePaymentFailure(t, response, tc.status)
+			require.NotContains(t, response.Body.String(), "/private/accounting.sqlite")
+			require.NotContains(t, response.Body.String(), "private-storage-detail")
+			require.Contains(t, logs.String(), "payment withheld")
+			require.Contains(t, logs.String(), tc.err.Error())
 		})
 	}
 }

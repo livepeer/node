@@ -24,6 +24,8 @@ import (
 	"github.com/livepeer/node/pm/wire"
 )
 
+const authTokenValidPeriod = 30 * time.Minute
+
 type signedState struct {
 	State []byte `json:"state"`
 	Sig   []byte `json:"sig"`
@@ -48,7 +50,7 @@ type Service struct {
 	authURL         *url.URL
 	authPolicy      string
 	authHeaders     Headers
-	key             *eth.Key
+	key             pm.TicketSigner
 	mux             *http.ServeMux
 	discoveryURLs   []*url.URL
 	discoveryClient *http.Client
@@ -160,12 +162,19 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func signerError(w http.ResponseWriter, status int, reason string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]string{"error": reason})
+	if status == http.StatusInternalServerError {
+		reason = "Internal Server Error"
+	} else if status == http.StatusServiceUnavailable {
+		reason = "Service Unavailable Error"
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"message": reason}})
 }
-func (s *Service) signInfo(w http.ResponseWriter, _ *http.Request) {
+
+func (s *Service) signInfo(w http.ResponseWriter, r *http.Request) {
 	address := s.key.Address().Hex()
 	sig, err := s.key.SignMessage([]byte(address))
 	if err != nil {
+		slog.ErrorContext(r.Context(), "signer orchestrator info signing failed", "error", err)
 		signerError(w, 500, "signing failed")
 		return
 	}
@@ -205,6 +214,7 @@ type discoveredOrchestrator struct {
 
 func (s *Service) discover(w http.ResponseWriter, r *http.Request) {
 	if len(s.discoveryURLs) == 0 {
+		slog.WarnContext(r.Context(), "signer discovery has no configured sources")
 		signerError(w, http.StatusServiceUnavailable, "no orchestrator discovery source configured")
 		return
 	}
@@ -212,7 +222,7 @@ func (s *Service) discover(w http.ResponseWriter, r *http.Request) {
 	gpuFilter := r.URL.Query()["gpu"]
 	available := false
 	result := make([]discoveredOrchestrator, 0, len(s.discoveryURLs))
-	for _, endpoint := range s.discoveryURLs {
+	for source, endpoint := range s.discoveryURLs {
 		u := *endpoint
 		query := u.Query()
 		for _, app := range appFilter {
@@ -224,13 +234,16 @@ func (s *Service) discover(w http.ResponseWriter, r *http.Request) {
 		u.RawQuery = query.Encode()
 		request, err := http.NewRequestWithContext(r.Context(), http.MethodGet, u.String(), nil)
 		if err != nil {
+			slog.ErrorContext(r.Context(), "signer discovery request construction failed", "source_index", source, "error", err)
 			continue
 		}
 		response, err := s.discoveryClient.Do(request)
 		if err != nil {
+			slog.WarnContext(r.Context(), "signer discovery source unavailable", "source_index", source, "error", err)
 			continue
 		}
 		if response.StatusCode != 200 {
+			slog.WarnContext(r.Context(), "signer discovery source returned non-200 HTTP status", "source_index", source, "http_status", response.StatusCode)
 			_ = response.Body.Close()
 			continue
 		}
@@ -241,6 +254,7 @@ func (s *Service) discover(w http.ResponseWriter, r *http.Request) {
 		decodeErr := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&entries)
 		_ = response.Body.Close()
 		if decodeErr != nil {
+			slog.WarnContext(r.Context(), "signer discovery response decoding failed", "source_index", source, "error", decodeErr)
 			continue
 		}
 		available = true
@@ -290,6 +304,7 @@ func randomStateID() string {
 	return hex.EncodeToString(b[:])
 }
 
+// paymentFailure carries a client-safe message and HTTP status.
 type paymentFailure struct {
 	status int
 	reason string
@@ -342,11 +357,13 @@ func (s *Service) generate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	address := ethcommon.BytesToAddress(info.Address)
-	if !bytes.Equal(info.Address, info.TicketParams.Recipient) || address == (ethcommon.Address{}) || len(info.Auth.Token) == 0 || len(info.TicketParams.Expiration.CreationRoundBlockHash) != 32 || len(info.Address) != 20 || info.Price.PricePerUnit <= 0 || info.Price.UnitsPerPrice <= 0 || len(info.TicketParams.RecipientRandHash) != 32 || info.Auth.SessionID == "" {
+	if !bytes.Equal(info.Address, info.TicketParams.Recipient) || address == (ethcommon.Address{}) || len(info.Auth.Token) == 0 || info.TicketParams.Expiration.CreationRound <= 0 || len(info.TicketParams.Expiration.CreationRoundBlockHash) != 32 || ethcommon.BytesToHash(info.TicketParams.Expiration.CreationRoundBlockHash) == (ethcommon.Hash{}) || len(info.Address) != 20 || info.Price.PricePerUnit <= 0 || info.Price.UnitsPerPrice <= 0 || len(info.TicketParams.RecipientRandHash) != 32 || info.Auth.SessionID == "" {
 		signerError(w, 400, "incomplete or expired orchestrator payment params")
 		return
 	}
-	if info.Auth.Expiration <= time.Now().Add(time.Minute).Unix() {
+	authTokenExpireBuffer := 0.1
+	refreshPoint := info.Auth.Expiration - int64(authTokenValidPeriod.Seconds()*authTokenExpireBuffer)
+	if time.Now().After(time.Unix(refreshPoint, 0)) {
 		w.Header().Set("Livepeer-Orchestrator-URL", info.Transcoder)
 		signerError(w, 480, "refresh expired orchestrator authentication")
 		return
@@ -362,7 +379,7 @@ func (s *Service) generate(w http.ResponseWriter, r *http.Request) {
 		if f, ok := errors.AsType[paymentFailure](err); ok {
 			signerError(w, f.status, f.reason)
 		} else {
-			signerError(w, 400, err.Error())
+			signerError(w, 400, "invalid maxPrice")
 		}
 		return
 	}
@@ -423,16 +440,19 @@ func (s *Service) generate(w http.ResponseWriter, r *http.Request) {
 	}
 	stateBytes, err := json.Marshal(draft.State)
 	if err != nil {
+		slog.ErrorContext(r.Context(), "signer payment state encoding failed", "error", err)
 		signerError(w, 500, "payment state encoding failed")
 		return
 	}
 	stateSig, err := s.key.SignMessage(stateBytes)
 	if err != nil {
+		slog.ErrorContext(r.Context(), "signer payment state signing failed", "error", err)
 		signerError(w, 500, "payment state signing failed")
 		return
 	}
 	response, err := json.Marshal(paymentResponse{Payment: draft.Payment, SegCreds: draft.SegCreds, State: signedState{State: stateBytes, Sig: stateSig}})
 	if err != nil {
+		slog.ErrorContext(r.Context(), "signer payment response encoding failed", "error", err)
 		signerError(w, 500, "payment response encoding failed")
 		return
 	}
@@ -440,9 +460,10 @@ func (s *Service) generate(w http.ResponseWriter, r *http.Request) {
 		event := newSignedTicketEvent(s.key.Address(), req, info, draft, accountingRate)
 		if err := s.events.Enqueue(r.Context(), event); err != nil {
 			if errors.Is(err, errEventTooLarge) {
-				signerError(w, http.StatusRequestEntityTooLarge, err.Error())
+				slog.WarnContext(r.Context(), "signer accounting event exceeds size limit; payment withheld", "error", err)
+				signerError(w, http.StatusRequestEntityTooLarge, "signing event exceeds size limit")
 			} else {
-				slog.Error("signer accounting event could not be persisted; payment withheld")
+				slog.ErrorContext(r.Context(), "signer accounting event could not be persisted; payment withheld", "outbox_full", errors.Is(err, errOutboxFull), "error", err)
 				signerError(w, http.StatusServiceUnavailable, "signer accounting outbox unavailable or full")
 			}
 			return
@@ -457,11 +478,11 @@ func (s *Service) makePayment(ctx context.Context, req paymentRequest, info wire
 	if err != nil {
 		switch {
 		case errors.Is(err, pm.ErrRefreshRequired):
-			return paymentDraft{}, paymentFailure{480, err.Error()}
-		case errors.Is(err, pm.ErrNoTickets), errors.Is(err, pm.ErrPayerUnavailable):
-			return paymentDraft{}, paymentFailure{482, err.Error()}
+			return paymentDraft{}, paymentFailure{480, "refresh session for remote signer"}
+		case errors.Is(err, pm.ErrNoTickets):
+			return paymentDraft{}, paymentFailure{482, "no tickets needed"}
 		default:
-			return paymentDraft{}, invalid(err.Error())
+			return paymentDraft{}, err
 		}
 	}
 	return payment, nil

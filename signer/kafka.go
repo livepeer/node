@@ -257,8 +257,7 @@ func (p *kafkaProducer) run(ctx context.Context) {
 			if ctx.Err() != nil {
 				return
 			}
-			// Avoid logging broker responses, credentials or event payloads.
-			slog.Warn("signer Kafka delivery failed; accounting events retained", "retry_after", backoff)
+			slog.WarnContext(ctx, "signer Kafka delivery failed; accounting events retained", "retry_after", backoff, "error", err)
 			delay, wake = backoff, nil
 			backoff = min(backoff*2, 30*time.Second)
 		}

@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"math/big"
 	"time"
@@ -14,6 +15,8 @@ import (
 	"github.com/livepeer/node/pm"
 	"github.com/livepeer/node/pm/wire"
 )
+
+const paramsExpiryBuffer = int64(1)
 
 type remotePayer struct {
 	Signer pm.TicketSigner
@@ -54,7 +57,7 @@ type paymentState struct {
 
 func (s remotePayer) Generate(ctx context.Context, paymentType, manifest string, info wire.OrchestratorInfo, state paymentState, oldSequence int64) (paymentDraft, error) {
 	if s.Signer == nil || (paymentType != "live" && paymentType != "fixed") || manifest == "" || oldSequence < -1 || oldSequence == math.MaxInt64 || info.Price.PricePerUnit <= 0 || info.Price.UnitsPerPrice <= 0 {
-		return paymentDraft{}, errors.New("invalid remote payment request")
+		return paymentDraft{}, invalid("invalid remote payment request")
 	}
 	now := time.Now().UTC()
 	previous := state.LastUpdate.UTC()
@@ -71,28 +74,17 @@ func (s remotePayer) Generate(ctx context.Context, paymentType, manifest string,
 			seconds = max(int64(math.Ceil(now.Sub(state.LastUpdate).Seconds())), 1)
 		}
 		if seconds > 3600 {
-			return paymentDraft{}, errors.New("payment interval exceeds one hour")
+			return paymentDraft{}, invalid("payment interval exceeds one hour")
 		}
 	}
 	fee := new(big.Rat).SetFrac(new(big.Int).Mul(big.NewInt(info.Price.PricePerUnit), big.NewInt(seconds)), big.NewInt(info.Price.UnitsPerPrice))
 	balance := new(big.Rat)
 	if state.Balance != "" {
 		if _, ok := balance.SetString(state.Balance); !ok {
-			return paymentDraft{}, errors.New("invalid balance in payment state")
+			return paymentDraft{}, invalid("invalid balance in payment state")
 		}
 	}
 	params := pm.TicketParams{Recipient: ethcommon.BytesToAddress(info.TicketParams.Recipient), FaceValue: new(big.Int).SetBytes(info.TicketParams.FaceValue), WinProb: new(big.Int).SetBytes(info.TicketParams.WinProb), RecipientRandHash: ethcommon.BytesToHash(info.TicketParams.RecipientRandHash), Seed: new(big.Int).SetBytes(info.TicketParams.Seed), ExpirationBlock: new(big.Int).SetBytes(info.TicketParams.ExpirationBlock), ExpirationParams: &pm.TicketExpirationParams{CreationRound: info.TicketParams.Expiration.CreationRound, CreationRoundBlockHash: ethcommon.BytesToHash(info.TicketParams.Expiration.CreationRoundBlockHash)}}
-	if s.Chain == nil {
-		return paymentDraft{}, pm.ErrPayerUnavailable
-	}
-	funds, err := s.Chain.PayerFunds(ctx, s.Signer.Address(), params.Recipient)
-	if err != nil {
-		return paymentDraft{}, fmt.Errorf("%w: chain observation failed", pm.ErrPayerUnavailable)
-	}
-	// Refresh older rounds rather than trusting caller-provided historical hashes.
-	if funds.Snapshot.Block == nil || funds.Snapshot.Round == nil || params.ExpirationBlock.Cmp(new(big.Int).Add(funds.Snapshot.Block, big.NewInt(1))) <= 0 || params.ExpirationParams.CreationRound != funds.Snapshot.Round.Int64() || funds.Snapshot.RoundHash == (ethcommon.Hash{}) || params.ExpirationParams.CreationRoundBlockHash != funds.Snapshot.RoundHash {
-		return paymentDraft{}, pm.ErrRefreshRequired
-	}
 	if state.PMSessionID != params.RecipientRandHash.Hex() {
 		state.TicketNonce = 0
 		state.PMSessionID = params.RecipientRandHash.Hex()
@@ -100,15 +92,35 @@ func (s remotePayer) Generate(ctx context.Context, paymentType, manifest string,
 	if state.TicketNonce >= 500 {
 		return paymentDraft{}, pm.ErrRefreshRequired
 	}
+	// Precheck one ticket before generating the batch.
+	// Observation/funding failures here are client errors.
+	if err := s.validateTicketParams(ctx, &params, 1, "precheck"); err != nil {
+		if errors.Is(err, pm.ErrRefreshRequired) {
+			return paymentDraft{}, err
+		}
+		if f, ok := errors.AsType[paymentFailure](err); ok {
+			return paymentDraft{}, f
+		}
+		return paymentDraft{}, invalid("payer funds unavailable")
+	}
 	count, err := pm.RemoteBatchSize(params, fee, balance)
 	if err != nil {
-		return paymentDraft{}, err
+		if errors.Is(err, pm.ErrNoTickets) {
+			return paymentDraft{}, err
+		}
+		slog.WarnContext(ctx, "signer ticket batch rejected", "error", err)
+		return paymentDraft{}, invalid("invalid ticket batch")
 	}
-	if err := s.Policy.Check(params, count, funds); err != nil {
+	// Recheck the full batch before signing. A later observation/funding failure
+	// is an internal generation failure; invalid exposure remains a client error.
+	if err := s.validateTicketParams(ctx, &params, count, "generation"); err != nil {
 		return paymentDraft{}, err
 	}
 	batch, remaining, err := pm.MakeRemoteBatch(params, s.Signer, state.TicketNonce, fee, balance)
 	if err != nil {
+		if !errors.Is(err, pm.ErrRefreshRequired) && !errors.Is(err, pm.ErrNoTickets) {
+			slog.ErrorContext(ctx, "signer ticket batch generation failed", "error", err)
+		}
 		return paymentDraft{}, err
 	}
 	payerParams := make([]wire.TicketPayerParams, 0, len(batch.PayerParams))
@@ -121,6 +133,7 @@ func (s remotePayer) Generate(ctx context.Context, paymentType, manifest string,
 	flatten = append(flatten, segHash...)
 	sig, err := s.Signer.SignMessage(flatten)
 	if err != nil {
+		slog.ErrorContext(ctx, "signer segment credential signing failed", "error", err)
 		return paymentDraft{}, err
 	}
 	segment := wire.SegData{ManifestID: []byte(manifest), Hash: segHash, Signature: sig, Auth: info.Auth}
@@ -130,4 +143,42 @@ func (s remotePayer) Generate(ctx context.Context, paymentType, manifest string,
 	state.SequenceNumber = uint64(oldSequence + 1)
 	return paymentDraft{Payment: base64.StdEncoding.EncodeToString(wire.EncodePayment(message)), SegCreds: base64.StdEncoding.EncodeToString(wire.EncodeSegData(segment)), State: state,
 		Usage: paymentUsage{Fee: fee, Balance: remaining, PreviousTime: previous, BillableSecs: billableSecs, NumTickets: len(batch.PayerParams)}}, nil
+}
+
+// Adapted from go-livepeer/pm/sender.go's validateTicketParams, by Yondon Fu,
+// Nico Vergauwen and Rafał Leszko. Supplied creation-round metadata is retained;
+// refresh is governed by parameter expiry on the L1 clock, not the current round.
+func (s remotePayer) validateTicketParams(ctx context.Context, ticketParams *pm.TicketParams, numTickets int, phase string) error {
+	if ticketParams == nil {
+		return invalid("ticketParams is nil")
+	}
+	if ticketParams.ExpirationBlock.Int64() == 0 {
+		return invalid("ticketParams expiration block is 0")
+	}
+	if s.Chain == nil {
+		slog.ErrorContext(ctx, "signer payer chain is not configured", "phase", phase)
+		return pm.ErrPayerUnavailable
+	}
+	funds, err := s.Chain.PayerFunds(ctx, s.Signer.Address(), ticketParams.Recipient)
+	if err != nil {
+		slog.ErrorContext(ctx, "signer payer chain observation failed", "phase", phase, "error", err)
+		return fmt.Errorf("%w: chain observation failed", pm.ErrPayerUnavailable)
+	}
+	if funds.Snapshot.Block == nil {
+		slog.ErrorContext(ctx, "signer payer chain observation has no L1 block", "phase", phase)
+		return fmt.Errorf("%w: chain observation failed", pm.ErrPayerUnavailable)
+	}
+	latestL1Block := funds.Snapshot.Block
+	currentBuffer := new(big.Int).Sub(ticketParams.ExpirationBlock, latestL1Block).Int64()
+	if currentBuffer <= paramsExpiryBuffer {
+		return pm.ErrRefreshRequired
+	}
+	if err := s.Policy.Check(*ticketParams, numTickets, funds); err != nil {
+		slog.WarnContext(ctx, "signer payer policy rejected ticket parameters", "phase", phase, "num_tickets", numTickets, "error", err)
+		if errors.Is(err, pm.ErrPayerUnavailable) {
+			return err
+		}
+		return invalid("ticket parameters violate payer policy")
+	}
+	return nil
 }

@@ -66,7 +66,7 @@ func NewEngine(store *SQLiteStore, chain PaymentChain, recipient ethcommon.Addre
 	}
 	e := &Engine{store: store, chain: chain, recipient: recipient, faceValue: new(big.Int).Set(faceValue), winProb: new(big.Int).Set(winProb), sessions: make(map[string]*paymentSession), ticketNonces: make(map[string]*recipientNonces), lastSeenBlock: new(big.Int)}
 	// Port of Yondon Fu's go-livepeer/pm.NewRecipient: a fresh 256-bit HMAC
-	// key per recipient lifetime. AuthToken has its own independent key, as upstream.
+	// key per recipient lifetime. AuthToken has its own independent key.
 	rand.Read(e.secret[:])
 	rand.Read(e.authSecret[:])
 	return e, nil
@@ -80,7 +80,7 @@ type Challenge struct {
 }
 
 // MakeChallenge returns a Python/Go runner compatible 402 body. Ticket
-// parameters are authenticated by the recipient HMAC, as in go-livepeer.
+// parameters are authenticated by the recipient HMAC.
 func (e *Engine) MakeChallenge(ctx context.Context, runner, manifest string, payer ethcommon.Address, price int64, unit, service string) (Challenge, error) {
 	if runner == "" || manifest == "" || payer == (ethcommon.Address{}) || price <= 0 || (unit != "seconds" && unit != "fixed") {
 		return Challenge{}, errors.New("invalid payment challenge scope")
@@ -401,7 +401,7 @@ func (e *Engine) ChallengePrice(runner, manifest string) (int64, string, error) 
 }
 
 // authenticatePayment reconstructs the PM commitment from the supplied fields,
-// using go-livepeer's recipient HMAC.
+// using the recipient HMAC.
 func (e *Engine) authenticatePayment(payment wire.Payment, auth wire.AuthToken) (TicketParams, *big.Int, error) {
 	p := payment.TicketParams
 	if len(payment.PayerAddress) != 20 || len(p.Recipient) != 20 || ethcommon.BytesToAddress(p.Recipient) != e.recipient ||

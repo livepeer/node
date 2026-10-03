@@ -14,7 +14,6 @@ import (
 // Headers is a text scalar for configuration and secret files. It accepts
 // comma-separated Header: value entries, with CSV quoting for values containing
 // commas. Header names are case-insensitive and repeated names retain all values.
-// This follows Boa's typed-secret example and go-livepeer's header syntax.
 type Headers http.Header
 
 func validHeader(name, value string) bool {

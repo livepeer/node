@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -44,7 +45,10 @@ func TestAuthWebhookCachePriceAndIdentity(t *testing.T) {
 	require.Equal(t, 200, w.Code, w.Body.String())
 	require.Equal(t, int32(1), calls.Load())
 	state.AuthExpiry = time.Now().Add(-time.Minute).Unix()
-	require.NoError(t, s.authorizePayment(httptest.NewRequest("POST", "/generate-live-payment", nil), paymentRequest{Type: "fixed"}, info.Price, &state))
+	expired := httptest.NewRequest("POST", "/generate-live-payment", nil)
+	expired.Header.Set("Signer-Auth-Id", "bob")
+	require.NoError(t, s.authorizePayment(expired, paymentRequest{Type: "fixed"}, info.Price, &state))
+	require.Equal(t, "alice", state.AuthID, "webhook identity takes precedence over the request header")
 	require.Equal(t, int32(2), calls.Load(), "expired authorization must call the webhook again")
 	// Identity checks apply to signed state on any replica.
 	body, err := json.Marshal(req)
@@ -65,17 +69,33 @@ func TestAuthWebhookCachePriceAndIdentity(t *testing.T) {
 	require.Equal(t, int32(3), calls.Load())
 	require.NotContains(t, w.Body.String(), `"payment"`)
 	require.NotContains(t, w.Body.String(), `"state"`)
+	// An approving webhook still cannot replace an established identity.
+	reject.Store(false)
+	conflicting := state
+	conflicting.AuthID, conflicting.AuthExpiry = "bob", 0
+	var mismatch paymentFailure
+	require.ErrorAs(t, s.authorizePayment(httptest.NewRequest("POST", "/generate-live-payment", nil), paymentRequest{Type: "fixed"}, info.Price, &conflicting), &mismatch)
+	require.Equal(t, 403, mismatch.status)
 }
 
 func TestAuthWebhookFailuresWithholdPayment(t *testing.T) {
+	logs := captureSignerLogs(t)
 	tests := map[string]struct {
 		body         string
 		status, want int
 	}{
-		"/http-error": {"", 500, 502}, "/redirect": {"", 302, 502},
-		"/malformed": {"not JSON", 200, 502}, "/oversized": {strings.Repeat(" ", (1<<20)+1), 200, 502},
+		"/http-error": {"private-webhook-detail", 500, 502}, "/redirect": {"", 302, 502},
+		"/malformed": {"not JSON: private-webhook-detail", 200, 502}, "/oversized": {strings.Repeat(" ", (1<<20)+1), 200, 502},
 		"/missing-status": {`{}`, 200, 502}, "/invalid-status": {`{"status":201}`, 200, 502},
-		"/price-limit": {`{"status":200,"maxPrice":{"price":9,"currency":"wei","unit":"fixed"}}`, 200, 481},
+		"/invalid-reason":   {`{"status":403,"reason":123}`, 200, 502},
+		"/zero-price":       {`{"status":200,"maxPrice":{"price":0,"currency":"wei","unit":"fixed"}}`, 200, 502},
+		"/missing-price":    {`{"status":200,"maxPrice":{"currency":"wei","unit":"fixed"}}`, 200, 502},
+		"/invalid-currency": {`{"status":200,"maxPrice":{"price":10,"currency":"usd","unit":"fixed"}}`, 200, 502},
+		"/invalid-unit":     {`{"status":200,"maxPrice":{"price":10,"currency":"wei","unit":"seconds"}}`, 200, 502},
+		"/price-limit":      {`{"status":200,"maxPrice":{"price":9,"currency":"wei","unit":"fixed"}}`, 200, 481},
+		"/denied":           {`{"status":403}`, 200, 403},
+		"/private-reason":   {`{"status":403,"reason":"Bearer private-webhook-detail: SQL authorization failed"}`, 200, 403},
+		"/private-failure":  {`{"status":502,"reason":"https://auth.internal/?token=private-webhook-detail"}`, 200, 502},
 	}
 	var calls atomic.Int32
 	webhook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -91,15 +111,38 @@ func TestAuthWebhookFailuresWithholdPayment(t *testing.T) {
 	request := map[string]any{"orchestrator": wire.EncodeOrchestratorInfo(info), "type": "fixed"}
 	for path, test := range tests {
 		t.Run(path, func(t *testing.T) {
+			logs.Reset()
 			before := calls.Load()
 			require.NoError(t, s.SetAuthWebhook(testURL(t, webhook.URL+path), nil))
-			requirePaymentFailure(t, postPayment(t, s, request), test.want)
+			response := postPayment(t, s, request)
+			requirePaymentFailure(t, response, test.want)
+			require.NotContains(t, response.Body.String(), "private-webhook-detail")
+			require.NotEmpty(t, logs.String())
+			require.NotContains(t, logs.String(), "private-webhook-detail")
+			if path == "/http-error" || path == "/redirect" {
+				require.Contains(t, logs.String(), `"http_status":`+strconv.Itoa(test.status))
+			}
+			if path == "/malformed" {
+				require.Contains(t, logs.String(), "invalid character")
+			}
+			if path == "/invalid-reason" {
+				require.Contains(t, logs.String(), "cannot unmarshal number")
+			}
+			if strings.HasPrefix(path, "/private-") || path == "/denied" {
+				require.Contains(t, response.Body.String(), "signer auth rejected request with status "+strconv.Itoa(test.want))
+			}
 			if test.status == 302 {
 				require.Equal(t, before+1, calls.Load(), "authorization redirects must not be followed")
 			}
 		})
 	}
 	webhook.Close()
-	require.NoError(t, s.SetAuthWebhook(testURL(t, webhook.URL), nil))
-	requirePaymentFailure(t, postPayment(t, s, request), 502)
+	logs.Reset()
+	require.NoError(t, s.SetAuthWebhook(testURL(t, webhook.URL+"?token=private-webhook-detail"), nil))
+	response := postPayment(t, s, request)
+	requirePaymentFailure(t, response, 502)
+	require.NotContains(t, response.Body.String(), "private-webhook-detail")
+	require.Contains(t, logs.String(), "signer auth webhook unavailable")
+	require.Contains(t, logs.String(), "private-webhook-detail")
+	require.Contains(t, logs.String(), "connection refused")
 }
