@@ -97,7 +97,7 @@ Configured USD ceilings are `MaxHourlyPrice / 3600` for live work and
 the price cannot exceed the initial session price. Comparisons are exact.
 
 `ETHUSDFeed` supplies the conversion rate unless `WeiPerUSD` overrides it.
-Feed observations refresh every 30 seconds and expire after `ETHUSDMaxAge`
+Feed observations refresh every hour and expire after `ETHUSDMaxAge`
 (default two hours). A missing or stale rate makes payment generation and
 readiness return 503; `/sign-orchestrator-info` and discovery remain available.
 Fixed rates never refresh or expire.

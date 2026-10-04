@@ -29,7 +29,7 @@ ETHUSDMaxAge = "2h"
 # WeiPerUSD overrides the feed for testing. Fixed rates never expire or refresh.
 
 # A stale/unavailable feed makes /readyz and payment generation return 503.
-# The signer retries every 30 seconds and resumes when it observes a fresh rate.
+# The signer retries every hour and resumes when it observes a fresh rate.
 # /sign-orchestrator-info and discovery remain available while the feed is stale.
 
 # Expected value (EV) limits are in wei and independent of work's maxPrice.

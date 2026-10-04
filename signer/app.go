@@ -235,7 +235,7 @@ func serve(parent context.Context, p Params) error {
 	}
 	if p.WeiPerUSD == nil {
 		workers.Go(func() {
-			refreshPriceFeed(ctx, 30*time.Second, service.pricePolicy, func(readCtx context.Context) (*big.Rat, time.Time, error) {
+			refreshPriceFeed(ctx, time.Hour, service.pricePolicy, func(readCtx context.Context) (*big.Rat, time.Time, error) {
 				return contracts.WeiPerUSD(readCtx, p.ETHUSDFeed, p.ETHUSDMaxAge)
 			})
 		})

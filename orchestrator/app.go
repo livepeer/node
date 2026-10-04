@@ -337,7 +337,7 @@ func Serve(parent context.Context, p Params, logOut io.Writer) (result error) {
 	workers.Go(func() { app.runO2RKeepalives(ctx, 10*time.Second) })
 	if engine != nil {
 		if p.ETHUSDFeed != nil {
-			startWorker(30*time.Second, 30*time.Second, func(ctx context.Context) {
+			startWorker(time.Hour, 30*time.Second, func(ctx context.Context) {
 				rate, until, err := paymentChain.Contracts.WeiPerUSD(ctx, *p.ETHUSDFeed, p.PriceMaxAge)
 				if err != nil {
 					logger.Error("price feed unavailable", "error", err)

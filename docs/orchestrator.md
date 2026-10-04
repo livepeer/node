@@ -115,9 +115,9 @@ fixed request. Hourly discovery prices are normalized to USD and wei per second.
 
 `WeiPerUSD` sets a fixed conversion. Alternatively, set `ETHUSDFeed` to a
 Chainlink-compatible ETH/USD feed on the payment chain. The feed is checked
-every 30 seconds; `PriceMaxAge` must be positive and defaults to two hours. Startup requires a
-valid observation. Stale rates suspend new priced discovery and reservations;
-existing sessions retain their agreed wei price.
+every hour; `PriceMaxAge` must be positive and defaults to two hours. Startup
+requires a valid observation. Stale rates suspend new priced discovery and
+reservations; existing sessions retain their agreed wei price.
 
 `PaymentMaxFeePerGas` optionally caps redemption fees in wei per gas. The
 cap is per gas, not a total spending budget. Winning tickets wait until payment
