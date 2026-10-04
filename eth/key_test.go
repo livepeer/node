@@ -36,6 +36,18 @@ func TestOpenKeystorePreservesPasswordAndSigningIdentity(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, key.Address(), crypto.PubkeyToAddress(*pub))
 	}
+	password, err := os.ReadFile(passwordPath)
+	require.NoError(t, err)
+	require.NoError(t, os.Chmod(passwordPath, 0600))
+	require.NoError(t, os.WriteFile(passwordPath, []byte("changed"), 0600))
+	for _, source := range []string{"", passwordPath} {
+		resolved, err := eth.OpenKeystore(path, new(string(password)), source)
+		require.NoError(t, err)
+		require.Equal(t, key.Address(), resolved.Address())
+	}
+	require.NoError(t, os.Chmod(passwordPath, 0640))
+	_, err = eth.OpenKeystore(path, new(string(password)), passwordPath)
+	require.ErrorContains(t, err, "password file must be owner-only")
 }
 
 func TestOpenKeystoreFailuresAreSanitized(t *testing.T) {

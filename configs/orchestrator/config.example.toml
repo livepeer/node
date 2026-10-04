@@ -22,6 +22,7 @@ HealthGrants = []
 # KeystoreFile = "/run/secrets/livepeer-orchestrator-keystore.json"
 # KeystorePasswordFile = "/run/secrets/livepeer-orchestrator-keystore-password"
 # Both files must be owner-only; the password is read as exact bytes (no newline).
+# Or use LIVEPEER_ORCHESTRATOR_KEYSTORE_PASSWORD and omit KeystorePasswordFile.
 # PaymentRPCURLFile = "/run/secrets/livepeer-payment-rpc-url"
 # PaymentMaxFeePerGas = "1000000000" # Optional ceiling, wei per gas
 # PaymentChainID = 42161

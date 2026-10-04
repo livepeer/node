@@ -100,8 +100,8 @@ a lowercase DNS label of at most 63 characters.
 Paid operation requires all of these settings:
 
 - `PaymentDB`: persistent SQLite path with an existing parent directory.
-- `KeystoreFile` and `KeystorePasswordFile`: encrypted
-  recipient account JSON and its password file; see
+- `KeystoreFile` and a password: encrypted
+  recipient account JSON and its password; see
   [Ethereum keystores](configuration.md#ethereum-keystores).
 - `PaymentRPCURLFile` or `LIVEPEER_ORCHESTRATOR_PAYMENT_RPC_URL`: RPC credential.
 - `PaymentChainID` and `PaymentController`: a positive uint64 chain ID and nonzero Controller address.

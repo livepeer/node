@@ -44,10 +44,11 @@ HTTP.
 
 ## Credential files
 
-RPC URLs, bootstrap credentials, authorization webhook URLs and headers, and
-Kafka credentials are secrets. Supply each through its file option or direct
-environment variable. Direct secret flags and TOML values are rejected, and a
-direct environment secret cannot be set together with its file option.
+RPC URLs, bootstrap credentials, keystore passwords, authorization webhook URLs
+and headers, and Kafka credentials are secrets. Supply each through its file
+option or direct environment variable. Direct secret flags and TOML values are
+rejected, and a direct environment secret cannot be set together with its file
+option.
 
 Credential files are read as exact bytes, including trailing newlines. For
 example, create a bootstrap credential without a newline:
@@ -72,25 +73,24 @@ external tooling.
 | --- | --- | --- |
 | All three | `KeystoreFile` | `KeystorePasswordFile` |
 
-All three apps use `--keystore-file` and `--keystore-password-file`. Path
-environment variables use the app prefix, such as
-`LIVEPEER_SIGNER_KEYSTORE_PASSWORD_FILE`. CLI values override environment
-values, which override TOML.
+Signing requires a keystore file protected by a password (`--keystore-file`).
+Supply the password in a file (`--keystore-password-file`) or an environment
+variable. Environment variables use the app prefix, such as
+`LIVEPEER_SIGNER_KEYSTORE_PASSWORD_FILE` for a password file or
+`LIVEPEER_SIGNER_KEYSTORE_PASSWORD` for the password itself. CLI values override
+environment values, which override TOML.
 
-Both inputs must be regular files readable only by their owner; `0400` and
-`0600` are accepted. Secret-manager symlinks are accepted when their target
-files meet these requirements. Password files are read as exact bytes, including
-whitespace and trailing newlines. Supply the actual password without an
-unintended newline. There is no literal-password flag, password environment
-value, or interactive unlock prompt. An existing keystore using an empty
-password requires an explicitly supplied empty password file.
+Keystore and password files must be regular files readable only by their owner;
+`0400` and `0600` are accepted. Secret-manager symlinks are accepted when their
+target files meet these requirements. Password files are read as exact bytes,
+including whitespace and trailing newlines. Supply the actual password without
+an unintended newline. To use a keystore without a password, supply an empty
+password file.
 
-The signer requires both files at startup. The orchestrator requires both when
-payments are configured. The chain requires both for submissions and local signing; reads,
-simulations, help, completion, and `--print-config` do not open signing files.
-Configuration printing omits both paths. Decrypted keys remain in process
-memory and are never written back to disk. Changing either file requires a
-service restart, or a new chain invocation.
+The signer requires a keystore and password at startup. The orchestrator requires
+both when payments are configured. The chain requires both for submissions and
+local signing. Changing the keystore or password requires a service restart, or
+a new chain invocation.
 
 The signer account is the payer, supplying the TicketBroker deposit and reserve.
 The orchestrator account receives tickets and acts as redeemer. The chain account
@@ -107,9 +107,9 @@ umask 077
 geth --keystore /path/to/encrypted-keystore account new
 ```
 
-Select the generated account JSON file and prepare an owner-only password file
-containing the exact encryption password. Set the two keystore paths in the
-component configuration. For chain commands, set `Account` to the keystore
+Select the generated account JSON file and set `KeystoreFile` in the component
+configuration. Supply the password through `KeystorePasswordFile` or the app's
+password environment variable. For chain commands, set `Account` to the keystore
 account address. Back up the encrypted account and password separately. Importing
 an account key with `geth account import` is also supported by the external tooling.
 

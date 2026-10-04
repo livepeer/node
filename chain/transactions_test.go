@@ -35,7 +35,9 @@ func TestTransactionCommands(t *testing.T) {
 		wantSent      int
 	}{
 		{name: "simulate without a key"},
-		{name: "simulate with unavailable keystore", flags: []string{"--keystore-file", "/missing/account.json", "--keystore-password-file", "/missing/password"}},
+		{name: "simulate with unavailable keystore", flags: []string{"--keystore-file", "/missing/account.json"}},
+		{name: "simulate with unavailable password file", flags: []string{"--keystore-password-file", "/missing/password"}, wantErr: "secret file"},
+		{name: "env password submission", keySource: 3, flags: []string{"--submit"}, wantSent: 1, wantReceipt: true},
 		{name: "explicit submission", flags: []string{"--submit"}, wantSent: 1, wantReceipt: true},
 		{name: "keystore environment overrides config", keySource: 1, flags: []string{"--submit"}, wantSent: 1, wantReceipt: true},
 		{name: "keystore CLI overrides environment", keySource: 2, flags: []string{"--submit"}, wantSent: 1, wantReceipt: true},
@@ -81,7 +83,12 @@ func TestTransactionCommands(t *testing.T) {
 			require.NoError(t, os.WriteFile(rpcFile, []byte(f.server.URL), 0600))
 			configFile := filepath.Join(dir, "chain.toml")
 			config := fmt.Sprintf("RPCURLFile = %q\nAccount = %q\n", rpcFile, key.Address().Hex())
-			if slices.Contains(tc.flags, "--submit") {
+			if tc.keySource == 3 {
+				password, err := os.ReadFile(passwordPath)
+				require.NoError(t, err)
+				t.Setenv("LIVEPEER_CHAIN_KEYSTORE_PASSWORD", string(password))
+				config += fmt.Sprintf("KeystoreFile = %q\n", keyFile)
+			} else if slices.Contains(tc.flags, "--submit") {
 				paths := [3][2]string{{"/missing/key", "/missing/password"}, {"/missing/key", "/missing/password"}, {"/missing/key", "/missing/password"}}
 				paths[tc.keySource] = [2]string{keyFile, passwordPath}
 				config += fmt.Sprintf("KeystoreFile = %q\nKeystorePasswordFile = %q\n", paths[0][0], paths[0][1])

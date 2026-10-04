@@ -42,5 +42,6 @@ Flags:
 Use "livepeer-orchestrator [command] --help" for more information about a command.
 
 Environment Variables:
-  LIVEPEER_ORCHESTRATOR_BOOTSTRAP_SECRET  Dynamic runner bootstrap credential
+  LIVEPEER_ORCHESTRATOR_BOOTSTRAP_SECRET   Dynamic runner bootstrap credential
+  LIVEPEER_ORCHESTRATOR_KEYSTORE_PASSWORD  Keystore decryption password
   LIVEPEER_ORCHESTRATOR_PAYMENT_RPC_URL

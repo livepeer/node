@@ -40,3 +40,4 @@ Use "livepeer-chain [command] --help" for more information about a command.
 
 Environment Variables:
   LIVEPEER_CHAIN_RPC_URL
+  LIVEPEER_CHAIN_KEYSTORE_PASSWORD  Keystore decryption password

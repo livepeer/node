@@ -21,7 +21,8 @@ type OperatorParams struct {
 	Account              *ethcommon.Address `persistent:"true" descr:"Account address to inspect or use for transactions; must match the keystore account when signing"`
 	Controller           ethcommon.Address  `name:"controller-address" required:"true" persistent:"true" default:"0xD8E8328501E9645d16Cf49539efC04f734606ee4" descr:"Livepeer Controller (Arbitrum mainnet)"`
 	KeystoreFile         string             `optional:"true" persistent:"true" descr:"Encrypted geth account JSON file"`
-	KeystorePasswordFile string             `optional:"true" persistent:"true" descr:"Owner-only file containing the exact keystore password bytes"`
+	KeystorePassword     *string            `secret:"true" optional:"true" persistent:"true" descr:"Keystore decryption password"`
+	KeystorePasswordFile string             `secretfor:"KeystorePassword" persistent:"true" descr:"Owner-only file containing the exact keystore password bytes"`
 	MaxFeePerGas         *uint256.Int       `persistent:"true" descr:"Ceiling on the calculated transaction fee cap in wei per gas"`
 }
 

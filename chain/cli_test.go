@@ -253,8 +253,10 @@ func TestOperatorSourcesAndFlagPlacement(t *testing.T) {
 	dir := t.TempDir()
 	rpcFile := filepath.Join(dir, "rpc")
 	require.NoError(t, os.WriteFile(rpcFile, []byte(server.URL), 0600))
+	passwordFile := filepath.Join(dir, "password")
+	require.NoError(t, os.WriteFile(passwordFile, []byte("unused password"), 0600))
 	config := filepath.Join(dir, "chain.toml")
-	require.NoError(t, os.WriteFile(config, []byte(fmt.Sprintf("RPCURLFile = %q\nChainID = 3\nAccount = %q\nMaxFeePerGas = '3'\nKeystoreFile = '/missing/account.json'\nKeystorePasswordFile = '/missing/password'\n", rpcFile, testAccount)), 0600))
+	require.NoError(t, os.WriteFile(config, []byte(fmt.Sprintf("RPCURLFile = %q\nChainID = 3\nAccount = %q\nMaxFeePerGas = '3'\nKeystoreFile = '/missing/account.json'\nKeystorePasswordFile = %q\n", rpcFile, testAccount, passwordFile)), 0600))
 	partialConfig := filepath.Join(dir, "partial.toml")
 	require.NoError(t, os.WriteFile(partialConfig, []byte(fmt.Sprintf("RPCURLFile = %q\n", rpcFile)), 0600))
 

@@ -75,7 +75,8 @@ func TestStatusChecksChainID(t *testing.T) {
 func TestPrintConfigOmitsCredentials(t *testing.T) {
 	dir := t.TempDir()
 	rpcFile := filepath.Join(dir, "rpc")
-	keyFile, passwordPath := "/missing/account.json", "/missing/password"
+	keyFile, passwordPath := "/missing/account.json", filepath.Join(dir, "password")
+	require.NoError(t, os.WriteFile(passwordPath, []byte("keystore-secret"), 0600))
 	require.NoError(t, os.WriteFile(rpcFile, []byte("http://localhost:8545?key=private-token"), 0600))
 	configFile := filepath.Join(dir, "chain.toml")
 	config := fmt.Sprintf(`RPCURLFile = %q
@@ -90,13 +91,13 @@ ChainID = 42161
 			root := Root(&output, &output)
 			root.SetArgs(append(command, "--config", configFile, "--print-config", "--output", "json"))
 			require.NoError(t, root.Execute())
-			for _, secret := range []string{"private-token", rpcFile, keyFile, passwordPath, configFile} {
+			for _, secret := range []string{"private-token", "keystore-secret", rpcFile, keyFile, passwordPath, configFile} {
 				require.NotContains(t, output.String(), secret)
 			}
 			var printed map[string]any
 			require.NoError(t, toml.Unmarshal(output.Bytes(), &printed))
 			require.EqualValues(t, 42161, printed["ChainID"])
-			for _, key := range []string{"RPCURL", "RPCURLFile", "KeystoreFile", "KeystorePasswordFile", "ConfigFile", "Amount", "Reserve", "ServiceURI", "Output", "PrintConfig", "Submit", "Wait", "Quiet"} {
+			for _, key := range []string{"RPCURL", "RPCURLFile", "KeystoreFile", "KeystorePassword", "KeystorePasswordFile", "ConfigFile", "Amount", "Reserve", "ServiceURI", "Output", "PrintConfig", "Submit", "Wait", "Quiet"} {
 				require.NotContains(t, printed, key)
 			}
 		})

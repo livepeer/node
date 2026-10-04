@@ -137,7 +137,7 @@ sign message --message-file /path/to/message
 sign typed-data --data-file /path/to/typed-data.json
 ```
 
-Signing needs a keystore and password file, but no RPC. If an account address is
+Signing needs a keystore and password, but no RPC. If an account address is
 configured, it must match the signing account. Message signing preserves exact
 file bytes, including newlines, and uses the Ethereum message prefix. Typed-data signing accepts EIP-712
 JSON with `types`, `primaryType`, `domain`, and `message`. Output includes the

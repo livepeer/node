@@ -17,7 +17,7 @@ import (
 )
 
 func signFile(p OperatorParams, d DisplayOptions, out io.Writer, path string, typed bool) error {
-	key, err := eth.OpenKeystoreFile(p.KeystoreFile, p.KeystorePasswordFile)
+	key, err := eth.OpenKeystore(p.KeystoreFile, p.KeystorePassword, p.KeystorePasswordFile)
 	if err != nil {
 		return err
 	}

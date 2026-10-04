@@ -23,6 +23,9 @@ func TestLocalSigning(t *testing.T) {
 	keyPath, passwordPath := test.WriteFixedKeystore(t)
 	key, err := eth.OpenKeystoreFile(keyPath, passwordPath)
 	require.NoError(t, err)
+	password, err := os.ReadFile(passwordPath)
+	require.NoError(t, err)
+	t.Setenv("LIVEPEER_CHAIN_KEYSTORE_PASSWORD", string(password))
 	const typed = `{"types":{"EIP712Domain":[{"name":"name","type":"string"},{"name":"version","type":"string"},{"name":"chainId","type":"uint256"},{"name":"verifyingContract","type":"address"}],"Person":[{"name":"name","type":"string"},{"name":"wallet","type":"address"}],"Mail":[{"name":"from","type":"Person"},{"name":"to","type":"Person"},{"name":"contents","type":"string"}]},"primaryType":"Mail","domain":{"name":"Ether Mail","version":"1","chainId":1,"verifyingContract":"0xCcCCccccCCCCcCCCCCCcCcCccCcCCCcCcccccccC"},"message":{"from":{"name":"Cow","wallet":"0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826"},"to":{"name":"Bob","wallet":"0xbBbBBBBbbBBBbbbBbbBbbbbBBbBbbbbBbBbbBBbB"},"contents":"Hello, Bob!"}}`
 	for _, tc := range []struct {
 		name         string
@@ -42,7 +45,7 @@ func TestLocalSigning(t *testing.T) {
 			if tc.typed {
 				command, flag = "typed-data", "--data-file"
 			}
-			root.SetArgs([]string{"sign", command, flag, path, "--keystore-file", keyPath, "--keystore-password-file", passwordPath, "--account", key.Address().Hex(), "--output", "json"})
+			root.SetArgs([]string{"sign", command, flag, path, "--keystore-file", keyPath, "--account", key.Address().Hex(), "--output", "json"})
 			require.NoError(t, root.Execute(), "signing must work without RPC")
 			object := decodeObject(t, output.String())
 			sig, err := hexutil.Decode(object["signature"].(string))

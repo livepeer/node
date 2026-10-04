@@ -42,7 +42,8 @@ type Params struct {
 	RunnerConfig         string             `optional:"true" file:"true" descr:"Static runner TOML path"`
 	PaymentDB            string             `optional:"true"`
 	KeystoreFile         string             `optional:"true" descr:"Encrypted geth redemption account JSON file"`
-	KeystorePasswordFile string             `optional:"true" descr:"Owner-only file containing the exact keystore password bytes"`
+	KeystorePassword     *string            `secret:"true" optional:"true" descr:"Keystore decryption password"`
+	KeystorePasswordFile string             `secretfor:"KeystorePassword" descr:"Owner-only file containing the exact keystore password bytes"`
 	PaymentRPCURL        *url.URL           `name:"payment-rpc-url" secret:"true" optional:"true"`
 	PaymentRPCURLFile    string             `name:"payment-rpc-url-file" secretfor:"PaymentRPCURL"`
 	PaymentChainID       *uint64            `min:"1"`
@@ -74,10 +75,10 @@ func (p Params) Validate() error {
 	if p.BootstrapSecret == "" && p.RunnerConfig == "" {
 		return errors.New("bootstrap secret or static runner config is required")
 	}
-	paymentRequested := p.KeystoreFile != "" || p.KeystorePasswordFile != "" || p.PaymentDB != "" || p.PaymentRPCURL != nil || p.PaymentChainID != nil || p.PaymentController != nil || p.WeiPerUSD != nil || p.ETHUSDFeed != nil || p.TicketFaceValue != nil || p.TicketWinProb != nil || p.PaymentMaxFeePerGas != nil
+	paymentRequested := p.KeystoreFile != "" || p.KeystorePassword != nil || p.KeystorePasswordFile != "" || p.PaymentDB != "" || p.PaymentRPCURL != nil || p.PaymentChainID != nil || p.PaymentController != nil || p.WeiPerUSD != nil || p.ETHUSDFeed != nil || p.TicketFaceValue != nil || p.TicketWinProb != nil || p.PaymentMaxFeePerGas != nil
 	if paymentRequested {
-		if p.KeystoreFile == "" || p.KeystorePasswordFile == "" || p.PaymentDB == "" || p.PaymentRPCURL == nil || p.PaymentChainID == nil || p.PaymentController == nil || (p.WeiPerUSD == nil && p.ETHUSDFeed == nil) || p.TicketFaceValue == nil || p.TicketWinProb == nil {
-			return errors.New("on-chain payment requires payment-db, keystore-file, keystore-password-file, RPC, chain-id, controller, a fixed rate or ETH/USD feed, face-value and win-prob")
+		if p.KeystoreFile == "" || p.KeystorePassword == nil && p.KeystorePasswordFile == "" || p.PaymentDB == "" || p.PaymentRPCURL == nil || p.PaymentChainID == nil || p.PaymentController == nil || (p.WeiPerUSD == nil && p.ETHUSDFeed == nil) || p.TicketFaceValue == nil || p.TicketWinProb == nil {
+			return errors.New("on-chain payment requires payment-db, keystore-file, keystore-password or keystore-password-file, RPC, chain-id, controller, a fixed rate or ETH/USD feed, face-value and win-prob")
 		}
 		if *p.PaymentController == (ethcommon.Address{}) {
 			return errors.New("payment-controller-address must be nonzero")
@@ -235,7 +236,7 @@ func Serve(parent context.Context, p Params, logOut io.Writer) (result error) {
 	var paymentChainID *big.Int
 	if p.KeystoreFile != "" {
 		registry.SetWeiPerUSD(p.WeiPerUSD)
-		redeemerKey, err = eth.OpenKeystoreFile(p.KeystoreFile, p.KeystorePasswordFile)
+		redeemerKey, err = eth.OpenKeystore(p.KeystoreFile, p.KeystorePassword, p.KeystorePasswordFile)
 		if err != nil {
 			return err
 		}

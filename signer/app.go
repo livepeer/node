@@ -51,7 +51,8 @@ type Params struct {
 	ChainID                *uint64              `name:"chain-id" min:"1" descr:"Optional expected RPC chain ID"`
 	Controller             ethcommon.Address    `name:"controller-address" required:"true" default:"0xD8E8328501E9645d16Cf49539efC04f734606ee4" descr:"Livepeer Controller (Arbitrum mainnet)"`
 	KeystoreFile           string               `required:"true" descr:"Encrypted geth account JSON file"`
-	KeystorePasswordFile   string               `required:"true" descr:"Owner-only file containing the exact keystore password bytes"`
+	KeystorePassword       *string              `secret:"true" required:"true" descr:"Keystore decryption password"`
+	KeystorePasswordFile   string               `secretfor:"KeystorePassword" descr:"Owner-only file containing the exact keystore password bytes"`
 	Orchestrators          []boa.Text[*url.URL] `name:"orchestrators" optional:"true"`
 	DiscoveryGrants        []string             `name:"discovery-grants" optional:"true" descr:"Private discovery host[:port] grants"`
 }
@@ -77,8 +78,8 @@ func (p Params) discoveryURLs() []*url.URL {
 }
 
 func (p Params) Validate() error {
-	if p.KeystoreFile == "" || p.KeystorePasswordFile == "" {
-		return errors.New("keystore-file and keystore-password-file are required")
+	if p.KeystoreFile == "" || p.KeystorePassword == nil && p.KeystorePasswordFile == "" {
+		return errors.New("keystore-file and keystore-password or keystore-password-file are required")
 	}
 	if p.Kafka != nil {
 		if err := p.Kafka.Validate(); err != nil {
@@ -139,7 +140,7 @@ func serve(parent context.Context, p Params) error {
 	}
 	ctx, stop := context.WithCancel(parent)
 	defer stop()
-	key, err := eth.OpenKeystoreFile(p.KeystoreFile, p.KeystorePasswordFile)
+	key, err := eth.OpenKeystore(p.KeystoreFile, p.KeystorePassword, p.KeystorePasswordFile)
 	if err != nil {
 		return err
 	}

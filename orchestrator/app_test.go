@@ -64,6 +64,12 @@ func TestPaidHTTPStartup(t *testing.T) {
 	defer rpc.Close()
 	p := paymentKeystoreParams(t, rpc.URL)
 	p.KeystoreFile, p.KeystorePasswordFile = test.WriteKeystore(t, nil)
+	password, err := os.ReadFile(p.KeystorePasswordFile)
+	require.NoError(t, err)
+	t.Setenv("LIVEPEER_ORCHESTRATOR_KEYSTORE_PASSWORD", string(password))
+	p.KeystorePasswordFile = ""
+	paramsCmd := boa.Cmd[Params]{Params: &p, ParamEnrich: boa.ParamEnricherCombine(boa.ParamEnricherDefault, boa.ParamEnricherEnv, boa.ParamEnricherEnvPrefix("LIVEPEER_ORCHESTRATOR"))}
+	require.NoError(t, paramsCmd.Validate())
 	p.Listen = netip.MustParseAddrPort(fmt.Sprintf("0.0.0.0:%d", mainPort))
 	p.MetricsListen = netip.MustParseAddrPort(fmt.Sprintf("127.0.0.1:%d", metricsPort))
 	p.ServiceURL = boa.Text[*url.URL]{Value: mustURL(t, "https://public.example/external")}
@@ -91,7 +97,7 @@ func TestPaidHTTPStartup(t *testing.T) {
 		return response.StatusCode == http.StatusOK
 	}, 5*time.Second, 20*time.Millisecond)
 	require.EqualValues(t, 1, requests.Load())
-	_, err := os.Stat(p.PaymentDB)
+	_, err = os.Stat(p.PaymentDB)
 	require.NoError(t, err)
 	response, err := http.Get("http://" + p.MetricsListen.String() + "/readyz")
 	require.NoError(t, err)
@@ -108,6 +114,7 @@ func TestPaidHTTPStartup(t *testing.T) {
 
 func TestConfigPrecedenceAndRedaction(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
+	t.Setenv("LIVEPEER_ORCHESTRATOR_KEYSTORE_PASSWORD", "keystore-secret")
 	require.NoError(t, os.WriteFile(path, []byte(`ServiceURL = 'https://file.example'
 Listen = '127.0.0.1:8000'
 PaymentMaxFeePerGas = '100'
@@ -115,7 +122,6 @@ PaymentChainID = 1
 PaymentController = '0x0000000000000000000000000000000000000001'
 WeiPerUSD = '1/2'
 KeystoreFile = '/missing/account.json'
-KeystorePasswordFile = '/missing/password'
 `), 0600))
 	t.Setenv("LIVEPEER_ORCHESTRATOR_SERVICE_URL", "https://env.example")
 	t.Setenv("LIVEPEER_ORCHESTRATOR_BOOTSTRAP_SECRET", "super-secret-env")
@@ -137,6 +143,7 @@ KeystorePasswordFile = '/missing/password'
 	require.NotContains(t, output, "flag.example")
 	require.NotContains(t, output, "env.example")
 	require.NotContains(t, output, "super-secret-env")
+	require.NotContains(t, output, "keystore-secret")
 	require.NotContains(t, output, path)
 	require.Contains(t, output, `PaymentMaxFeePerGas = "300"`)
 	var printed map[string]any
@@ -145,7 +152,7 @@ KeystorePasswordFile = '/missing/password'
 	require.Equal(t, "0x0000000000000000000000000000000000000003", printed["PaymentController"])
 	require.Equal(t, "2/3", printed["WeiPerUSD"])
 	require.Equal(t, "5s", printed["HeartbeatInterval"])
-	for _, key := range []string{"ServiceURL", "PaymentRPCURL", "BootstrapSecret", "KeystoreFile", "KeystorePasswordFile", "RunnerConfig", "PaymentDB", "TicketFaceValue"} {
+	for _, key := range []string{"ServiceURL", "PaymentRPCURL", "BootstrapSecret", "KeystoreFile", "KeystorePassword", "KeystorePasswordFile", "RunnerConfig", "PaymentDB", "TicketFaceValue"} {
 		require.NotContains(t, printed, key)
 	}
 }
@@ -155,6 +162,7 @@ func TestConfigRejectsUnknownAndDirectSecrets(t *testing.T) {
 		"unknown_key = 1\n",
 		"BootstrapSecret = 'forbidden'\n",
 		"PaymentRPCURL = 'https://forbidden.example'\n",
+		"KeystorePassword = 'forbidden'\n",
 		"payment_chain_id = 1\n",
 		"PrintConfig = true\n",
 	} {
@@ -324,4 +332,5 @@ func TestPaymentKeystoreFailuresBeforeStartup(t *testing.T) {
 			require.ErrorContains(t, p.Validate(), "on-chain payment requires")
 		}
 	}
+	require.ErrorContains(t, (Params{BootstrapSecret: "test", KeystorePassword: new("")}).Validate(), "on-chain payment requires")
 }

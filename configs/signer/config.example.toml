@@ -5,6 +5,7 @@ MetricsListen = "127.0.0.1:8938"
 KeystoreFile = "/run/secrets/livepeer-signer-keystore.json"
 KeystorePasswordFile = "/run/secrets/livepeer-signer-keystore-password"
 # Encrypted geth account JSON; both files must be owner-only.
+# To use LIVEPEER_SIGNER_KEYSTORE_PASSWORD instead, remove KeystorePasswordFile.
 # Discovery sources and grants for private destinations; see docs/signer.md.
 Orchestrators = []
 DiscoveryGrants = []

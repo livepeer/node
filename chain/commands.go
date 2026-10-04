@@ -40,8 +40,8 @@ func executeActions(ctx context.Context, operator OperatorParams, display Displa
 	if tx.GasLimit != nil && *tx.GasLimit == 0 {
 		return errors.New("gas-limit must be positive")
 	}
-	if tx.Submit && (operator.KeystoreFile == "" || operator.KeystorePasswordFile == "") {
-		return errors.New("keystore-file and keystore-password-file are required with submit")
+	if tx.Submit && (operator.KeystoreFile == "" || operator.KeystorePassword == nil && operator.KeystorePasswordFile == "") {
+		return errors.New("keystore-file and keystore-password or keystore-password-file are required with submit")
 	}
 	from, err := operator.account()
 	if err != nil {
@@ -49,7 +49,7 @@ func executeActions(ctx context.Context, operator OperatorParams, display Displa
 	}
 	var key *eth.Key
 	if tx.Submit {
-		key, err = eth.OpenKeystoreFile(operator.KeystoreFile, operator.KeystorePasswordFile)
+		key, err = eth.OpenKeystore(operator.KeystoreFile, operator.KeystorePassword, operator.KeystorePasswordFile)
 		if err != nil {
 			return err
 		}

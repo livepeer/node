@@ -110,7 +110,7 @@ func TestSignerKeystoreSourcesFailBeforeStartup(t *testing.T) {
 func TestSignerLoadsConfigAndSecretFiles(t *testing.T) {
 	folder := t.TempDir()
 	rpcFile := filepath.Join(folder, "rpc")
-	keyFile, passwordPath := "/missing/account.json", "/missing/password"
+	keyFile, passwordPath := test.WriteKeystore(t, nil)
 	headersFile := filepath.Join(folder, "headers")
 	webhookFile := filepath.Join(folder, "webhook")
 	require.NoError(t, os.WriteFile(rpcFile, []byte("http://localhost:8545?key=private-token"), 0600))
@@ -142,6 +142,7 @@ DiscoveryGrants = ["localhost:8935"]
 	require.Equal(t, netip.MustParseAddrPort("127.0.0.1:9001"), p.Listen)
 	require.Equal(t, keyFile, p.KeystoreFile)
 	require.Equal(t, passwordPath, p.KeystorePasswordFile)
+	require.NotNil(t, p.KeystorePassword)
 	require.Equal(t, "private-token", p.RPCURL.Query().Get("key"))
 	require.Equal(t, "http://localhost:9000/auth", p.AuthWebhook.String())
 	require.Equal(t, "Bearer private-token", http.Header(p.AuthWebhookHeaders).Get("Authorization"))
@@ -156,6 +157,8 @@ DiscoveryGrants = ["localhost:8935"]
 func loadSignerParams(t *testing.T, args []string, config string) (Params, error) {
 	t.Helper()
 	p := validParams(t)
+	p.KeystorePasswordFile = filepath.Join(t.TempDir(), "password")
+	require.NoError(t, os.WriteFile(p.KeystorePasswordFile, []byte("test"), 0600))
 	args = append([]string(nil), args...)
 	if config != "" {
 		path := filepath.Join(t.TempDir(), "signer.toml")
@@ -269,6 +272,14 @@ func TestSignerReadiness(t *testing.T) {
 				return address
 			}
 			p.Listen, p.MetricsListen = free(), free()
+			if fixedRate {
+				password, err := os.ReadFile(p.KeystorePasswordFile)
+				require.NoError(t, err)
+				t.Setenv("LIVEPEER_SIGNER_KEYSTORE_PASSWORD", string(password))
+				p.KeystorePasswordFile = ""
+				paramsCmd := boa.Cmd[Params]{Params: &p, ParamEnrich: boa.ParamEnricherCombine(boa.ParamEnricherDefault, boa.ParamEnricherEnv, boa.ParamEnricherEnvPrefix("LIVEPEER_SIGNER"))}
+				require.NoError(t, paramsCmd.Validate())
+			}
 			var outbox *eventOutbox
 			if fixedRate {
 				eventBytes, err := json.Marshal(testEvent())
