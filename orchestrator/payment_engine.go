@@ -354,16 +354,24 @@ func (e *PaymentEngine) ChallengePrice(runner, manifest string) (int64, string, 
 // using the recipient HMAC.
 func (e *PaymentEngine) authenticatePayment(payment wire.Payment, auth wire.AuthToken) (pm.TicketParams, *big.Int, error) {
 	p := payment.TicketParams
+	// Accept either complete expiration copy; if both are supplied they must match.
+	expiration := payment.Expiration
+	if expiration.CreationRound == 0 && len(expiration.CreationRoundBlockHash) == 0 {
+		expiration = p.Expiration
+	}
 	if len(payment.PayerAddress) != 20 || len(p.Recipient) != 20 || ethcommon.BytesToAddress(p.Recipient) != e.recipient ||
 		len(p.FaceValue) == 0 || len(p.FaceValue) > 32 || len(p.WinProb) == 0 || len(p.WinProb) > 32 ||
 		len(p.Seed) == 0 || len(p.Seed) > 32 || len(p.ExpirationBlock) == 0 || len(p.ExpirationBlock) > 32 || len(p.RecipientRandHash) != 32 ||
-		payment.Expiration.CreationRound <= 0 || len(payment.Expiration.CreationRoundBlockHash) != 32 ||
-		payment.Expiration.CreationRound != p.Expiration.CreationRound || !bytes.Equal(payment.Expiration.CreationRoundBlockHash, p.Expiration.CreationRoundBlockHash) ||
+		expiration.CreationRound <= 0 || len(expiration.CreationRoundBlockHash) != 32 ||
 		payment.ExpectedPrice.PricePerUnit <= 0 || payment.ExpectedPrice.UnitsPerPrice <= 0 || auth.SessionID == "" || time.Now().Unix() > auth.Expiration ||
 		!hmac.Equal(auth.Token, e.authToken(auth.SessionID, auth.Expiration).Token) {
 		return pm.TicketParams{}, nil, ErrInvalidPayment
 	}
-	params := pm.TicketParams{Recipient: e.recipient, FaceValue: new(big.Int).SetBytes(p.FaceValue), WinProb: new(big.Int).SetBytes(p.WinProb), RecipientRandHash: ethcommon.BytesToHash(p.RecipientRandHash), Seed: new(big.Int).SetBytes(p.Seed), ExpirationBlock: new(big.Int).SetBytes(p.ExpirationBlock), ExpirationParams: &pm.TicketExpirationParams{CreationRound: payment.Expiration.CreationRound, CreationRoundBlockHash: ethcommon.BytesToHash(payment.Expiration.CreationRoundBlockHash)}}
+	if (p.Expiration.CreationRound != 0 || len(p.Expiration.CreationRoundBlockHash) != 0) &&
+		(expiration.CreationRound != p.Expiration.CreationRound || !bytes.Equal(expiration.CreationRoundBlockHash, p.Expiration.CreationRoundBlockHash)) {
+		return pm.TicketParams{}, nil, ErrInvalidPayment
+	}
+	params := pm.TicketParams{Recipient: e.recipient, FaceValue: new(big.Int).SetBytes(p.FaceValue), WinProb: new(big.Int).SetBytes(p.WinProb), RecipientRandHash: ethcommon.BytesToHash(p.RecipientRandHash), Seed: new(big.Int).SetBytes(p.Seed), ExpirationBlock: new(big.Int).SetBytes(p.ExpirationBlock), ExpirationParams: &pm.TicketExpirationParams{CreationRound: expiration.CreationRound, CreationRoundBlockHash: ethcommon.BytesToHash(expiration.CreationRoundBlockHash)}}
 	if params.FaceValue.Sign() <= 0 || params.WinProb.Sign() <= 0 || params.WinProb.Cmp(maxWinProb) >= 0 {
 		return pm.TicketParams{}, nil, ErrInvalidPayment
 	}

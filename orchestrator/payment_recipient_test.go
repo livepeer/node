@@ -135,6 +135,36 @@ func receiveRecipientPayment(t *testing.T, e *PaymentEngine, key *ecdsa.PrivateK
 	return receive()
 }
 
+func TestRecipientHMACExpirationCopies(t *testing.T) {
+	e, _, key, _ := newRecipientTestEngine(t)
+	info := issueRecipientParams(t, e, key)
+	for _, copies := range []string{"both", "top-level", "nested"} {
+		t.Run(copies, func(t *testing.T) {
+			payment := wire.Payment{PayerAddress: crypto.PubkeyToAddress(key.PublicKey).Bytes(), TicketParams: info.TicketParams, Expiration: info.TicketParams.Expiration, ExpectedPrice: info.Price}
+			if copies == "top-level" {
+				// go-livepeer omits the nested copy.
+				payment.TicketParams.Expiration = wire.ExpirationParams{}
+			} else if copies == "nested" {
+				payment.Expiration = wire.ExpirationParams{}
+			}
+			payment, err := wire.DecodePayment(wire.EncodePayment(payment))
+			require.NoError(t, err)
+			params, _, err := e.authenticatePayment(payment, info.Auth)
+			require.NoError(t, err)
+			require.Equal(t, info.TicketParams.Expiration.CreationRound, params.ExpirationParams.CreationRound)
+			require.Equal(t, info.TicketParams.Expiration.CreationRoundBlockHash, params.ExpirationParams.CreationRoundBlockHash.Bytes())
+			if copies != "nested" {
+				payment.Expiration.CreationRound++
+			}
+			if copies != "top-level" {
+				payment.TicketParams.Expiration.CreationRound++
+			}
+			_, _, err = e.authenticatePayment(payment, info.Auth)
+			require.ErrorIs(t, err, ErrInvalidPayment, "the selected expiration must be bound by the HMAC")
+		})
+	}
+}
+
 func TestRecipientHMACRejectsTamperedParameters(t *testing.T) {
 	e, _, key, _ := newRecipientTestEngine(t)
 	original := issueRecipientParams(t, e, key)
@@ -147,6 +177,22 @@ func TestRecipientHMACRejectsTamperedParameters(t *testing.T) {
 		"expiry block":      func(p *wire.Payment, _ *wire.AuthToken) { p.TicketParams.ExpirationBlock = big.NewInt(91).Bytes() },
 		"price numerator":   func(p *wire.Payment, _ *wire.AuthToken) { p.ExpectedPrice.PricePerUnit++ },
 		"price denominator": func(p *wire.Payment, _ *wire.AuthToken) { p.ExpectedPrice.UnitsPerPrice++ },
+		"no expiration": func(p *wire.Payment, _ *wire.AuthToken) {
+			p.Expiration = wire.ExpirationParams{}
+			p.TicketParams.Expiration = wire.ExpirationParams{}
+		},
+		"top round missing": func(p *wire.Payment, _ *wire.AuthToken) { p.Expiration.CreationRound = 0 },
+		"top hash missing":  func(p *wire.Payment, _ *wire.AuthToken) { p.Expiration.CreationRoundBlockHash = nil },
+		"split expiration": func(p *wire.Payment, _ *wire.AuthToken) {
+			p.Expiration.CreationRoundBlockHash = nil
+			p.TicketParams.Expiration.CreationRound = 0
+		},
+		"round conflict": func(p *wire.Payment, _ *wire.AuthToken) { p.TicketParams.Expiration.CreationRound++ },
+		"hash conflict": func(p *wire.Payment, _ *wire.AuthToken) {
+			p.TicketParams.Expiration.CreationRoundBlockHash = ethcommon.HexToHash("0x4321").Bytes()
+		},
+		"round omitted": func(p *wire.Payment, _ *wire.AuthToken) { p.TicketParams.Expiration.CreationRound = 0 },
+		"hash omitted":  func(p *wire.Payment, _ *wire.AuthToken) { p.TicketParams.Expiration.CreationRoundBlockHash = nil },
 		"round": func(p *wire.Payment, _ *wire.AuthToken) {
 			p.Expiration.CreationRound++
 			p.TicketParams.Expiration.CreationRound++
