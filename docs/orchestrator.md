@@ -99,7 +99,7 @@ a lowercase DNS label of at most 63 characters.
 
 Paid operation requires all of these settings:
 
-- `PaymentDB`: persistent SQLite path with an existing parent directory.
+- `RedeemerDB` / `--redeemer-db`: persistent SQLite path for the redeemer
 - `KeystoreFile` and a password: encrypted
   recipient account JSON and its password; see
   [Ethereum keystores](configuration.md#ethereum-keystores).
@@ -119,7 +119,7 @@ every hour; `PriceMaxAge` must be positive and defaults to two hours. Startup
 requires a valid observation. Stale rates suspend new priced discovery and
 reservations; existing sessions retain their agreed wei price.
 
-`PaymentMaxFeePerGas` optionally caps redemption fees in wei per gas. The
+`RedeemerMaxFeePerGas` optionally caps redemption fees in wei per gas. The
 cap is per gas, not a total spending budget. Winning tickets wait until payment
 parameters expire before redemption exposes their randomness on-chain. Only a
 successful, canonical, finalized receipt settles their liability.

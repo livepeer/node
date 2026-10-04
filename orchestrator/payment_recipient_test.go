@@ -1,4 +1,4 @@
-package pm
+package orchestrator
 
 import (
 	"context"
@@ -16,13 +16,14 @@ import (
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/livepeer/node/eth"
+	"github.com/livepeer/node/pm"
 	"github.com/livepeer/node/pm/wire"
 	"github.com/stretchr/testify/require"
 )
 
 // These vectors were produced by running recipient.rand, expiration AuxData,
 // and orchestrator.AuthToken extracted from the pinned go-livepeer revision.
-// Those routines were authored by Yondon Fu and Nico Vergauwen; see recipient.go.
+// Those routines were authored by Yondon Fu and Nico Vergauwen; see payment_recipient.go.
 func TestRecipientHMACMatchesGoLivepeer(t *testing.T) {
 	data, err := os.ReadFile("testdata/recipient-hmac.json")
 	require.NoError(t, err)
@@ -39,7 +40,7 @@ func TestRecipientHMACMatchesGoLivepeer(t *testing.T) {
 	require.Equal(t, "bd645a09266833fb859053445d9ac85846330756", fixture.Revision)
 	secret, err := hex.DecodeString(fixture.Secret)
 	require.NoError(t, err)
-	e := &Engine{}
+	e := &PaymentEngine{}
 	copy(e.secret[:], secret)
 	copy(e.authSecret[:], secret)
 	num := func(s string) *big.Int {
@@ -51,7 +52,7 @@ func TestRecipientHMACMatchesGoLivepeer(t *testing.T) {
 		t.Run(v.Session, func(t *testing.T) {
 			price, ok := new(big.Rat).SetString(v.Price)
 			require.True(t, ok)
-			random := e.recipientRand(num(v.Seed), ethcommon.HexToAddress(v.PayerAddress), num(v.FaceValue), num(v.WinProb), num(v.ExpirationBlock), price, &TicketExpirationParams{CreationRound: v.Round, CreationRoundBlockHash: ethcommon.HexToHash(v.RoundHash)})
+			random := e.recipientRand(num(v.Seed), ethcommon.HexToAddress(v.PayerAddress), num(v.FaceValue), num(v.WinProb), num(v.ExpirationBlock), price, &pm.TicketExpirationParams{CreationRound: v.Round, CreationRoundBlockHash: ethcommon.HexToHash(v.RoundHash)})
 			raw := ethcommon.LeftPadBytes(random.Bytes(), 32)
 			require.Equal(t, v.Random, hex.EncodeToString(raw))
 			require.Equal(t, v.Commitment, crypto.Keccak256Hash(raw).Hex())
@@ -65,32 +66,32 @@ type recipientTestChain struct {
 	active bool
 }
 
-func (c *recipientTestChain) Snapshot(context.Context) (ChainSnapshot, error) {
-	return ChainSnapshot{Block: big.NewInt(c.block), Round: big.NewInt(5), RoundHash: ethcommon.HexToHash("0x1234")}, nil
+func (c *recipientTestChain) Snapshot(context.Context) (pm.ChainSnapshot, error) {
+	return pm.ChainSnapshot{Block: big.NewInt(c.block), Round: big.NewInt(5), RoundHash: ethcommon.HexToHash("0x1234")}, nil
 }
-func (c *recipientTestChain) IsActiveAt(context.Context, ethcommon.Address, ChainSnapshot) (bool, error) {
+func (c *recipientTestChain) IsActiveAt(context.Context, ethcommon.Address, pm.ChainSnapshot) (bool, error) {
 	return c.active, nil
 }
-func (c *recipientTestChain) PayerFunds(ctx context.Context, _, _ ethcommon.Address) (PayerFunds, error) {
+func (c *recipientTestChain) PayerFunds(ctx context.Context, _, _ ethcommon.Address) (pm.PayerFunds, error) {
 	snapshot, err := c.Snapshot(ctx)
-	return PayerFunds{Snapshot: snapshot, Deposit: big.NewInt(1000000000), Reserve: big.NewInt(1000000000), WithdrawRound: new(big.Int)}, err
+	return pm.PayerFunds{Snapshot: snapshot, Deposit: big.NewInt(1000000000), Reserve: big.NewInt(1000000000), WithdrawRound: new(big.Int)}, err
 }
 
-func newRecipientTestEngine(t *testing.T) (*Engine, *recipientTestChain, *ecdsa.PrivateKey, string) {
+func newRecipientTestEngine(t *testing.T) (*PaymentEngine, *recipientTestChain, *ecdsa.PrivateKey, string) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "payments.sqlite")
-	store, err := OpenSQLite(path)
+	store, err := OpenRedeemerDB(path)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, store.Close()) })
 	chain := &recipientTestChain{active: true, block: 50}
-	e, err := NewEngine(store, chain, ethcommon.HexToAddress("0x1234"), big.NewInt(10), new(big.Int).Sub(maxWinProb, big.NewInt(1)))
+	e, err := NewPaymentEngine(store, chain, ethcommon.HexToAddress("0x1234"), big.NewInt(10), new(big.Int).Sub(maxWinProb, big.NewInt(1)))
 	require.NoError(t, err)
 	key, err := crypto.GenerateKey()
 	require.NoError(t, err)
 	return e, chain, key, path
 }
 
-func issueRecipientParams(t *testing.T, e *Engine, key *ecdsa.PrivateKey) wire.OrchestratorInfo {
+func issueRecipientParams(t *testing.T, e *PaymentEngine, key *ecdsa.PrivateKey) wire.OrchestratorInfo {
 	t.Helper()
 	challenge, err := e.MakeChallenge(t.Context(), "runner", "session", crypto.PubkeyToAddress(key.PublicKey), 9, "fixed", "https://orch.example")
 	require.NoError(t, err)
@@ -101,12 +102,12 @@ func issueRecipientParams(t *testing.T, e *Engine, key *ecdsa.PrivateKey) wire.O
 	return info
 }
 
-func receiveRecipientPayment(t *testing.T, e *Engine, key *ecdsa.PrivateKey, info wire.OrchestratorInfo, nonces ...uint32) error {
+func receiveRecipientPayment(t *testing.T, e *PaymentEngine, key *ecdsa.PrivateKey, info wire.OrchestratorInfo, nonces ...uint32) error {
 	t.Helper()
 	payer := crypto.PubkeyToAddress(key.PublicKey)
 	p := info.TicketParams
-	params := TicketParams{Recipient: ethcommon.BytesToAddress(p.Recipient), FaceValue: new(big.Int).SetBytes(p.FaceValue), WinProb: new(big.Int).SetBytes(p.WinProb), RecipientRandHash: ethcommon.BytesToHash(p.RecipientRandHash), ExpirationBlock: new(big.Int).SetBytes(p.ExpirationBlock)}
-	expiration := &TicketExpirationParams{CreationRound: p.Expiration.CreationRound, CreationRoundBlockHash: ethcommon.BytesToHash(p.Expiration.CreationRoundBlockHash)}
+	params := pm.TicketParams{Recipient: ethcommon.BytesToAddress(p.Recipient), FaceValue: new(big.Int).SetBytes(p.FaceValue), WinProb: new(big.Int).SetBytes(p.WinProb), RecipientRandHash: ethcommon.BytesToHash(p.RecipientRandHash), ExpirationBlock: new(big.Int).SetBytes(p.ExpirationBlock)}
+	expiration := &pm.TicketExpirationParams{CreationRound: p.Expiration.CreationRound, CreationRoundBlockHash: ethcommon.BytesToHash(p.Expiration.CreationRoundBlockHash)}
 	sign := func(msg []byte) []byte {
 		sig, err := crypto.Sign(accounts.TextHash(msg), key)
 		require.NoError(t, err)
@@ -115,7 +116,7 @@ func receiveRecipientPayment(t *testing.T, e *Engine, key *ecdsa.PrivateKey, inf
 	}
 	payment := wire.Payment{PayerAddress: payer.Bytes(), TicketParams: p, Expiration: p.Expiration, ExpectedPrice: info.Price}
 	for _, nonce := range nonces {
-		ticket := NewTicket(&params, expiration, payer, nonce)
+		ticket := pm.NewTicket(&params, expiration, payer, nonce)
 		payment.PayerParams = append(payment.PayerParams, wire.TicketPayerParams{TicketNonce: nonce, Sig: sign(ticket.Hash().Bytes())})
 	}
 	hash := crypto.Keccak256(nil)
@@ -216,10 +217,10 @@ func TestRecipientRestartRotatesSecretsAndPreservesWinningTickets(t *testing.T) 
 	require.NoError(t, err)
 	require.NotNil(t, winner)
 	require.NoError(t, e.store.Close())
-	store, err := OpenSQLite(path)
+	store, err := OpenRedeemerDB(path)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, store.Close()) })
-	restarted, err := NewEngine(store, chain, e.recipient, e.faceValue, e.winProb)
+	restarted, err := NewPaymentEngine(store, chain, e.recipient, e.faceValue, e.winProb)
 	require.NoError(t, err)
 	_, err = restarted.ChallengeInfo("session")
 	require.ErrorIs(t, err, ErrMissingChallenge)
@@ -261,4 +262,26 @@ func TestRecipientRejectsParametersOnceRedemptionPrepared(t *testing.T) {
 	after, err := e.Balance("session")
 	require.NoError(t, err)
 	require.Equal(t, before.RatString(), after.RatString())
+}
+
+func TestRecipientStorageFailureDoesNotPublishCreditOrConsumeNonces(t *testing.T) {
+	e, _, key, _ := newRecipientTestEngine(t)
+	info := issueRecipientParams(t, e, key)
+	_, err := e.store.db.Exec(`CREATE TRIGGER reject_second_ticket BEFORE INSERT ON winning_tickets
+		WHEN NEW.ticket_nonce=2 BEGIN SELECT RAISE(ABORT, 'storage failure'); END`)
+	require.NoError(t, err)
+	require.ErrorContains(t, receiveRecipientPayment(t, e, key, info, 1, 2), "storage failure")
+	count, err := e.store.WinningTicketCount(crypto.PubkeyToAddress(key.PublicKey), 0)
+	require.NoError(t, err)
+	require.Zero(t, count, "partial inserts must roll back")
+	balance, err := e.Balance("session")
+	require.NoError(t, err)
+	require.Zero(t, balance.Sign())
+	require.Zero(t, e.nonceCount)
+	_, err = e.store.db.Exec(`DROP TRIGGER reject_second_ticket`)
+	require.NoError(t, err)
+	require.NoError(t, receiveRecipientPayment(t, e, key, info, 1, 2), "storage failure must leave both nonces retryable")
+	count, err = e.store.WinningTicketCount(crypto.PubkeyToAddress(key.PublicKey), 0)
+	require.NoError(t, err)
+	require.Equal(t, 2, count)
 }

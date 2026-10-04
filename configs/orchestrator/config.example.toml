@@ -18,13 +18,13 @@ HealthGrants = []
 # Runner prices are USD per hour or per fixed request. Choose WeiPerUSD
 # for a fixed conversion OR ETHUSDFeed for an ETH/USD feed on the payment
 # chain. The fee ceiling and PriceMaxAge are optional. See docs/orchestrator.md.
-# PaymentDB = "/var/lib/livepeer/orchestrator-payment.sqlite"
+# RedeemerDB = "/var/lib/livepeer/orchestrator-redeemer.sqlite"
 # KeystoreFile = "/run/secrets/livepeer-orchestrator-keystore.json"
 # KeystorePasswordFile = "/run/secrets/livepeer-orchestrator-keystore-password"
 # Both files must be owner-only; the password is read as exact bytes (no newline).
 # Or use LIVEPEER_ORCHESTRATOR_KEYSTORE_PASSWORD and omit KeystorePasswordFile.
 # PaymentRPCURLFile = "/run/secrets/livepeer-payment-rpc-url"
-# PaymentMaxFeePerGas = "1000000000" # Optional ceiling, wei per gas
+# RedeemerMaxFeePerGas = "1000000000" # Optional ceiling, wei per gas
 # PaymentChainID = 42161
 # PaymentController = "0x0123456789abcdef0123456789abcdef01234567"
 # WeiPerUSD = "1000000000000000"

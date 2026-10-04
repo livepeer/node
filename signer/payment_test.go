@@ -15,6 +15,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/livepeer/node/eth"
 	"github.com/livepeer/node/internal/test"
+	"github.com/livepeer/node/orchestrator"
 	"github.com/livepeer/node/pm"
 	"github.com/livepeer/node/pm/wire"
 	"github.com/stretchr/testify/require"
@@ -112,11 +113,11 @@ func (c collateralChain) PayerFunds(ctx context.Context, _, _ ethcommon.Address)
 
 func TestRecipientReservesWinningLiabilityAcrossConcurrentSessions(t *testing.T) {
 	key, _, _ := testSignerKey(t)
-	store, err := pm.OpenSQLite(filepath.Join(t.TempDir(), "recipient.sqlite"))
+	store, err := orchestrator.OpenRedeemerDB(filepath.Join(t.TempDir(), "recipient.sqlite"))
 	require.NoError(t, err)
 	defer store.Close()
 	chain := collateralChain{new(big.Int)}
-	engine, err := pm.NewEngine(store, chain, ethcommon.HexToAddress("0x1234"), big.NewInt(10), new(big.Int).Sub(new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1)), big.NewInt(1)))
+	engine, err := orchestrator.NewPaymentEngine(store, chain, ethcommon.HexToAddress("0x1234"), big.NewInt(10), new(big.Int).Sub(new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1)), big.NewInt(1)))
 	require.NoError(t, err)
 	s := newService(key)
 	s.SetPaymentChain(chain)

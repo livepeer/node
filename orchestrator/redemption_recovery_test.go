@@ -1,4 +1,4 @@
-package pm
+package orchestrator
 
 import (
 	"encoding/hex"
@@ -15,6 +15,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/livepeer/node/eth"
 	"github.com/livepeer/node/internal/test"
+	"github.com/livepeer/node/pm"
 	"github.com/stretchr/testify/require"
 )
 
@@ -25,10 +26,10 @@ func TestRedemptionRecoveryBeforeAndAfterBroadcast(t *testing.T) {
 			key, err := eth.OpenKeystoreFile(keyFile, passwordPath)
 			require.NoError(t, err)
 			path := filepath.Join(t.TempDir(), "payments.sqlite")
-			store, err := OpenSQLite(path)
+			store, err := OpenRedeemerDB(path)
 			require.NoError(t, err)
 			defer func() { _ = store.Close() }()
-			ticket := &SignedTicket{Ticket: &Ticket{PayerAddress: ethcommon.HexToAddress("0x1234"), Recipient: key.Address(), FaceValue: big.NewInt(10), WinProb: big.NewInt(100), TicketNonce: 1, RecipientRandHash: ethcommon.HexToHash("0xabcd"), CreationRound: 5, ParamsExpirationBlock: big.NewInt(10)}, Sig: []byte{1, 2, 3}, RecipientRand: big.NewInt(4)}
+			ticket := &pm.SignedTicket{Ticket: &pm.Ticket{PayerAddress: ethcommon.HexToAddress("0x1234"), Recipient: key.Address(), FaceValue: big.NewInt(10), WinProb: big.NewInt(100), TicketNonce: 1, RecipientRandHash: ethcommon.HexToHash("0xabcd"), CreationRound: 5, ParamsExpirationBlock: big.NewInt(10)}, Sig: []byte{1, 2, 3}, RecipientRand: big.NewInt(4)}
 			require.NoError(t, store.StoreWinningTicket(ticket))
 			var fail atomic.Bool
 			fail.Store(true)
@@ -94,7 +95,7 @@ func TestRedemptionRecoveryBeforeAndAfterBroadcast(t *testing.T) {
 				require.NotEmpty(t, RedeemPending(t.Context(), store, chain, key, big.NewInt(1), snapshot))
 			}
 			require.NoError(t, store.Close())
-			store, err = OpenSQLite(path)
+			store, err = OpenRedeemerDB(path)
 			require.NoError(t, err)
 			fail.Store(false)
 			require.Empty(t, RedeemPending(t.Context(), store, chain, key, big.NewInt(1), snapshot))
@@ -119,13 +120,13 @@ func TestRedemptionRecoveryBeforeAndAfterBroadcast(t *testing.T) {
 				// A fresh client sees the same stale RPC nonce after restart.
 				// Saved, confirmed identities must still reserve their nonce.
 				require.NoError(t, store.Close())
-				store, err = OpenSQLite(path)
+				store, err = OpenRedeemerDB(path)
 				require.NoError(t, err)
 				contracts, err = eth.OpenContracts(rpc, ethcommon.HexToAddress("0x1000").Hex())
 				require.NoError(t, err)
 				chain = eth.PaymentChain{Contracts: contracts}
 				next := *ticket
-				next.Ticket = &Ticket{PayerAddress: ticket.PayerAddress, Recipient: ticket.Recipient, FaceValue: ticket.FaceValue, WinProb: ticket.WinProb, TicketNonce: 2, RecipientRandHash: ticket.RecipientRandHash, CreationRound: 5, ParamsExpirationBlock: big.NewInt(10)}
+				next.Ticket = &pm.Ticket{PayerAddress: ticket.PayerAddress, Recipient: ticket.Recipient, FaceValue: ticket.FaceValue, WinProb: ticket.WinProb, TicketNonce: 2, RecipientRandHash: ticket.RecipientRandHash, CreationRound: 5, ParamsExpirationBlock: big.NewInt(10)}
 				next.Sig = []byte{4, 5, 6}
 				require.NoError(t, store.StoreWinningTicket(&next))
 				firstRaw = ""

@@ -1,4 +1,4 @@
-package pm
+package orchestrator
 
 import (
 	"context"
@@ -11,11 +11,12 @@ import (
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/livepeer/node/eth"
+	"github.com/livepeer/node/pm"
 )
 
 // SavedNonceFloor reserves every signed identity across process restarts,
 // including confirmed/reverted attempts that an RPC may omit from pending.
-func (s *SQLiteStore) SavedNonceFloor(ctx context.Context, address ethcommon.Address) (uint64, error) {
+func (s *RedeemerDB) SavedNonceFloor(ctx context.Context, address ethcommon.Address) (uint64, error) {
 	var raw string
 	err := s.db.QueryRowContext(ctx, "SELECT nonce FROM redemption_attempts WHERE redeemer_address=? AND nonce IS NOT NULL ORDER BY length(nonce) DESC, nonce DESC LIMIT 1", address.Hex()).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -31,7 +32,7 @@ func (s *SQLiteStore) SavedNonceFloor(ctx context.Context, address ethcommon.Add
 	return nonce + 1, nil
 }
 
-func (s *SQLiteStore) recordPrepared(ctx context.Context, ticket *SignedTicket, prepared eth.SignedTransaction) error {
+func (s *RedeemerDB) recordPrepared(ctx context.Context, ticket *pm.SignedTicket, prepared eth.SignedTransaction) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -63,7 +64,7 @@ type RedemptionStatus struct {
 	Error string `json:"error,omitempty"`
 }
 
-func (s *SQLiteStore) Redemptions() ([]RedemptionStatus, error) {
+func (s *RedeemerDB) Redemptions() ([]RedemptionStatus, error) {
 	rows, err := s.db.Query("SELECT COALESCE(w.tx_hash,''),a.phase,COALESCE(a.error,'') FROM redemption_attempts a JOIN winning_tickets w ON w.sig=a.sig ORDER BY a.attempted_at")
 	if err != nil {
 		return nil, err
@@ -82,7 +83,7 @@ func (s *SQLiteStore) Redemptions() ([]RedemptionStatus, error) {
 
 // RetryRedemption is an explicit operator action after an uncertain broadcast.
 // It can only send the identical stored transaction, preserving its nonce/hash.
-func RetryRedemption(ctx context.Context, store *SQLiteStore, contracts *eth.Contracts, hash ethcommon.Hash) error {
+func RetryRedemption(ctx context.Context, store *RedeemerDB, contracts *eth.Contracts, hash ethcommon.Hash) error {
 	var sig, raw []byte
 	var phase string
 	err := store.db.QueryRow("SELECT a.sig,a.raw_transaction,a.phase FROM redemption_attempts a JOIN winning_tickets w ON w.sig=a.sig WHERE w.tx_hash=?", hash.Hex()).Scan(&sig, &raw, &phase)
@@ -95,7 +96,7 @@ func RetryRedemption(ctx context.Context, store *SQLiteStore, contracts *eth.Con
 	return broadcastRedemption(ctx, store, contracts, sig, eth.SignedTransaction{Hash: hash, Raw: raw})
 }
 
-func broadcastRedemption(ctx context.Context, store *SQLiteStore, contracts *eth.Contracts, sig []byte, tx eth.SignedTransaction) error {
+func broadcastRedemption(ctx context.Context, store *RedeemerDB, contracts *eth.Contracts, sig []byte, tx eth.SignedTransaction) error {
 	result, err := store.db.Exec("UPDATE redemption_attempts SET phase='broadcast',error=NULL WHERE sig=? AND phase IN ('prepared','broadcast','submitted')", sig)
 	if err != nil {
 		return err

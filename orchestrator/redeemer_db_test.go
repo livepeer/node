@@ -1,4 +1,4 @@
-package pm
+package orchestrator
 
 import (
 	"context"
@@ -9,6 +9,7 @@ import (
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/livepeer/node/eth"
+	"github.com/livepeer/node/pm"
 	"github.com/stretchr/testify/require"
 )
 
@@ -18,27 +19,27 @@ func (r receiptFixture) Receipt(context.Context, ethcommon.Hash) (bool, bool, er
 	return r.confirmed, r.reverted, nil
 }
 
-func TestPaymentSQLiteFilePermissions(t *testing.T) {
+func TestRedeemerSQLiteFilePermissions(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "payment.sqlite")
-	store, err := OpenSQLite(path)
+	store, err := OpenRedeemerDB(path)
 	require.NoError(t, err)
 	require.NoError(t, store.Close())
 	info, err := os.Stat(path)
 	require.NoError(t, err)
 	require.Equal(t, os.FileMode(0600), info.Mode().Perm())
 	require.NoError(t, os.Chmod(path, 0644))
-	_, err = OpenSQLite(path)
+	_, err = OpenRedeemerDB(path)
 	require.ErrorContains(t, err, "owner-only")
 }
 
 // Adapted from go-livepeer/common/db_test.go's winning-ticket store tests,
 // by Elad Mallel and Nico Vergauwen (404d24a9455cd0997af1be6d18faa998702cce69).
 func TestSQLiteWinningTicketLifecycle(t *testing.T) {
-	store, err := OpenSQLite(filepath.Join(t.TempDir(), "recipient.sqlite"))
+	store, err := OpenRedeemerDB(filepath.Join(t.TempDir(), "recipient.sqlite"))
 	require.NoError(t, err)
 	defer store.Close()
 	payer := ethcommon.HexToAddress("0x1234")
-	ticket := &SignedTicket{Ticket: &Ticket{PayerAddress: payer, Recipient: ethcommon.HexToAddress("0x5678"),
+	ticket := &pm.SignedTicket{Ticket: &pm.Ticket{PayerAddress: payer, Recipient: ethcommon.HexToAddress("0x5678"),
 		FaceValue: big.NewInt(1234), WinProb: big.NewInt(2345), TicketNonce: 123,
 		RecipientRandHash: ethcommon.HexToHash("0xabcd"), CreationRound: 9,
 		CreationRoundBlockHash: ethcommon.HexToHash("0x9876"), ParamsExpirationBlock: big.NewInt(1337)},
@@ -63,11 +64,11 @@ func TestSQLiteWinningTicketLifecycle(t *testing.T) {
 func TestRedemptionReceiptSettlesAttempt(t *testing.T) {
 	for _, phase := range []string{"confirmed", "reverted"} {
 		t.Run(phase, func(t *testing.T) {
-			store, err := OpenSQLite(filepath.Join(t.TempDir(), "recipient.sqlite"))
+			store, err := OpenRedeemerDB(filepath.Join(t.TempDir(), "recipient.sqlite"))
 			require.NoError(t, err)
 			defer store.Close()
 			payer := ethcommon.HexToAddress("0x1234")
-			ticket := &SignedTicket{Ticket: &Ticket{PayerAddress: payer, Recipient: ethcommon.HexToAddress("0x5678"), FaceValue: big.NewInt(1), WinProb: big.NewInt(1), TicketNonce: 1, RecipientRandHash: ethcommon.HexToHash("0xabcd"), CreationRound: 1, ParamsExpirationBlock: big.NewInt(10)}, Sig: []byte{1, 2, 3}, RecipientRand: big.NewInt(4)}
+			ticket := &pm.SignedTicket{Ticket: &pm.Ticket{PayerAddress: payer, Recipient: ethcommon.HexToAddress("0x5678"), FaceValue: big.NewInt(1), WinProb: big.NewInt(1), TicketNonce: 1, RecipientRandHash: ethcommon.HexToHash("0xabcd"), CreationRound: 1, ParamsExpirationBlock: big.NewInt(10)}, Sig: []byte{1, 2, 3}, RecipientRand: big.NewInt(4)}
 			require.NoError(t, store.StoreWinningTicket(ticket))
 			hash := ethcommon.HexToHash("0x1234")
 			require.NoError(t, store.recordPrepared(t.Context(), ticket, eth.SignedTransaction{Hash: hash, Raw: []byte{1}, From: ticket.Recipient, Nonce: 1}))
@@ -96,7 +97,7 @@ func TestRedemptionReceiptSettlesAttempt(t *testing.T) {
 }
 
 func TestSQLiteOrchestratorRoundView(t *testing.T) {
-	store, err := OpenSQLite(filepath.Join(t.TempDir(), "recipient.sqlite"))
+	store, err := OpenRedeemerDB(filepath.Join(t.TempDir(), "recipient.sqlite"))
 	require.NoError(t, err)
 	defer store.Close()
 	addr := ethcommon.HexToAddress("0x1234")

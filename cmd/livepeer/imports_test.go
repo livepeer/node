@@ -51,6 +51,9 @@ func TestImportLattice(t *testing.T) {
 }
 
 func forbiddenImport(file, dep string) string {
+	if strings.HasPrefix(file, "pm/") && (dep == "database/sql" || dep == "modernc.org/sqlite" || dep == module+"migrations") {
+		return "payment primitives import SQL persistence"
+	}
 	if strings.HasPrefix(dep, "google.golang.org/protobuf") && !strings.HasPrefix(file, "pm/wire/") {
 		return "Protobuf runtime outside pm/wire"
 	}
@@ -60,7 +63,7 @@ func forbiddenImport(file, dep string) string {
 	local := strings.TrimPrefix(dep, module)
 	// A real HTTP compatibility test may compose component handlers without
 	// creating a production dependency between those components.
-	if file == "orchestrator/payment_test.go" && local == "signer" {
+	if file == "orchestrator/payment_test.go" && local == "signer" || file == "signer/payment_test.go" && local == "orchestrator" {
 		return ""
 	}
 	if strings.HasPrefix(file, "cmd/livepeer/") && local != "version" {
@@ -74,8 +77,8 @@ func forbiddenImport(file, dep string) string {
 			return "cross-component or shared-to-component import"
 		}
 	}
-	if strings.HasPrefix(local, "pm/wire") && !strings.HasPrefix(file, "signer/") && !strings.HasPrefix(file, "pm/") {
-		return "payment wire import outside signer or pm"
+	if strings.HasPrefix(local, "pm/wire") && !strings.HasPrefix(file, "signer/") && !strings.HasPrefix(file, "pm/") && !strings.HasPrefix(file, "orchestrator/") {
+		return "payment wire import outside signer, orchestrator or pm"
 	}
 	if (local == "pm" || strings.HasPrefix(local, "pm/")) && (strings.HasPrefix(file, "chain/") || strings.HasPrefix(file, "eth/")) {
 		return "chain or Ethereum package imports payment implementation"

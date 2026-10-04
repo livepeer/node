@@ -10,12 +10,11 @@ import (
 	"github.com/j0sh/boa/pkg/boa"
 	"github.com/livepeer/node/destination"
 	"github.com/livepeer/node/eth"
-	"github.com/livepeer/node/pm"
 	"github.com/spf13/cobra"
 )
 
 type redemptionParams struct {
-	PaymentDB  string          `file:"true" descr:"Existing recipient SQLite database"`
+	RedeemerDB string          `file:"true" descr:"Existing recipient SQLite database"`
 	Retry      *ethcommon.Hash `name:"retry-transaction" descr:"Rebroadcast the exact stored bytes for this transaction hash"`
 	Submit     bool            `optional:"true" boa:"noconfig,noenv" descr:"Explicitly authorize rebroadcast"`
 	RPCURL     *url.URL        `name:"rpc-url" secret:"true" optional:"true"`
@@ -46,7 +45,7 @@ func redemptionCommand() *cobra.Command {
 		RejectUnknown: true, Args: cobra.NoArgs,
 		ParamEnrich: boa.ParamEnricherCombine(boa.ParamEnricherDefault, boa.ParamEnricherEnv, boa.ParamEnricherEnvPrefix("LIVEPEER_ORCHESTRATOR")),
 		RunFuncE: func(p *redemptionParams, cmd *cobra.Command, _ []string) error {
-			store, err := pm.OpenSQLite(p.PaymentDB)
+			store, err := OpenRedeemerDB(p.RedeemerDB)
 			if err != nil {
 				return err
 			}
@@ -60,7 +59,7 @@ func redemptionCommand() *cobra.Command {
 				if err := rpc.CheckChainID(cmd.Context(), new(big.Int).SetUint64(*p.ChainID)); err != nil {
 					return err
 				}
-				err = pm.RetryRedemption(cmd.Context(), store, &eth.Contracts{RPC: rpc}, *p.Retry)
+				err = RetryRedemption(cmd.Context(), store, &eth.Contracts{RPC: rpc}, *p.Retry)
 				if err != nil {
 					return err
 				}

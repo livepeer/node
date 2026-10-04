@@ -40,14 +40,14 @@ type Params struct {
 	BootstrapSecret      string             `secret:"true" optional:"true" descr:"Dynamic runner bootstrap credential"`
 	BootstrapSecretFile  string             `secretfor:"BootstrapSecret" descr:"File containing runner bootstrap credential"`
 	RunnerConfig         string             `optional:"true" file:"true" descr:"Static runner TOML path"`
-	PaymentDB            string             `optional:"true"`
+	RedeemerDB           string             `optional:"true"`
 	KeystoreFile         string             `optional:"true" descr:"Encrypted geth redemption account JSON file"`
 	KeystorePassword     *string            `secret:"true" optional:"true" descr:"Keystore decryption password"`
 	KeystorePasswordFile string             `secretfor:"KeystorePassword" descr:"Owner-only file containing the exact keystore password bytes"`
 	PaymentRPCURL        *url.URL           `name:"payment-rpc-url" secret:"true" optional:"true"`
 	PaymentRPCURLFile    string             `name:"payment-rpc-url-file" secretfor:"PaymentRPCURL"`
 	PaymentChainID       *uint64            `min:"1"`
-	PaymentMaxFeePerGas  *uint256.Int       `descr:"Optional maximum redemption fee in wei per gas"`
+	RedeemerMaxFeePerGas *uint256.Int       `descr:"Optional maximum redemption fee in wei per gas"`
 	PaymentController    *ethcommon.Address `name:"payment-controller-address"`
 	WeiPerUSD            *big.Rat
 	TicketFaceValue      *uint256.Int
@@ -65,7 +65,7 @@ func unmarshalConfig(data []byte, target any) error {
 	// through them. Boa restores higher-priority values after decoding.
 	if p, ok := target.(*Params); ok {
 		p.PaymentChainID, p.PaymentController, p.ETHUSDFeed = nil, nil, nil
-		p.PaymentMaxFeePerGas, p.TicketFaceValue, p.TicketWinProb = nil, nil, nil
+		p.RedeemerMaxFeePerGas, p.TicketFaceValue, p.TicketWinProb = nil, nil, nil
 		p.WeiPerUSD = nil
 	}
 	return toml.Unmarshal(data, target)
@@ -75,10 +75,10 @@ func (p Params) Validate() error {
 	if p.BootstrapSecret == "" && p.RunnerConfig == "" {
 		return errors.New("bootstrap secret or static runner config is required")
 	}
-	paymentRequested := p.KeystoreFile != "" || p.KeystorePassword != nil || p.KeystorePasswordFile != "" || p.PaymentDB != "" || p.PaymentRPCURL != nil || p.PaymentChainID != nil || p.PaymentController != nil || p.WeiPerUSD != nil || p.ETHUSDFeed != nil || p.TicketFaceValue != nil || p.TicketWinProb != nil || p.PaymentMaxFeePerGas != nil
+	paymentRequested := p.KeystoreFile != "" || p.KeystorePassword != nil || p.KeystorePasswordFile != "" || p.RedeemerDB != "" || p.PaymentRPCURL != nil || p.PaymentChainID != nil || p.PaymentController != nil || p.WeiPerUSD != nil || p.ETHUSDFeed != nil || p.TicketFaceValue != nil || p.TicketWinProb != nil || p.RedeemerMaxFeePerGas != nil
 	if paymentRequested {
-		if p.KeystoreFile == "" || p.KeystorePassword == nil && p.KeystorePasswordFile == "" || p.PaymentDB == "" || p.PaymentRPCURL == nil || p.PaymentChainID == nil || p.PaymentController == nil || (p.WeiPerUSD == nil && p.ETHUSDFeed == nil) || p.TicketFaceValue == nil || p.TicketWinProb == nil {
-			return errors.New("on-chain payment requires payment-db, keystore-file, keystore-password or keystore-password-file, RPC, chain-id, controller, a fixed rate or ETH/USD feed, face-value and win-prob")
+		if p.KeystoreFile == "" || p.KeystorePassword == nil && p.KeystorePasswordFile == "" || p.RedeemerDB == "" || p.PaymentRPCURL == nil || p.PaymentChainID == nil || p.PaymentController == nil || (p.WeiPerUSD == nil && p.ETHUSDFeed == nil) || p.TicketFaceValue == nil || p.TicketWinProb == nil {
+			return errors.New("on-chain payment requires redeemer-db, keystore-file, keystore-password or keystore-password-file, RPC, chain-id, controller, a fixed rate or ETH/USD feed, face-value and win-prob")
 		}
 		if *p.PaymentController == (ethcommon.Address{}) {
 			return errors.New("payment-controller-address must be nonzero")
@@ -89,8 +89,8 @@ func (p Params) Validate() error {
 		if p.TicketWinProb.Eq(new(uint256.Int).SetAllOne()) {
 			return errors.New("ticket-win-prob must be less than 2^256 - 1")
 		}
-		if p.PaymentMaxFeePerGas != nil && p.PaymentMaxFeePerGas.IsZero() {
-			return errors.New("payment-max-fee-per-gas must be positive")
+		if p.RedeemerMaxFeePerGas != nil && p.RedeemerMaxFeePerGas.IsZero() {
+			return errors.New("redeemer-max-fee-per-gas must be positive")
 		}
 		if p.ETHUSDFeed != nil {
 			if p.WeiPerUSD != nil || *p.ETHUSDFeed == (ethcommon.Address{}) || p.PriceMaxAge <= 0 {
@@ -172,7 +172,7 @@ func printConfig(ctx *boa.HookContext, p *Params, out io.Writer) error {
 		"Listen": &p.Listen, "MetricsListen": &p.MetricsListen,
 		"RunnerGrants": &p.RunnerGrants, "SessionProxyGrants": &p.SessionProxyGrants, "HealthGrants": &p.HealthGrants,
 		"HeartbeatInterval": &p.HeartbeatInterval, "HeartbeatTTL": &p.HeartbeatTTL,
-		"PaymentDB": &p.PaymentDB, "PaymentChainID": &p.PaymentChainID, "PaymentMaxFeePerGas": &p.PaymentMaxFeePerGas,
+		"RedeemerDB": &p.RedeemerDB, "PaymentChainID": &p.PaymentChainID, "RedeemerMaxFeePerGas": &p.RedeemerMaxFeePerGas,
 		"PaymentController": &p.PaymentController, "WeiPerUSD": &p.WeiPerUSD, "ETHUSDFeed": &p.ETHUSDFeed,
 		"PriceMaxAge": &p.PriceMaxAge, "TicketFaceValue": &p.TicketFaceValue, "TicketWinProb": &p.TicketWinProb,
 	}
@@ -229,8 +229,8 @@ func Serve(parent context.Context, p Params, logOut io.Writer) (result error) {
 	}
 	registry := NewRegistry(p.BootstrapSecret, p.ServiceURL.String(), p.HeartbeatInterval, p.HeartbeatTTL)
 	registry.runnerService = strings.TrimRight(p.RunnerServiceURL.String(), "/")
-	var engine *pm.Engine
-	var paymentStore *pm.SQLiteStore
+	var engine *PaymentEngine
+	var redeemerDB *RedeemerDB
 	var paymentChain eth.PaymentChain
 	var redeemerKey *eth.Key
 	var paymentChainID *big.Int
@@ -240,11 +240,11 @@ func Serve(parent context.Context, p Params, logOut io.Writer) (result error) {
 		if err != nil {
 			return err
 		}
-		paymentStore, err = pm.OpenSQLite(p.PaymentDB)
+		redeemerDB, err = OpenRedeemerDB(p.RedeemerDB)
 		if err != nil {
 			return err
 		}
-		defer paymentStore.Close()
+		defer redeemerDB.Close()
 		rpc, err := eth.NewRPC(p.PaymentRPCURL, nil)
 		if err != nil {
 			return err
@@ -258,8 +258,8 @@ func Serve(parent context.Context, p Params, logOut io.Writer) (result error) {
 		if err != nil {
 			return err
 		}
-		if p.PaymentMaxFeePerGas != nil {
-			contracts.MaxFeePerGas = p.PaymentMaxFeePerGas.ToBig()
+		if p.RedeemerMaxFeePerGas != nil {
+			contracts.MaxFeePerGas = p.RedeemerMaxFeePerGas.ToBig()
 		}
 		paymentChain = eth.PaymentChain{Contracts: contracts}
 		if p.ETHUSDFeed != nil {
@@ -269,7 +269,7 @@ func Serve(parent context.Context, p Params, logOut io.Writer) (result error) {
 			}
 			registry.setRate(rate, until)
 		}
-		engine, err = pm.NewEngine(paymentStore, pm.EthereumChain{Client: paymentChain}, redeemerKey.Address(), p.TicketFaceValue.ToBig(), p.TicketWinProb.ToBig())
+		engine, err = NewPaymentEngine(redeemerDB, pm.EthereumChain{Client: paymentChain}, redeemerKey.Address(), p.TicketFaceValue.ToBig(), p.TicketWinProb.ToBig())
 		if err != nil {
 			return err
 		}
@@ -353,8 +353,8 @@ func Serve(parent context.Context, p Params, logOut io.Writer) (result error) {
 			}
 		})
 		startWorker(p.HeartbeatInterval, 30*time.Second, func(ctx context.Context) {
-			for _, err := range pm.ProcessRedemptions(ctx, paymentStore, paymentChain, redeemerKey, paymentChainID) {
-				logger.Error("payment redemption", "error", err)
+			for _, err := range ProcessRedemptions(ctx, redeemerDB, paymentChain, redeemerKey, paymentChainID) {
+				logger.Error("redemption", "error", err)
 			}
 		})
 	}

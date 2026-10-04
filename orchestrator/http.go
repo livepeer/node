@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/livepeer/node/destination"
-	"github.com/livepeer/node/pm"
 	"github.com/livepeer/node/trickle"
 )
 
@@ -31,7 +30,7 @@ type Server struct {
 	runnerTransport *http.Transport
 	proxyTransport  *http.Transport
 	logger          *slog.Logger
-	payment         *pm.Engine
+	payment         *PaymentEngine
 	mux             *http.ServeMux
 	mu              sync.Mutex
 	channels        map[string]*channel
@@ -120,7 +119,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mux.ServeHTTP(w, r)
 }
 
-func (s *Server) SetPayment(engine *pm.Engine) { s.payment = engine }
+func (s *Server) SetPayment(engine *PaymentEngine) { s.payment = engine }
 
 func (s *Server) Close() {
 	s.registry.Close()

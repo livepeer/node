@@ -70,7 +70,7 @@ reorg, unavailable finalized head or RPC failure retains uncertainty and liabili
 Inspect status without a key or RPC connection:
 
 ```sh
-livepeer orchestrator redemptions --payment-db /var/lib/livepeer/orchestrator-payment.sqlite
+livepeer orchestrator redemptions --redeemer-db /var/lib/livepeer/orchestrator-redeemer.sqlite
 ```
 
 After checking the hash on the configured chain, explicitly retry the stored
@@ -78,7 +78,7 @@ transaction if it is absent or needs rebroadcast:
 
 ```sh
 livepeer orchestrator redemptions \
-  --payment-db /var/lib/livepeer/orchestrator-payment.sqlite \
+  --redeemer-db /var/lib/livepeer/orchestrator-redeemer.sqlite \
   --retry-transaction 0xTRANSACTION_HASH --submit \
   --rpc-url-file /run/secrets/livepeer-payment-rpc-url \
   --chain-id 42161
@@ -100,7 +100,7 @@ and monitor database disk use independently of these control-state quotas.
 
 Redemption planning uses geth's dynamic-fee selection and requires a base fee
 in the RPC header; a missing base fee leaves the ticket queued with an error.
-`PaymentMaxFeePerGas` optionally caps the fee in wei per gas; a plan above
+`RedeemerMaxFeePerGas` optionally caps the fee in wei per gas; a plan above
 that ceiling remains queued without signing or broadcasting. Prepared and
 submitted identities reserve their nonces, including after restart. Keep the
 redemption key exclusive to this database/worker; local nonce tracking does not

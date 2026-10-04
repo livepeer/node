@@ -1,4 +1,4 @@
-package pm
+package orchestrator
 
 import (
 	"context"
@@ -20,7 +20,7 @@ type recipientNonces struct {
 // expiry monotonic within a recipient lifetime so a backward chain observation
 // cannot revive parameters whose replay guards have already been removed.
 // Caller holds e.mu.
-func (e *Engine) observeBlock(block *big.Int) {
+func (e *PaymentEngine) observeBlock(block *big.Int) {
 	if block.Cmp(e.lastSeenBlock) <= 0 {
 		return
 	}
@@ -35,7 +35,7 @@ func (e *Engine) observeBlock(block *big.Int) {
 
 // PruneControlState bounds process-local session and nonce state. Winning
 // tickets and uncertain broadcasts remain durable for redemption/recovery.
-func (e *Engine) PruneControlState(ctx context.Context) error {
+func (e *PaymentEngine) PruneControlState(ctx context.Context) error {
 	snapshot, err := e.chain.Snapshot(ctx)
 	e.mu.Lock()
 	defer e.mu.Unlock()

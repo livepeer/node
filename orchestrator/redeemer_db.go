@@ -1,9 +1,10 @@
 // Winning-ticket store operations follow livepeer/go-livepeer/common/db.go,
 // by Elad Mallel and Nico Vergauwen (404d24a9455cd0997af1be6d18faa998702cce69).
 // The redemption recovery schema and transaction state are implemented here.
-package pm
+package orchestrator
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -13,31 +14,31 @@ import (
 	"time"
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
+	"github.com/livepeer/node/pm"
 	_ "modernc.org/sqlite"
 )
 
-// SQLiteStore owns the recipient's durable ticket queue and chain-watcher view.
-// It is intentionally in pm: ticket state and redemption belong to the payment
-// component, even when the orchestrator exposes the HTTP endpoint.
-type SQLiteStore struct{ db *sql.DB }
+// RedeemerDB owns the orchestrator redeemer's durable winning-ticket queue,
+// redemption lifecycle, and chain activity observations.
+type RedeemerDB struct{ db *sql.DB }
 
-func OpenSQLite(path string) (*SQLiteStore, error) {
+func OpenRedeemerDB(path string) (*RedeemerDB, error) {
 	if path == "" {
-		return nil, errors.New("payment SQLite path is required")
+		return nil, errors.New("redeemer SQLite path is required")
 	}
 	if path == ":memory:" || strings.HasPrefix(path, "file:") {
-		return nil, errors.New("payment SQLite state requires a filesystem path")
+		return nil, errors.New("redeemer SQLite state requires a filesystem path")
 	}
 	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0600)
 	if err != nil {
-		return nil, errors.New("payment SQLite file is unavailable")
+		return nil, errors.New("redeemer SQLite file is unavailable")
 	}
 	if err := file.Close(); err != nil {
 		return nil, err
 	}
 	info, err := os.Stat(path)
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
-		return nil, errors.New("payment SQLite file must be owner-only")
+		return nil, errors.New("redeemer SQLite file must be owner-only")
 	}
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -69,15 +70,15 @@ func OpenSQLite(path string) (*SQLiteStore, error) {
 	} {
 		if _, err := db.Exec(stmt); err != nil {
 			_ = db.Close()
-			return nil, fmt.Errorf("initialize payment SQLite: %w", err)
+			return nil, fmt.Errorf("initialize redeemer SQLite: %w", err)
 		}
 	}
-	return &SQLiteStore{db: db}, nil
+	return &RedeemerDB{db: db}, nil
 }
 
-func (s *SQLiteStore) Close() error { return s.db.Close() }
+func (s *RedeemerDB) Close() error { return s.db.Close() }
 
-func (s *SQLiteStore) StoreWinningTicket(t *SignedTicket) error {
+func (s *RedeemerDB) StoreWinningTicket(t *pm.SignedTicket) error {
 	if err := validStoredTicket(t); err != nil {
 		return err
 	}
@@ -89,7 +90,58 @@ func (s *SQLiteStore) StoreWinningTicket(t *SignedTicket) error {
 	return err
 }
 
-func validStoredTicket(t *SignedTicket) error {
+// storeWinningTickets commits a validated receipt batch before the payment
+// engine publishes replay guards or credit. Check exposure and liability in the
+// same transaction so redemption and concurrent receipts cannot race these gates.
+func (s *RedeemerDB) storeWinningTickets(ctx context.Context, payer ethcommon.Address, randHash ethcommon.Hash, minRound int64, collateral *big.Int, tickets []*pm.SignedTicket) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	// Once redemption can reveal randomness, this epoch must never accept
+	// more tickets, even if a reorg moves the observed L1 clock backwards.
+	var exposed int
+	if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM winning_tickets w JOIN redemption_attempts a ON a.sig=w.sig WHERE w.recipient_rand_hash=? AND a.phase!='expired')`, randHash.Hex()).Scan(&exposed); err != nil {
+		return err
+	}
+	if exposed != 0 {
+		return ErrInvalidPayment
+	}
+	for _, ticket := range tickets {
+		_, err := tx.Exec(`INSERT INTO winning_tickets(payer_address,recipient,face_value,win_prob,ticket_nonce,recipient_rand,recipient_rand_hash,sig,creation_round,creation_round_block_hash,params_expiration_block)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?)`, payer.Hex(), ticket.Recipient.Hex(), ticket.FaceValue.Bytes(), ticket.WinProb.Bytes(), ticket.TicketNonce, ethcommon.LeftPadBytes(ticket.RecipientRand.Bytes(), 32), ticket.RecipientRandHash.Hex(), ticket.Sig, ticket.CreationRound, ticket.CreationRoundBlockHash.Hex(), ticket.ParamsExpirationBlock.String())
+		if err != nil {
+			return err
+		}
+	}
+	// Include every unconfirmed winner, across all sessions for this payer.
+	// Keep uncertain transactions reserved until finalized receipt reconciliation.
+	rows, err := tx.Query("SELECT face_value FROM winning_tickets WHERE payer_address=? AND redeemed_at IS NULL AND creation_round>=? AND sig NOT IN (SELECT sig FROM redemption_attempts WHERE phase='reverted')", payer.Hex(), minRound)
+	if err != nil {
+		return err
+	}
+	pending := new(big.Int)
+	for rows.Next() {
+		var face []byte
+		if err := rows.Scan(&face); err != nil {
+			rows.Close()
+			return err
+		}
+		pending.Add(pending, new(big.Int).SetBytes(face))
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	if pending.Cmp(collateral) > 0 {
+		return pm.ErrPayerUnavailable
+	}
+	return tx.Commit()
+}
+
+func validStoredTicket(t *pm.SignedTicket) error {
 	if t == nil || t.Ticket == nil || t.FaceValue == nil || t.WinProb == nil || t.ParamsExpirationBlock == nil || t.RecipientRand == nil || len(t.Sig) == 0 {
 		return errors.New("incomplete signed ticket")
 	}
@@ -99,7 +151,7 @@ func validStoredTicket(t *SignedTicket) error {
 	return nil
 }
 
-func (s *SQLiteStore) SelectEarliestWinningTicket(payer ethcommon.Address, minCreationRound int64) (*SignedTicket, error) {
+func (s *RedeemerDB) SelectEarliestWinningTicket(payer ethcommon.Address, minCreationRound int64) (*pm.SignedTicket, error) {
 	row := s.db.QueryRow(`SELECT recipient,face_value,win_prob,ticket_nonce,recipient_rand,recipient_rand_hash,sig,creation_round,creation_round_block_hash,params_expiration_block
 		FROM winning_tickets WHERE payer_address=? AND creation_round>=? AND tx_hash IS NULL AND sig NOT IN (SELECT sig FROM redemption_attempts) ORDER BY seq LIMIT 1`, payer.Hex(), minCreationRound)
 	var recipient, randHash, blockHash, expiration string
@@ -116,14 +168,14 @@ func (s *SQLiteStore) SelectEarliestWinningTicket(payer ethcommon.Address, minCr
 	if !ok || nonce < 0 || nonce > 1<<32-1 {
 		return nil, errors.New("corrupt winning ticket")
 	}
-	return &SignedTicket{Ticket: &Ticket{PayerAddress: payer, Recipient: ethcommon.HexToAddress(recipient),
+	return &pm.SignedTicket{Ticket: &pm.Ticket{PayerAddress: payer, Recipient: ethcommon.HexToAddress(recipient),
 		FaceValue: new(big.Int).SetBytes(face), WinProb: new(big.Int).SetBytes(prob), TicketNonce: uint32(nonce),
 		RecipientRandHash: ethcommon.HexToHash(randHash), CreationRound: round,
 		CreationRoundBlockHash: ethcommon.HexToHash(blockHash), ParamsExpirationBlock: exp},
 		Sig: sig, RecipientRand: new(big.Int).SetBytes(rand)}, nil
 }
 
-func (s *SQLiteStore) WinningTicketCount(payer ethcommon.Address, minCreationRound int64) (int, error) {
+func (s *RedeemerDB) WinningTicketCount(payer ethcommon.Address, minCreationRound int64) (int, error) {
 	var count int
 	err := s.db.QueryRow(`SELECT COUNT(*) FROM winning_tickets WHERE payer_address=? AND creation_round>=? AND tx_hash IS NULL`, payer.Hex(), minCreationRound).Scan(&count)
 	return count, err
@@ -134,7 +186,7 @@ type SubmittedRedemption struct {
 	Hash      ethcommon.Hash
 }
 
-func (s *SQLiteStore) SubmittedRedemptions() ([]SubmittedRedemption, error) {
+func (s *RedeemerDB) SubmittedRedemptions() ([]SubmittedRedemption, error) {
 	rows, err := s.db.Query(`SELECT w.sig,w.tx_hash FROM winning_tickets w JOIN redemption_attempts a ON a.sig=w.sig WHERE w.tx_hash IS NOT NULL AND w.redeemed_at IS NULL AND a.phase NOT IN ('confirmed','reverted','expired')`)
 	if err != nil {
 		return nil, err
@@ -155,7 +207,7 @@ func (s *SQLiteStore) SubmittedRedemptions() ([]SubmittedRedemption, error) {
 	return result, rows.Err()
 }
 
-func (s *SQLiteStore) ConfirmRedemption(sig []byte) error {
+func (s *RedeemerDB) ConfirmRedemption(sig []byte) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -179,7 +231,7 @@ func (s *SQLiteStore) ConfirmRedemption(sig []byte) error {
 	return tx.Commit()
 }
 
-func (s *SQLiteStore) FailRedemption(sig []byte) error {
+func (s *RedeemerDB) FailRedemption(sig []byte) error {
 	result, err := s.db.Exec(`UPDATE redemption_attempts SET phase='reverted',error='transaction reverted' WHERE sig=? AND phase!='reverted'`, sig)
 	if err != nil {
 		return err
@@ -194,7 +246,7 @@ func (s *SQLiteStore) FailRedemption(sig []byte) error {
 	return nil
 }
 
-func (s *SQLiteStore) RemoveWinningTicket(t *SignedTicket) error {
+func (s *RedeemerDB) RemoveWinningTicket(t *pm.SignedTicket) error {
 	if t == nil || t.Ticket == nil || len(t.Sig) == 0 {
 		return errors.New("incomplete signed ticket")
 	}
@@ -204,7 +256,7 @@ func (s *SQLiteStore) RemoveWinningTicket(t *SignedTicket) error {
 
 // SetOrchestratorActive records an observed active status for a round; it is
 // not a finality assertion or a substitute for canonical chain reads.
-func (s *SQLiteStore) SetOrchestratorActive(addr ethcommon.Address, round *big.Int, active bool) error {
+func (s *RedeemerDB) SetOrchestratorActive(addr ethcommon.Address, round *big.Int, active bool) error {
 	if round == nil || round.Sign() < 0 {
 		return errors.New("invalid round")
 	}
@@ -213,7 +265,7 @@ func (s *SQLiteStore) SetOrchestratorActive(addr ethcommon.Address, round *big.I
 	return err
 }
 
-func (s *SQLiteStore) IsOrchActive(addr ethcommon.Address, round *big.Int) (bool, error) {
+func (s *RedeemerDB) IsOrchActive(addr ethcommon.Address, round *big.Int) (bool, error) {
 	if round == nil || round.Sign() < 0 {
 		return false, errors.New("invalid round")
 	}
@@ -225,7 +277,7 @@ func (s *SQLiteStore) IsOrchActive(addr ethcommon.Address, round *big.Int) (bool
 	return active, err
 }
 
-func (s *SQLiteStore) PendingPayers() ([]ethcommon.Address, error) {
+func (s *RedeemerDB) PendingPayers() ([]ethcommon.Address, error) {
 	rows, err := s.db.Query(`SELECT DISTINCT payer_address FROM winning_tickets WHERE tx_hash IS NULL AND sig NOT IN (SELECT sig FROM redemption_attempts)`)
 	if err != nil {
 		return nil, err
@@ -245,4 +297,4 @@ func (s *SQLiteStore) PendingPayers() ([]ethcommon.Address, error) {
 	return result, rows.Err()
 }
 
-var _ TicketStore = (*SQLiteStore)(nil)
+var _ pm.TicketStore = (*RedeemerDB)(nil)

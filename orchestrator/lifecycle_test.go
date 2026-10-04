@@ -15,7 +15,6 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/livepeer/node/destination"
-	"github.com/livepeer/node/pm"
 	"github.com/stretchr/testify/require"
 )
 
@@ -168,11 +167,11 @@ func TestHealthFailureAndExhaustionCleanUpSession(t *testing.T) {
 				reg.runners["r"].HealthURL = health.URL
 				reg.CheckStaticHealth(t.Context(), health.Client())
 			} else {
-				store, err := pm.OpenSQLite(filepath.Join(t.TempDir(), "payments.sqlite"))
+				store, err := OpenRedeemerDB(filepath.Join(t.TempDir(), "payments.sqlite"))
 				require.NoError(t, err)
 				defer store.Close()
 				key := paymentTestKey(t)
-				engine, err := pm.NewEngine(store, paymentTestChain{}, key.Address(), big.NewInt(10), big.NewInt(1))
+				engine, err := NewPaymentEngine(store, paymentTestChain{}, key.Address(), big.NewInt(10), big.NewInt(1))
 				require.NoError(t, err)
 				_, err = engine.MakeChallenge(t.Context(), "r", sid, key.Address(), 1, "seconds", "https://orch.example")
 				require.NoError(t, err)

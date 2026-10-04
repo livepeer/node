@@ -1,4 +1,4 @@
-package pm
+package orchestrator
 
 import (
 	"context"
@@ -17,7 +17,7 @@ import (
 // durable before broadcasting. Call from one bounded worker per store.
 // The expiry rule follows Nico Vergauwen's go-livepeer/pm/queue.go; L1-clock
 // handling follows Rafał Leszko's 4b6ede31f040a084ff9e55bd798a0d6fffee1e1b.
-func RedeemPending(ctx context.Context, store *SQLiteStore, chain eth.PaymentChain, redeemer *eth.Key, chainID *big.Int, snapshot eth.ChainSnapshot) []error {
+func RedeemPending(ctx context.Context, store *RedeemerDB, chain eth.PaymentChain, redeemer *eth.Key, chainID *big.Int, snapshot eth.ChainSnapshot) []error {
 	if store == nil || redeemer == nil || chainID == nil || snapshot.Block == nil || snapshot.Round == nil {
 		return []error{fmt.Errorf("redemption is not configured")}
 	}
@@ -94,7 +94,7 @@ type ReceiptReader interface {
 
 // ReconcileSubmitted checks receipts once per background tick. It never
 // broadcasts, so a pending or uncertain transaction cannot be sent twice.
-func ReconcileSubmitted(ctx context.Context, store *SQLiteStore, chain ReceiptReader) []error {
+func ReconcileSubmitted(ctx context.Context, store *RedeemerDB, chain ReceiptReader) []error {
 	items, err := store.SubmittedRedemptions()
 	if err != nil {
 		return []error{err}
@@ -120,7 +120,7 @@ func ReconcileSubmitted(ctx context.Context, store *SQLiteStore, chain ReceiptRe
 	return failures
 }
 
-func ProcessRedemptions(ctx context.Context, store *SQLiteStore, chain eth.PaymentChain, redeemer *eth.Key, chainID *big.Int) []error {
+func ProcessRedemptions(ctx context.Context, store *RedeemerDB, chain eth.PaymentChain, redeemer *eth.Key, chainID *big.Int) []error {
 	var failures []error
 	if store == nil || redeemer == nil {
 		return nil

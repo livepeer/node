@@ -97,7 +97,7 @@ func TestPaidHTTPStartup(t *testing.T) {
 		return response.StatusCode == http.StatusOK
 	}, 5*time.Second, 20*time.Millisecond)
 	require.EqualValues(t, 1, requests.Load())
-	_, err = os.Stat(p.PaymentDB)
+	_, err = os.Stat(p.RedeemerDB)
 	require.NoError(t, err)
 	response, err := http.Get("http://" + p.MetricsListen.String() + "/readyz")
 	require.NoError(t, err)
@@ -117,7 +117,7 @@ func TestConfigPrecedenceAndRedaction(t *testing.T) {
 	t.Setenv("LIVEPEER_ORCHESTRATOR_KEYSTORE_PASSWORD", "keystore-secret")
 	require.NoError(t, os.WriteFile(path, []byte(`ServiceURL = 'https://file.example'
 Listen = '127.0.0.1:8000'
-PaymentMaxFeePerGas = '100'
+RedeemerMaxFeePerGas = '100'
 PaymentChainID = 1
 PaymentController = '0x0000000000000000000000000000000000000001'
 WeiPerUSD = '1/2'
@@ -126,12 +126,12 @@ KeystoreFile = '/missing/account.json'
 	t.Setenv("LIVEPEER_ORCHESTRATOR_SERVICE_URL", "https://env.example")
 	t.Setenv("LIVEPEER_ORCHESTRATOR_BOOTSTRAP_SECRET", "super-secret-env")
 	t.Setenv("LIVEPEER_ORCHESTRATOR_LISTEN", "127.0.0.1:8001")
-	t.Setenv("LIVEPEER_ORCHESTRATOR_PAYMENT_MAX_FEE_PER_GAS", "200")
+	t.Setenv("LIVEPEER_ORCHESTRATOR_REDEEMER_MAX_FEE_PER_GAS", "200")
 	t.Setenv("LIVEPEER_ORCHESTRATOR_PAYMENT_CHAIN_ID", "2")
 	t.Setenv("LIVEPEER_ORCHESTRATOR_PAYMENT_CONTROLLER_ADDRESS", "0x0000000000000000000000000000000000000002")
 	t.Setenv("LIVEPEER_ORCHESTRATOR_WEI_PER_USD", "2/3")
 	output, err := execute(t, "--config", path, "--listen", "127.0.0.1:8002",
-		"--service-url", "https://user:password@flag.example", "--payment-max-fee-per-gas", "300",
+		"--service-url", "https://user:password@flag.example", "--redeemer-max-fee-per-gas", "300",
 		"--payment-chain-id", "3", "--payment-controller-address", "0x0000000000000000000000000000000000000003", "--print-config")
 	require.NoError(t, err)
 	require.Contains(t, output, "127.0.0.1:8002")
@@ -145,14 +145,14 @@ KeystoreFile = '/missing/account.json'
 	require.NotContains(t, output, "super-secret-env")
 	require.NotContains(t, output, "keystore-secret")
 	require.NotContains(t, output, path)
-	require.Contains(t, output, `PaymentMaxFeePerGas = "300"`)
+	require.Contains(t, output, `RedeemerMaxFeePerGas = "300"`)
 	var printed map[string]any
 	require.NoError(t, toml.Unmarshal([]byte(output), &printed))
 	require.EqualValues(t, 3, printed["PaymentChainID"])
 	require.Equal(t, "0x0000000000000000000000000000000000000003", printed["PaymentController"])
 	require.Equal(t, "2/3", printed["WeiPerUSD"])
 	require.Equal(t, "5s", printed["HeartbeatInterval"])
-	for _, key := range []string{"ServiceURL", "PaymentRPCURL", "BootstrapSecret", "KeystoreFile", "KeystorePassword", "KeystorePasswordFile", "RunnerConfig", "PaymentDB", "TicketFaceValue"} {
+	for _, key := range []string{"ServiceURL", "PaymentRPCURL", "BootstrapSecret", "KeystoreFile", "KeystorePassword", "KeystorePasswordFile", "RunnerConfig", "RedeemerDB", "TicketFaceValue"} {
 		require.NotContains(t, printed, key)
 	}
 }
@@ -208,7 +208,7 @@ func TestSecretFilesPreserveBytesAndRedactErrors(t *testing.T) {
 func TestValidationBeforeStartup(t *testing.T) {
 	t.Setenv("LIVEPEER_ORCHESTRATOR_BOOTSTRAP_SECRET", "test")
 	db := filepath.Join(t.TempDir(), "payments.sqlite")
-	_, err := execute(t, "--payment-db", db)
+	_, err := execute(t, "--redeemer-db", db)
 	require.ErrorContains(t, err, "on-chain payment requires")
 	require.True(t, boa.IsUserInputError(err))
 	_, err = os.Stat(db)
@@ -258,7 +258,7 @@ Unit = "fixed"
 func TestRedemptionValidationBeforeResources(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "payments.sqlite")
 	require.NoError(t, os.WriteFile(path, nil, 0600))
-	t.Setenv("LIVEPEER_ORCHESTRATOR_PAYMENT_DB", path)
+	t.Setenv("LIVEPEER_ORCHESTRATOR_REDEEMER_DB", path)
 	t.Setenv("LIVEPEER_ORCHESTRATOR_RPC_URL", "http://127.0.0.1:1")
 	t.Setenv("LIVEPEER_ORCHESTRATOR_CHAIN_ID", "1")
 	t.Setenv("LIVEPEER_ORCHESTRATOR_SUBMIT", "true")
@@ -279,7 +279,7 @@ func paymentKeystoreParams(t *testing.T, endpoint string) Params {
 	return Params{
 		Listen: netip.MustParseAddrPort("127.0.0.1:0"), MetricsListen: netip.MustParseAddrPort("127.0.0.1:0"), ServiceURL: boa.Text[*url.URL]{Value: mustURL(t, "http://127.0.0.1:8935")},
 		BootstrapSecret: "test", HeartbeatInterval: time.Hour, HeartbeatTTL: 2 * time.Hour,
-		PaymentDB: filepath.Join(t.TempDir(), "payments.sqlite"), PaymentRPCURL: mustURL(t, endpoint),
+		RedeemerDB: filepath.Join(t.TempDir(), "payments.sqlite"), PaymentRPCURL: mustURL(t, endpoint),
 		PaymentChainID: new(uint64(1)), PaymentController: new(ethcommon.HexToAddress("0x0000000000000000000000000000000000001000")),
 		WeiPerUSD: big.NewRat(1, 1), TicketFaceValue: uint256.NewInt(1), TicketWinProb: uint256.NewInt(1),
 	}
@@ -300,7 +300,7 @@ func TestPaymentKeystoreFailuresBeforeStartup(t *testing.T) {
 			paths[source] = [2]string{path, passwordPath}
 			config := filepath.Join(t.TempDir(), "orchestrator.toml")
 			require.NoError(t, os.WriteFile(config, []byte(fmt.Sprintf("KeystoreFile = %q\nKeystorePasswordFile = %q\n", paths[0][0], paths[0][1])), 0600))
-			args := []string{"--config", config, "--payment-db", p.PaymentDB, "--payment-chain-id", strconv.FormatUint(*p.PaymentChainID, 10),
+			args := []string{"--config", config, "--redeemer-db", p.RedeemerDB, "--payment-chain-id", strconv.FormatUint(*p.PaymentChainID, 10),
 				"--payment-controller-address", p.PaymentController.Hex(), "--wei-per-usd", "1", "--ticket-face-value", "1", "--ticket-win-prob", "1"}
 			if source > 0 {
 				t.Setenv("LIVEPEER_ORCHESTRATOR_KEYSTORE_FILE", paths[1][0])
@@ -313,7 +313,7 @@ func TestPaymentKeystoreFailuresBeforeStartup(t *testing.T) {
 			require.ErrorContains(t, err, "cannot decrypt keystore")
 			require.NotContains(t, err.Error(), "wrong-secret")
 			require.Zero(t, requests.Load())
-			_, err = os.Stat(p.PaymentDB)
+			_, err = os.Stat(p.RedeemerDB)
 			require.True(t, os.IsNotExist(err))
 		})
 	}
@@ -324,7 +324,7 @@ func TestPaymentKeystoreFailuresBeforeStartup(t *testing.T) {
 		require.ErrorContains(t, err, "on-chain payment requires")
 		require.NotContains(t, err.Error(), "wrong-secret")
 		require.Zero(t, requests.Load())
-		_, err = os.Stat(p.PaymentDB)
+		_, err = os.Stat(p.RedeemerDB)
 		require.True(t, os.IsNotExist(err))
 		if paths[0] != "" || paths[1] != "" {
 			// Either path alone requests paid mode; never silently start free.

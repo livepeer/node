@@ -11,7 +11,6 @@ import (
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/livepeer/node/eth"
-	"github.com/livepeer/node/pm"
 )
 
 func paymentPrice(price priceInfo) (int64, bool) {
@@ -48,7 +47,7 @@ func (s *Server) challenge(w http.ResponseWriter, r *http.Request, runnerID stri
 }
 
 func (s *Server) paidReceipt(w http.ResponseWriter, r *http.Request, runnerID string, price priceInfo) (string, bool) {
-	manifest, err := pm.ManifestFromSegment(r.Header.Get("Livepeer-Segment"))
+	manifest, err := ManifestFromSegment(r.Header.Get("Livepeer-Segment"))
 	if err != nil {
 		fail(w, http.StatusPaymentRequired, "invalid segment credentials")
 		return "", false
@@ -61,10 +60,10 @@ func (s *Server) paidReceipt(w http.ResponseWriter, r *http.Request, runnerID st
 	}
 	if _, _, err := s.payment.Receive(r.Context(), runnerID, manifest, r.Header.Get("Livepeer-Payment"), r.Header.Get("Livepeer-Segment")); err != nil {
 		status := http.StatusBadRequest
-		if errors.Is(err, pm.ErrMissingChallenge) {
+		if errors.Is(err, ErrMissingChallenge) {
 			status = http.StatusNotFound
 		}
-		if errors.Is(err, pm.ErrInvalidPayment) {
+		if errors.Is(err, ErrInvalidPayment) {
 			status = http.StatusForbidden
 		}
 		fail(w, status, err.Error())
@@ -96,7 +95,7 @@ func (s *Server) reservePaid(w http.ResponseWriter, r *http.Request) bool {
 		s.challenge(w, r, runnerID, price)
 		return true
 	}
-	manifest, err := pm.ManifestFromSegment(r.Header.Get("Livepeer-Segment"))
+	manifest, err := ManifestFromSegment(r.Header.Get("Livepeer-Segment"))
 	if err != nil {
 		fail(w, 403, "invalid segment credentials")
 		return true
@@ -146,7 +145,7 @@ func (s *Server) proxyPaidSingleShot(w http.ResponseWriter, r *http.Request) boo
 		s.challenge(w, r, runnerID, price)
 		return true
 	}
-	manifest, err := pm.ManifestFromSegment(r.Header.Get("Livepeer-Segment"))
+	manifest, err := ManifestFromSegment(r.Header.Get("Livepeer-Segment"))
 	if err != nil {
 		fail(w, 403, "invalid segment credentials")
 		return true
@@ -230,7 +229,7 @@ func (s *Server) ChargePaidSessions(ctx context.Context) {
 		return
 	}
 	for _, id := range s.registry.PaidSessions() {
-		if err := s.payment.Charge(ctx, id, time.Now()); err != nil && !errors.Is(err, pm.ErrFixedAlreadyCharged) {
+		if err := s.payment.Charge(ctx, id, time.Now()); err != nil && !errors.Is(err, ErrFixedAlreadyCharged) {
 			s.logger.Warn("paid session ended", "session_id", id, "error", err)
 			s.registry.ReleaseBySession(id)
 		}
@@ -239,13 +238,13 @@ func (s *Server) ChargePaidSessions(ctx context.Context) {
 
 func (s *Server) reservationPrice(r *http.Request, runnerID string) (priceInfo, int, error) {
 	if s.payment != nil && r.Header.Get("Livepeer-Payment") != "" && r.Header.Get("Livepeer-Segment") != "" {
-		manifest, err := pm.ManifestFromSegment(r.Header.Get("Livepeer-Segment"))
+		manifest, err := ManifestFromSegment(r.Header.Get("Livepeer-Segment"))
 		if err != nil {
 			return priceInfo{}, 403, err
 		}
 		price, unit, err := s.payment.ChallengePrice(runnerID, manifest)
 		if err != nil {
-			return priceInfo{}, 403, pm.ErrMissingChallenge
+			return priceInfo{}, 403, ErrMissingChallenge
 		}
 		return priceInfo{Price: json.Number(strconv.FormatInt(price, 10)), Currency: "wei", Unit: unit}, 200, nil
 	}
