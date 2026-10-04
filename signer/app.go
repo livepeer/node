@@ -11,26 +11,26 @@ import (
 	"net/netip"
 	"net/url"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
 
-	"github.com/BurntSushi/toml"
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/j0sh/boa/pkg/boa"
 	"github.com/livepeer/node/destination"
 	"github.com/livepeer/node/eth"
+	"github.com/livepeer/node/nodeconfig"
 	"github.com/livepeer/node/nodeconfig/migrations"
 	"github.com/livepeer/node/pm"
 	"github.com/livepeer/node/version"
 	"github.com/spf13/cobra"
 )
 
-func init() {
-	boa.RegisterConfigFormat(".toml", toml.Unmarshal)
-}
-
 type Params struct {
+	nodeconfig.Settings
+	ConfigFile             string               `name:"config" configfile:"optional-default" default:"signer/config.toml" boa:"noconfig" descr:"Configuration file; empty disables discovery"`
+	Account                *ethcommon.Address   `descr:"Keystore account address"`
 	Kafka                  *KafkaConfig         `optional:"true"`
 	AuthWebhookHeadersFile string               `name:"auth-webhook-headers-file" secretfor:"AuthWebhookHeaders"`
 	AuthWebhook            *url.URL             `name:"auth-webhook" optional:"true" secret:"true"`
@@ -42,16 +42,15 @@ type Params struct {
 	MaxHourlyPrice         *big.Rat             `name:"max-hourly-price" required:"true" descr:"Maximum live price in USD per hour"`
 	MaxFixedPrice          *big.Rat             `name:"max-fixed-price" required:"true" descr:"Maximum fixed request price in USD"`
 	WeiPerUSD              *big.Rat             `name:"wei-per-usd" optional:"true" descr:"Fixed wei per USD conversion, mostly for testing"`
-	ETHUSDFeed             ethcommon.Address    `name:"eth-usd-feed" required:"true" default:"0x639Fe6ab55C921f74e7fac1ee960C0B6293ba612" descr:"ETH/USD oracle address (Arbitrum mainnet)"`
+	ETHUSDFeed             ethcommon.Address    `name:"eth-usd-feed" optional:"true" descr:"ETH/USD oracle address"`
 	ETHUSDMaxAge           time.Duration        `name:"eth-usd-max-age" default:"2h" descr:"Maximum age of the ETH/USD oracle observation"`
-	ConfigFile             string               `name:"config" configfile:"true" file:"true" optional:"true" boa:"noconfig"`
 	Listen                 netip.AddrPort       `name:"listen" default:"127.0.0.1:8937"`
 	MetricsListen          netip.AddrPort       `name:"metrics-listen" default:"127.0.0.1:8938"`
 	RPCURL                 *url.URL             `name:"rpc-url" secret:"true" required:"true"`
 	RPCURLFile             string               `name:"rpc-url-file" secretfor:"RPCURL"`
 	ChainID                *uint64              `name:"chain-id" min:"1" descr:"Optional expected RPC chain ID"`
-	Controller             ethcommon.Address    `name:"controller-address" required:"true" default:"0xD8E8328501E9645d16Cf49539efC04f734606ee4" descr:"Livepeer Controller (Arbitrum mainnet)"`
-	KeystoreFile           string               `required:"true" descr:"Encrypted geth account JSON file"`
+	Controller             ethcommon.Address    `name:"controller-address" optional:"true" descr:"Livepeer Controller address"`
+	KeystoreFile           string               `optional:"true" descr:"Encrypted geth account JSON file; otherwise discover in keystore/"`
 	KeystorePassword       *string              `secret:"true" required:"true" descr:"Keystore decryption password"`
 	KeystorePasswordFile   string               `secretfor:"KeystorePassword" descr:"Owner-only file containing the exact keystore password bytes"`
 	Orchestrators          []boa.Text[*url.URL] `name:"orchestrators" optional:"true"`
@@ -79,8 +78,11 @@ func (p Params) discoveryURLs() []*url.URL {
 }
 
 func (p Params) Validate() error {
-	if p.KeystoreFile == "" || p.KeystorePassword == nil && p.KeystorePasswordFile == "" {
-		return errors.New("keystore-file and keystore-password or keystore-password-file are required")
+	if p.Network != "" && p.ChainID == nil {
+		return errors.New("network requires an explicit chain-id and controller-address")
+	}
+	if p.KeystorePassword == nil && p.KeystorePasswordFile == "" {
+		return errors.New("keystore-password or keystore-password-file are required")
 	}
 	if p.Kafka != nil {
 		if err := p.Kafka.Validate(); err != nil {
@@ -105,7 +107,7 @@ func (p Params) Validate() error {
 		return errors.New("valid RPC URL is required")
 	}
 	// A required, parseable address can still be the all-zero address.
-	if p.Controller == (ethcommon.Address{}) || p.ETHUSDFeed == (ethcommon.Address{}) {
+	if p.Controller == (ethcommon.Address{}) || p.WeiPerUSD == nil && p.ETHUSDFeed == (ethcommon.Address{}) {
 		return errors.New("controller-address and eth-usd-feed must be nonzero")
 	}
 	if _, err := newPricePolicy(p.MaxHourlyPrice, p.MaxFixedPrice); err != nil {
@@ -141,7 +143,7 @@ func serve(parent context.Context, p Params) error {
 	}
 	ctx, stop := context.WithCancel(parent)
 	defer stop()
-	key, err := eth.OpenKeystore(p.KeystoreFile, p.KeystorePassword, p.KeystorePasswordFile)
+	key, err := eth.OpenAccount(filepath.Join(p.DataDir, "keystore"), nodeconfig.Path(p.DataDir, p.KeystoreFile), p.KeystorePassword, p.KeystorePasswordFile, p.Account)
 	if err != nil {
 		return err
 	}
@@ -267,11 +269,21 @@ func serve(parent context.Context, p Params) error {
 }
 
 func Root(out, errOut io.Writer) *cobra.Command {
-	cmd := (boa.Cmd[Params]{
+	params := new(Params)
+	cmd := nodeconfig.Command("signer", nodeconfig.Mainnet, boa.Cmd[Params]{
 		Use: "livepeer-signer", Short: "Standalone remote signer", Version: version.String(),
-		RejectUnknown: true,
-		ParamEnrich:   boa.ParamEnricherCombine(boa.ParamEnricherDefault, boa.ParamEnricherEnv, boa.ParamEnricherEnvPrefix("LIVEPEER_SIGNER")),
-		Args:          cobra.NoArgs,
+		Params: params, RejectUnknown: true,
+		PreValidateFuncCtx: func(ctx *boa.HookContext, p *Params, _ *cobra.Command, _ []string) error {
+			if p.Network == nodeconfig.Mainnet {
+				nodeconfig.Default(ctx, &p.ChainID, new(uint64(42161)))
+				nodeconfig.Default(ctx, &p.Controller, nodeconfig.Controller)
+				if p.WeiPerUSD == nil {
+					nodeconfig.Default(ctx, &p.ETHUSDFeed, nodeconfig.ETHUSDFeed)
+				}
+			}
+			return nil
+		},
+		Args: cobra.NoArgs,
 		RunFuncE: func(p *Params, _ *cobra.Command, _ []string) error {
 			return Serve(*p)
 		},
@@ -280,7 +292,16 @@ func Root(out, errOut io.Writer) *cobra.Command {
 	cmd.SetErr(errOut)
 	cmd.SilenceUsage = true
 	cmd.SilenceErrors = true
-	cmd.AddCommand(migrations.Command("kafka-outbox-db", "LIVEPEER_SIGNER_KAFKA_OUTBOX_DB", "signer-events.sqlite", outboxMigrationFiles, openOutboxDB))
+	type storageParams struct {
+		DataDir    string `persistent:"true" basedir:"true" descr:"Data directory; relative file paths start here"`
+		ConfigFile string `persistent:"true" name:"config" configfile:"optional-default" default:"signer/config.toml" boa:"noconfig"`
+		Kafka      struct {
+			OutboxDB string `persistent:"true" file:"optional" default:"signer/events.sqlite"`
+		}
+	}
+	storage := new(storageParams)
+	migrate := migrations.Command(nodeconfig.Command("signer", nodeconfig.Mainnet, boa.Cmd[storageParams]{Params: storage}), &storage.Kafka.OutboxDB, outboxMigrationFiles, openOutboxDB)
+	cmd.AddCommand(migrate)
 	cmd.InitDefaultCompletionCmd()
 	return cmd
 }

@@ -25,7 +25,6 @@ import (
 	"github.com/holiman/uint256"
 	"github.com/j0sh/boa/pkg/boa"
 	"github.com/livepeer/node/internal/test"
-	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 )
 
@@ -64,12 +63,6 @@ func TestPaidHTTPStartup(t *testing.T) {
 	defer rpc.Close()
 	p := paymentKeystoreParams(t, rpc.URL)
 	p.KeystoreFile, p.KeystorePasswordFile = test.WriteKeystore(t, nil)
-	password, err := os.ReadFile(p.KeystorePasswordFile)
-	require.NoError(t, err)
-	t.Setenv("LIVEPEER_ORCHESTRATOR_KEYSTORE_PASSWORD", string(password))
-	p.KeystorePasswordFile = ""
-	paramsCmd := boa.Cmd[Params]{Params: &p, ParamEnrich: boa.ParamEnricherCombine(boa.ParamEnricherDefault, boa.ParamEnricherEnv, boa.ParamEnricherEnvPrefix("LIVEPEER_ORCHESTRATOR"))}
-	require.NoError(t, paramsCmd.Validate())
 	p.Listen = netip.MustParseAddrPort(fmt.Sprintf("0.0.0.0:%d", mainPort))
 	p.MetricsListen = netip.MustParseAddrPort(fmt.Sprintf("127.0.0.1:%d", metricsPort))
 	p.ServiceURL = boa.Text[*url.URL]{Value: mustURL(t, "https://public.example/external")}
@@ -97,8 +90,7 @@ func TestPaidHTTPStartup(t *testing.T) {
 		return response.StatusCode == http.StatusOK
 	}, 5*time.Second, 20*time.Millisecond)
 	require.EqualValues(t, 1, requests.Load())
-	_, err = os.Stat(p.RedeemerDB)
-	require.NoError(t, err)
+	require.FileExists(t, p.RedeemerDB)
 	response, err := http.Get("http://" + p.MetricsListen.String() + "/readyz")
 	require.NoError(t, err)
 	response.Body.Close()
@@ -113,47 +105,45 @@ func TestPaidHTTPStartup(t *testing.T) {
 }
 
 func TestConfigPrecedenceAndRedaction(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.toml")
-	t.Setenv("LIVEPEER_ORCHESTRATOR_KEYSTORE_PASSWORD", "keystore-secret")
-	require.NoError(t, os.WriteFile(path, []byte(`ServiceURL = 'https://file.example'
+	for _, ext := range []string{".toml", ".json"} {
+		t.Run(ext, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config"+ext)
+			t.Setenv("LIVEPEER_ORCHESTRATOR_KEYSTORE_PASSWORD", "keystore-secret")
+			config := []byte(`ServiceURL = 'https://file.example'
 Listen = '127.0.0.1:8000'
 RedeemerMaxFeePerGas = '100'
-PaymentChainID = 1
-PaymentController = '0x0000000000000000000000000000000000000001'
+ChainID = 1
+Controller = '0x0000000000000000000000000000000000000001'
 WeiPerUSD = '1/2'
 KeystoreFile = '/missing/account.json'
-`), 0600))
-	t.Setenv("LIVEPEER_ORCHESTRATOR_SERVICE_URL", "https://env.example")
-	t.Setenv("LIVEPEER_ORCHESTRATOR_BOOTSTRAP_SECRET", "super-secret-env")
-	t.Setenv("LIVEPEER_ORCHESTRATOR_LISTEN", "127.0.0.1:8001")
-	t.Setenv("LIVEPEER_ORCHESTRATOR_REDEEMER_MAX_FEE_PER_GAS", "200")
-	t.Setenv("LIVEPEER_ORCHESTRATOR_PAYMENT_CHAIN_ID", "2")
-	t.Setenv("LIVEPEER_ORCHESTRATOR_PAYMENT_CONTROLLER_ADDRESS", "0x0000000000000000000000000000000000000002")
-	t.Setenv("LIVEPEER_ORCHESTRATOR_WEI_PER_USD", "2/3")
-	output, err := execute(t, "--config", path, "--listen", "127.0.0.1:8002",
-		"--service-url", "https://user:password@flag.example", "--redeemer-max-fee-per-gas", "300",
-		"--payment-chain-id", "3", "--payment-controller-address", "0x0000000000000000000000000000000000000003", "--print-config")
-	require.NoError(t, err)
-	require.Contains(t, output, "127.0.0.1:8002")
-	require.NotContains(t, output, "127.0.0.1:8001")
-	require.NotContains(t, output, "127.0.0.1:8000")
-	require.NotContains(t, output, "password")
-	require.NotContains(t, output, "keystore")
-	require.NotContains(t, output, "/missing/")
-	require.NotContains(t, output, "flag.example")
-	require.NotContains(t, output, "env.example")
-	require.NotContains(t, output, "super-secret-env")
-	require.NotContains(t, output, "keystore-secret")
-	require.NotContains(t, output, path)
-	require.Contains(t, output, `RedeemerMaxFeePerGas = "300"`)
-	var printed map[string]any
-	require.NoError(t, toml.Unmarshal([]byte(output), &printed))
-	require.EqualValues(t, 3, printed["PaymentChainID"])
-	require.Equal(t, "0x0000000000000000000000000000000000000003", printed["PaymentController"])
-	require.Equal(t, "2/3", printed["WeiPerUSD"])
-	require.Equal(t, "5s", printed["HeartbeatInterval"])
-	for _, key := range []string{"ServiceURL", "PaymentRPCURL", "BootstrapSecret", "KeystoreFile", "KeystorePassword", "KeystorePasswordFile", "RunnerConfig", "RedeemerDB", "TicketFaceValue"} {
-		require.NotContains(t, printed, key)
+`)
+			test.WriteConfig(t, path, string(config))
+			for key, value := range map[string]string{
+				"SERVICE_URL": "https://env.example", "BOOTSTRAP_SECRET": "super-secret-env", "LISTEN": "127.0.0.1:8001",
+				"REDEEMER_MAX_FEE_PER_GAS": "200", "CHAIN_ID": "2",
+				"CONTROLLER_ADDRESS": "0x0000000000000000000000000000000000000002", "WEI_PER_USD": "2/3",
+			} {
+				t.Setenv("LIVEPEER_ORCHESTRATOR_"+key, value)
+			}
+			output, err := execute(t, "--config", path, "--listen", "127.0.0.1:8002",
+				"--service-url", "https://user:password@flag.example", "--redeemer-max-fee-per-gas", "300",
+				"--chain-id", "3", "--controller-address", "0x0000000000000000000000000000000000000003", "--print-config")
+			require.NoError(t, err)
+			require.Contains(t, output, "127.0.0.1:8002")
+			for _, absent := range []string{"127.0.0.1:8001", "127.0.0.1:8000", "password", "keystore", "/missing/", "flag.example", "env.example", "super-secret-env", "keystore-secret", path} {
+				require.NotContains(t, output, absent)
+			}
+			require.Contains(t, output, `RedeemerMaxFeePerGas = "300"`)
+			var printed map[string]any
+			require.NoError(t, toml.Unmarshal([]byte(output), &printed))
+			require.EqualValues(t, 3, printed["ChainID"])
+			require.Equal(t, "0x0000000000000000000000000000000000000003", printed["Controller"])
+			require.Equal(t, "2/3", printed["WeiPerUSD"])
+			require.Equal(t, "5s", printed["HeartbeatInterval"])
+			for _, key := range []string{"ServiceURL", "RPCURL", "BootstrapSecret", "KeystoreFile", "KeystorePassword", "KeystorePasswordFile", "RunnerConfig", "TicketFaceValue"} {
+				require.NotContains(t, printed, key)
+			}
+		})
 	}
 }
 
@@ -161,7 +151,7 @@ func TestConfigRejectsUnknownAndDirectSecrets(t *testing.T) {
 	for _, content := range []string{
 		"unknown_key = 1\n",
 		"BootstrapSecret = 'forbidden'\n",
-		"PaymentRPCURL = 'https://forbidden.example'\n",
+		"RPCURL = 'https://forbidden.example'\n",
 		"KeystorePassword = 'forbidden'\n",
 		"payment_chain_id = 1\n",
 		"PrintConfig = true\n",
@@ -183,23 +173,18 @@ func TestSecretEnvironmentFileConflict(t *testing.T) {
 	require.NoError(t, os.WriteFile(secretFile, []byte("file-secret\n"), 0600))
 	t.Setenv("LIVEPEER_ORCHESTRATOR_BOOTSTRAP_SECRET", "env-secret")
 	_, err := execute(t, "--bootstrap-secret-file", secretFile, "--print-config")
-	require.Error(t, err)
-	require.True(t, strings.Contains(err.Error(), "cannot both be set"), err)
+	require.ErrorContains(t, err, "cannot both be set")
 }
 
 func TestSecretFilesPreserveBytesAndRedactErrors(t *testing.T) {
 	secretFile := filepath.Join(t.TempDir(), "secret")
 	require.NoError(t, os.WriteFile(secretFile, []byte("exact-secret\n"), 0600))
-	var resolved string
-	cmd := boa.Cmd[Params]{
-		Use: "test", RejectUnknown: true,
-		RunFuncE: func(p *Params, _ *cobra.Command, _ []string) error { resolved = p.BootstrapSecret; return nil },
-	}
-	require.NoError(t, cmd.RunArgsE([]string{"--bootstrap-secret-file", secretFile}))
-	require.Equal(t, "exact-secret\n", resolved)
+	var p Params
+	require.NoError(t, (boa.Cmd[Params]{Params: &p, RawArgs: []string{"--bootstrap-secret-file", secretFile}}).Validate())
+	require.Equal(t, "exact-secret\n", p.BootstrapSecret)
 	secret := "https://user:private-password@rpc.example/\n"
 	require.NoError(t, os.WriteFile(secretFile, []byte(secret), 0600))
-	_, err := execute(t, "--payment-rpc-url-file", secretFile, "--print-config")
+	_, err := execute(t, "--rpc-url-file", secretFile, "--print-config")
 	require.Error(t, err)
 	require.NotContains(t, err.Error(), "private-password")
 	require.NotContains(t, err.Error(), "rpc.example")
@@ -209,10 +194,9 @@ func TestValidationBeforeStartup(t *testing.T) {
 	t.Setenv("LIVEPEER_ORCHESTRATOR_BOOTSTRAP_SECRET", "test")
 	db := filepath.Join(t.TempDir(), "payments.sqlite")
 	_, err := execute(t, "--redeemer-db", db)
-	require.ErrorContains(t, err, "on-chain payment requires")
+	require.ErrorContains(t, err, "on-chain payments require")
 	require.True(t, boa.IsUserInputError(err))
-	_, err = os.Stat(db)
-	require.True(t, os.IsNotExist(err))
+	require.NoFileExists(t, db)
 	_, err = execute(t, "--metrics-listen", "0.0.0.0:8936")
 	require.ErrorContains(t, err, "loopback")
 	require.True(t, boa.IsUserInputError(err))
@@ -279,20 +263,21 @@ func paymentKeystoreParams(t *testing.T, endpoint string) Params {
 	return Params{
 		Listen: netip.MustParseAddrPort("127.0.0.1:0"), MetricsListen: netip.MustParseAddrPort("127.0.0.1:0"), ServiceURL: boa.Text[*url.URL]{Value: mustURL(t, "http://127.0.0.1:8935")},
 		BootstrapSecret: "test", HeartbeatInterval: time.Hour, HeartbeatTTL: 2 * time.Hour,
-		RedeemerDB: filepath.Join(t.TempDir(), "payments.sqlite"), PaymentRPCURL: mustURL(t, endpoint),
-		PaymentChainID: new(uint64(1)), PaymentController: new(ethcommon.HexToAddress("0x0000000000000000000000000000000000001000")),
+		RedeemerDB: filepath.Join(t.TempDir(), "payments.sqlite"), RPCURL: mustURL(t, endpoint),
+		ChainID: new(uint64(1)), Controller: new(ethcommon.HexToAddress("0x0000000000000000000000000000000000001000")),
 		WeiPerUSD: big.NewRat(1, 1), TicketFaceValue: uint256.NewInt(1), TicketWinProb: uint256.NewInt(1),
 	}
 }
 
 func TestPaymentKeystoreFailuresBeforeStartup(t *testing.T) {
+	t.Setenv("LIVEPEER_ORCHESTRATOR_NETWORK", "test")
 	path, passwordPath := test.WriteKeystore(t, nil)
 	require.NoError(t, os.WriteFile(passwordPath, []byte("wrong-secret"), 0600))
 	var requests atomic.Int32
 	rpc := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests.Add(1) }))
 	defer rpc.Close()
 	t.Setenv("LIVEPEER_ORCHESTRATOR_BOOTSTRAP_SECRET", "test")
-	t.Setenv("LIVEPEER_ORCHESTRATOR_PAYMENT_RPC_URL", rpc.URL)
+	t.Setenv("LIVEPEER_ORCHESTRATOR_RPC_URL", rpc.URL)
 	for source, name := range []string{"config", "env", "cli"} {
 		t.Run(name, func(t *testing.T) {
 			p := paymentKeystoreParams(t, rpc.URL)
@@ -300,8 +285,8 @@ func TestPaymentKeystoreFailuresBeforeStartup(t *testing.T) {
 			paths[source] = [2]string{path, passwordPath}
 			config := filepath.Join(t.TempDir(), "orchestrator.toml")
 			require.NoError(t, os.WriteFile(config, []byte(fmt.Sprintf("KeystoreFile = %q\nKeystorePasswordFile = %q\n", paths[0][0], paths[0][1])), 0600))
-			args := []string{"--config", config, "--redeemer-db", p.RedeemerDB, "--payment-chain-id", strconv.FormatUint(*p.PaymentChainID, 10),
-				"--payment-controller-address", p.PaymentController.Hex(), "--wei-per-usd", "1", "--ticket-face-value", "1", "--ticket-win-prob", "1"}
+			args := []string{"--config", config, "--redeemer-db", p.RedeemerDB, "--chain-id", strconv.FormatUint(*p.ChainID, 10),
+				"--controller-address", p.Controller.Hex(), "--wei-per-usd", "1", "--ticket-face-value", "1", "--ticket-win-prob", "1"}
 			if source > 0 {
 				t.Setenv("LIVEPEER_ORCHESTRATOR_KEYSTORE_FILE", paths[1][0])
 				t.Setenv("LIVEPEER_ORCHESTRATOR_KEYSTORE_PASSWORD_FILE", paths[1][1])
@@ -313,19 +298,22 @@ func TestPaymentKeystoreFailuresBeforeStartup(t *testing.T) {
 			require.ErrorContains(t, err, "cannot decrypt keystore")
 			require.NotContains(t, err.Error(), "wrong-secret")
 			require.Zero(t, requests.Load())
-			_, err = os.Stat(p.RedeemerDB)
-			require.True(t, os.IsNotExist(err))
+			require.NoFileExists(t, p.RedeemerDB)
 		})
 	}
 	for _, paths := range [][2]string{{}, {path, ""}, {"", passwordPath}} {
 		p := paymentKeystoreParams(t, rpc.URL)
 		p.KeystoreFile, p.KeystorePasswordFile = paths[0], paths[1]
+		p.DataDir = t.TempDir()
 		err := Serve(t.Context(), p, io.Discard)
-		require.ErrorContains(t, err, "on-chain payment requires")
+		if paths[1] == "" {
+			require.ErrorContains(t, err, "on-chain payment requires")
+		} else {
+			require.ErrorContains(t, err, "keystore directory")
+		}
 		require.NotContains(t, err.Error(), "wrong-secret")
 		require.Zero(t, requests.Load())
-		_, err = os.Stat(p.RedeemerDB)
-		require.True(t, os.IsNotExist(err))
+		require.NoFileExists(t, p.RedeemerDB)
 		if paths[0] != "" || paths[1] != "" {
 			// Either path alone requests paid mode; never silently start free.
 			p = Params{BootstrapSecret: "test", KeystoreFile: paths[0], KeystorePasswordFile: paths[1]}
@@ -333,4 +321,66 @@ func TestPaymentKeystoreFailuresBeforeStartup(t *testing.T) {
 		}
 	}
 	require.ErrorContains(t, (Params{BootstrapSecret: "test", KeystorePassword: new("")}).Validate(), "on-chain payment requires")
+}
+
+func TestDefaultStorageAndRecovery(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.Chmod(root, 0755))
+	legacy := filepath.Join(root, "lpdb.sqlite3")
+	require.NoError(t, os.WriteFile(legacy, []byte("legacy"), 0644))
+	_, err := execute(t, "migrate", "up", "--data-dir", root)
+	require.NoError(t, err)
+	path := filepath.Join(root, "orchestrator", "payments.sqlite")
+	info, err := os.Stat(filepath.Dir(path))
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0700), info.Mode().Perm())
+	require.FileExists(t, path)
+	config := `{"Network":"arbitrum-one-mainnet","KeystoreFile":"missing-key","KeystorePasswordFile":"missing-password","RPCURLFile":"missing-rpc","RunnerConfig":"missing-runners","BootstrapSecretFile":"missing-bootstrap"}`
+	require.NoError(t, os.WriteFile(filepath.Join(root, "orchestrator", "config.json"), []byte(config), 0600))
+	out, err := execute(t, "redemptions", "--data-dir", root, "--config", "orchestrator/config.json", "--network", "arbitrum-one-mainnet")
+	require.NoError(t, err)
+	require.JSONEq(t, "[]", out)
+	var requests atomic.Int32
+	rpc := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		var request struct{ ID any }
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&request))
+		require.NoError(t, json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": "0x1"}))
+	}))
+	defer rpc.Close()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "new-rpc"), []byte(rpc.URL), 0600))
+	_, err = execute(t, "redemptions", "--data-dir", root, "--config", "orchestrator/config.json", "--retry-transaction", ethcommon.Hash{31: 1}.Hex(), "--submit", "--rpc-url-file", "new-rpc", "--chain-id", "2")
+	require.ErrorContains(t, err, "chain ID", "explicit RPC file replaces the missing service credential")
+	require.Equal(t, int32(1), requests.Load())
+	data, err := os.ReadFile(legacy)
+	require.NoError(t, err)
+	require.Equal(t, "legacy", string(data))
+	info, err = os.Stat(legacy)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0644), info.Mode().Perm())
+	info, err = os.Stat(root)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0755), info.Mode().Perm())
+}
+
+func TestDisabledPaymentsDoNotCreateStorage(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "missing")
+	out, err := execute(t, "--data-dir", root, "--network", "arbitrum-one-mainnet", "--print-config")
+	require.NoError(t, err)
+	require.NotContains(t, out, "RedeemerDB")
+	require.NoDirExists(t, root)
+}
+
+func TestChainMismatchBeforeStorage(t *testing.T) {
+	rpc := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct{ ID any }
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&request))
+		require.NoError(t, json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": "0x2"}))
+	}))
+	defer rpc.Close()
+	p := paymentKeystoreParams(t, rpc.URL)
+	p.KeystoreFile, p.KeystorePasswordFile = test.WriteKeystore(t, nil)
+	p.RedeemerDB = filepath.Join(t.TempDir(), "missing", "payments.sqlite")
+	require.ErrorContains(t, Serve(t.Context(), p, io.Discard), "chain ID")
+	require.NoDirExists(t, filepath.Dir(p.RedeemerDB))
 }

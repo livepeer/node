@@ -49,12 +49,11 @@ func TestSignerConfigurationValidation(t *testing.T) {
 		change func(*Params)
 		want   string
 	}{
-		{"missing keystore", func(p *Params) { p.KeystoreFile = "" }, "keystore-file"},
 		{"missing password file", func(p *Params) { p.KeystorePasswordFile = "" }, "keystore-password-file"},
 		{"empty Kafka", func(p *Params) { p.Kafka = &KafkaConfig{} }, "kafka broker"},
 		{"RPC scheme", func(p *Params) { p.RPCURL = testURL(t, "file:///rpc") }, "RPC URL"},
 		{"Controller", func(p *Params) { p.Controller = ethcommon.Address{} }, "controller-address"},
-		{"feed", func(p *Params) { p.ETHUSDFeed = ethcommon.Address{} }, "eth-usd-feed"},
+		{"feed", func(p *Params) { p.ETHUSDFeed = ethcommon.Address{}; p.WeiPerUSD = nil }, "eth-usd-feed"},
 		{"hourly price", func(p *Params) { p.MaxHourlyPrice = big.NewRat(0, 1) }, "max-hourly-price"},
 		{"fixed price", func(p *Params) { p.MaxFixedPrice = big.NewRat(0, 1) }, "max-fixed-price"},
 		{"fixed rate", func(p *Params) { p.WeiPerUSD = big.NewRat(0, 1) }, "wei-per-usd"},
@@ -108,15 +107,17 @@ func TestSignerKeystoreSourcesFailBeforeStartup(t *testing.T) {
 }
 
 func TestSignerLoadsConfigAndSecretFiles(t *testing.T) {
-	folder := t.TempDir()
-	rpcFile := filepath.Join(folder, "rpc")
-	keyFile, passwordPath := test.WriteKeystore(t, nil)
-	headersFile := filepath.Join(folder, "headers")
-	webhookFile := filepath.Join(folder, "webhook")
-	require.NoError(t, os.WriteFile(rpcFile, []byte("http://localhost:8545?key=private-token"), 0600))
-	require.NoError(t, os.WriteFile(webhookFile, []byte("http://localhost:9000/auth"), 0600))
-	require.NoError(t, os.WriteFile(headersFile, []byte("Authorization: Bearer private-token, X-User: alice"), 0600))
-	config := fmt.Sprintf(`Listen = "127.0.0.1:9001"
+	for _, ext := range []string{".toml", ".json"} {
+		t.Run(ext, func(t *testing.T) {
+			folder := t.TempDir()
+			rpcFile := filepath.Join(folder, "rpc")
+			keyFile, passwordPath := test.WriteKeystore(t, nil)
+			headersFile := filepath.Join(folder, "headers")
+			webhookFile := filepath.Join(folder, "webhook")
+			require.NoError(t, os.WriteFile(rpcFile, []byte("http://localhost:8545?key=private-token"), 0600))
+			require.NoError(t, os.WriteFile(webhookFile, []byte("http://localhost:9000/auth"), 0600))
+			require.NoError(t, os.WriteFile(headersFile, []byte("Authorization: Bearer private-token, X-User: alice"), 0600))
+			config := fmt.Sprintf(`Listen = "127.0.0.1:9001"
 MetricsListen = "127.0.0.1:9002"
 KeystoreFile = %q
 KeystorePasswordFile = %q
@@ -124,6 +125,8 @@ RPCURLFile = %q
 AuthWebhookFile = %q
 AuthWebhookHeadersFile = %q
 ChainID = 42161
+Controller = "0xD8E8328501E9645d16Cf49539efC04f734606ee4"
+ETHUSDFeed = "0x639Fe6ab55C921f74e7fac1ee960C0B6293ba612"
 ETHUSDMaxAge = "1h"
 MaxHourlyPrice = "36"
 MaxFixedPrice = "1/2"
@@ -131,27 +134,29 @@ MaxTicketEV = "3000000000000"
 Orchestrators = ["http://localhost:8935"]
 DiscoveryGrants = ["localhost:8935"]
 `, keyFile, passwordPath, rpcFile, webhookFile, headersFile)
-	configFile := filepath.Join(folder, "signer.toml")
-	require.NoError(t, os.WriteFile(configFile, []byte(config), 0600))
-	var p Params
-	cmd := boa.Cmd[Params]{Params: &p, RawArgs: []string{"--config", configFile}, RejectUnknown: true}
-	require.NoError(t, cmd.Validate())
-	require.Equal(t, uint64(42161), *p.ChainID)
-	require.Equal(t, "0xD8E8328501E9645d16Cf49539efC04f734606ee4", p.Controller.Hex())
-	require.Equal(t, "0x639Fe6ab55C921f74e7fac1ee960C0B6293ba612", p.ETHUSDFeed.Hex())
-	require.Equal(t, netip.MustParseAddrPort("127.0.0.1:9001"), p.Listen)
-	require.Equal(t, keyFile, p.KeystoreFile)
-	require.Equal(t, passwordPath, p.KeystorePasswordFile)
-	require.NotNil(t, p.KeystorePassword)
-	require.Equal(t, "private-token", p.RPCURL.Query().Get("key"))
-	require.Equal(t, "http://localhost:9000/auth", p.AuthWebhook.String())
-	require.Equal(t, "Bearer private-token", http.Header(p.AuthWebhookHeaders).Get("Authorization"))
-	require.Equal(t, big.NewRat(36, 1), p.MaxHourlyPrice)
-	require.Equal(t, big.NewRat(1, 2), p.MaxFixedPrice)
-	require.Equal(t, time.Hour, p.ETHUSDMaxAge)
-	require.Equal(t, "http://localhost:8935", p.Orchestrators[0].Value.String())
-	require.Equal(t, []string{"localhost:8935"}, p.DiscoveryGrants)
-	require.NoError(t, p.Validate())
+			configFile := filepath.Join(folder, "signer"+ext)
+			test.WriteConfig(t, configFile, config)
+			var p Params
+			cmd := boa.Cmd[Params]{Params: &p, RawArgs: []string{"--config", configFile}, RejectUnknown: true}
+			require.NoError(t, cmd.Validate())
+			require.Equal(t, uint64(42161), *p.ChainID)
+			require.Equal(t, "0xD8E8328501E9645d16Cf49539efC04f734606ee4", p.Controller.Hex())
+			require.Equal(t, "0x639Fe6ab55C921f74e7fac1ee960C0B6293ba612", p.ETHUSDFeed.Hex())
+			require.Equal(t, netip.MustParseAddrPort("127.0.0.1:9001"), p.Listen)
+			require.Equal(t, keyFile, p.KeystoreFile)
+			require.Equal(t, passwordPath, p.KeystorePasswordFile)
+			require.NotNil(t, p.KeystorePassword)
+			require.Equal(t, "private-token", p.RPCURL.Query().Get("key"))
+			require.Equal(t, "http://localhost:9000/auth", p.AuthWebhook.String())
+			require.Equal(t, "Bearer private-token", http.Header(p.AuthWebhookHeaders).Get("Authorization"))
+			require.Equal(t, big.NewRat(36, 1), p.MaxHourlyPrice)
+			require.Equal(t, big.NewRat(1, 2), p.MaxFixedPrice)
+			require.Equal(t, time.Hour, p.ETHUSDMaxAge)
+			require.Equal(t, "http://localhost:8935", p.Orchestrators[0].Value.String())
+			require.Equal(t, []string{"localhost:8935"}, p.DiscoveryGrants)
+			require.NoError(t, p.Validate())
+		})
+	}
 }
 
 func loadSignerParams(t *testing.T, args []string, config string) (Params, error) {
@@ -272,14 +277,6 @@ func TestSignerReadiness(t *testing.T) {
 				return address
 			}
 			p.Listen, p.MetricsListen = free(), free()
-			if fixedRate {
-				password, err := os.ReadFile(p.KeystorePasswordFile)
-				require.NoError(t, err)
-				t.Setenv("LIVEPEER_SIGNER_KEYSTORE_PASSWORD", string(password))
-				p.KeystorePasswordFile = ""
-				paramsCmd := boa.Cmd[Params]{Params: &p, ParamEnrich: boa.ParamEnricherCombine(boa.ParamEnricherDefault, boa.ParamEnricherEnv, boa.ParamEnricherEnvPrefix("LIVEPEER_SIGNER"))}
-				require.NoError(t, paramsCmd.Validate())
-			}
 			var outbox *eventOutbox
 			if fixedRate {
 				eventBytes, err := json.Marshal(testEvent())
@@ -342,4 +339,30 @@ func TestSignerReadiness(t *testing.T) {
 			require.Equal(t, 200, get("/readyz"), "storage readiness recovers even while Kafka is unavailable")
 		})
 	}
+}
+
+func TestStorageDefaultsAndChainCheck(t *testing.T) {
+	root := t.TempDir()
+	cmd := Root(io.Discard, io.Discard)
+	cmd.SetArgs([]string{"migrate", "up", "--data-dir", root})
+	require.NoError(t, cmd.Execute())
+	path := filepath.Join(root, "signer", "events.sqlite")
+	info, err := os.Stat(filepath.Dir(path))
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0700), info.Mode().Perm())
+	require.FileExists(t, path)
+	rpc := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct{ ID any }
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&request))
+		require.NoError(t, json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": "0x2"}))
+	}))
+	defer rpc.Close()
+	p := validParams(t)
+	p.KeystoreFile, p.KeystorePasswordFile = test.WriteKeystore(t, nil)
+	p.RPCURL = testURL(t, rpc.URL)
+	p.ChainID = new(uint64(1))
+	p.Kafka = &KafkaConfig{OutboxDB: filepath.Join(root, "missing", "events.sqlite"), OutboxMaxBytes: 1024, Topic: "events", AuthMethod: "scram-sha-512"}
+	require.NoError(t, p.Kafka.Broker.UnmarshalText([]byte("broker.example.com")))
+	require.ErrorContains(t, serve(t.Context(), p), "chain ID")
+	require.NoDirExists(t, filepath.Join(root, "missing"))
 }

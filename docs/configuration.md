@@ -1,11 +1,44 @@
 # Configuration and secrets
 
-Each component reads strict TOML through `--config`. Unknown keys are rejected.
+Services read TOML (`.toml`) or JSON (`.json`). Unknown keys are rejected;
+migration and recovery commands read needed settings and ignore unrelated keys.
 Use the [orchestrator](../configs/orchestrator/config.example.toml),
 [signer](../configs/signer/config.example.toml), and
 [chain](../configs/chain/config.example.toml) examples as starting points.
-Paths in configuration are resolved from the process's working directory;
-use absolute paths in deployed configurations.
+
+The fixed default data directory is `~/.lpData/arbitrum-one-mainnet` for chain and
+signer, and `~/.lpData/offchain` for orchestrator. The layout shares accounts with
+go-livepeer:
+
+```text
+keystore/                 # Shared accounts
+lpdb.sqlite3              # Legacy database, left untouched
+chain/config.toml
+signer/config.toml
+signer/events.sqlite      # When Kafka accounting is enabled
+orchestrator/config.toml
+orchestrator/payments.sqlite # When payments are enabled
+```
+
+`--network` defaults to `arbitrum-one-mainnet` for chain and signer, and `offchain`
+for orchestrator. Arbitrum supplies chain, Controller, and ETH/USD feed defaults.
+Custom networks require explicit chain and Controller settings. Signers and paid
+orchestrators also need a feed or fixed conversion rate.
+Paid orchestrators must select an on-chain network. RPC chain IDs are checked.
+
+Boa selects `DataDir` before reading TOML, using CLI > environment > default.
+A relative `--data-dir` resolves against the original working directory. Relative
+file paths from flags, environment variables, and TOML then resolve from DataDir;
+absolute paths and the working directory stay unchanged. Empty environment values
+are ignored. `Network` may come from TOML, but never relocates storage. Use
+`--data-dir` to choose another root, including sharing the mainnet keystore with
+an orchestrator. `DataDir` cannot be set in TOML.
+
+By default, each app looks for `<data-dir>/<component>/config.toml`. A missing
+file matching that default is skipped; other missing paths and invalid files
+fail. `--config FILE` or the component's `CONFIG` environment variable selects
+a file; `--config=""` disables discovery. CLI and environment values take
+precedence over TOML.
 
 ## Names and environment variables
 
@@ -65,15 +98,15 @@ valid URL without a trailing newline.
 
 ## Ethereum keystores
 
-All three apps load one encrypted geth Web3 v3 account JSON file. Point to the
-individual account file inside the keystore directory. The chain CLI can create
-new account files; directory discovery and account imports use external tooling.
+All three apps discover encrypted geth accounts in `<data-dir>/keystore/`.
+A sole account is selected automatically. Use `--account` (`Account` in TOML) to
+select among accounts, or `--keystore-file` to select a file explicitly.
 
 | App | Keystore TOML key | Password-file TOML key |
 | --- | --- | --- |
 | All three | `KeystoreFile` | `KeystorePasswordFile` |
 
-Signing requires a keystore file protected by a password (`--keystore-file`).
+Signing requires the selected keystore's password.
 Supply the password in a file (`--keystore-password-file`) or an environment
 variable. Environment variables use the app prefix, such as
 `LIVEPEER_SIGNER_KEYSTORE_PASSWORD_FILE` for a password file or
@@ -107,21 +140,21 @@ owner-only password file in an existing directory:
 umask 077
 openssl rand -hex 32 | tr -d '\n' > /path/to/password
 bin/livepeer chain account create \
-  --keystore-file /path/to/account.json \
   --keystore-password-file /path/to/password
 ```
 
 Creation requires no RPC or account address. It encrypts a freshly generated key
 with geth's standard scrypt settings and writes the keystore with `0600`
-permissions. The destination's parent directory must exist. Any existing path,
-including a symlink or directory, causes an error and is left untouched. The
+permissions in `<data-dir>/keystore/`. An optional `--keystore-file` chooses a
+new file in an existing parent directory; existing paths are never overwritten. The
 command prints the new public address; add `--output json` for scripts. The
 password can also come from `LIVEPEER_CHAIN_KEYSTORE_PASSWORD`.
 
 ## Local storage and probes
 
-Create database parent directories before starting a paid orchestrator or a
-signer with Kafka. Keep their SQLite files owner-only and on persistent storage.
+Missing storage directories are created with `0700` permissions; existing
+directory permissions are preserved. Keep SQLite files on persistent storage,
+and use separate database paths for separate instances.
 For signer accounting, use an owner-only parent directory and preserve those
 permissions on SQLite's WAL and SHM files during restore.
 See [payment recovery](payment-recovery.md) for backup and restart procedures.

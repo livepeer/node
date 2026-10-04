@@ -67,10 +67,12 @@ func TestRealBinaryOffchainFlow(t *testing.T) {
 			require.NoError(t, err, string(forwarded))
 			require.Equal(t, string(actual), string(forwarded), "component=%s args=%v", component, arguments)
 			golden := filepath.Join(root, "cmd", "livepeer", "testdata", "cli", component+"-"+strings.TrimPrefix(strings.Join(arguments, "-"), "--")+".golden")
-			value := actual
+			home, err := os.UserHomeDir()
+			require.NoError(t, err)
+			value := bytes.ReplaceAll(actual, []byte(home), []byte("$HOME"))
 			if arguments[0] == "completion" {
 				// The generated shell boilerplate is large; pin its complete digest.
-				value = fmt.Appendf(nil, "%x\n", sha256.Sum256(actual))
+				value = fmt.Appendf(nil, "%x\n", sha256.Sum256(value))
 			}
 			if os.Getenv("UPDATE_CLI_GOLDENS") == "1" {
 				require.NoError(t, os.MkdirAll(filepath.Dir(golden), 0755))

@@ -8,26 +8,10 @@ import (
 	"io"
 	"math/big"
 
-	"github.com/BurntSushi/toml"
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
-	"github.com/j0sh/boa/pkg/boa"
 	"github.com/livepeer/node/eth"
 )
-
-func init() {
-	boa.RegisterConfigFormat(".toml", unmarshalConfig)
-	boa.RegisterConfigMarshaler(".toml", toml.Marshal)
-}
-
-func unmarshalConfig(data []byte, target any) error {
-	// Detach pointers shared with Boa's CLI/env mirrors before TOML writes
-	// through them. Boa restores higher-priority values after decoding.
-	if p, ok := target.(*RootParams); ok {
-		p.ChainID, p.Account, p.MaxFeePerGas = nil, nil, nil
-	}
-	return toml.Unmarshal(data, target)
-}
 
 func Status(ctx context.Context, p OperatorParams, display DisplayOptions, out io.Writer) error {
 	client, chainID, err := checkedClient(ctx, p)

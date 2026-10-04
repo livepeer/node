@@ -147,9 +147,9 @@ func TestOptionalKafkaBoaConfiguration(t *testing.T) {
 		{name: "env defaults", env: map[string]string{"BROKER": "[::1]:9093", "TOPIC": "signing"}},
 		{name: "flag missing topic", args: []string{"--kafka-broker", "kafka://broker:9092"}, want: "topic"},
 		{name: "flag missing broker", args: []string{"--kafka-topic", "signing"}, want: "broker"},
-		{name: "outbox flag enables Kafka", args: []string{"--kafka-outbox-db", "signer-events.sqlite"}, want: "broker"},
+		{name: "outbox flag enables Kafka", args: []string{"--kafka-outbox-db", "signer/events.sqlite"}, want: "broker"},
 		{name: "capacity flag enables Kafka", args: []string{"--kafka-outbox-max-bytes", "268435456"}, want: "broker"},
-		{name: "outbox env enables Kafka", env: map[string]string{"OUTBOX_DB": "signer-events.sqlite"}, want: "broker"},
+		{name: "outbox env enables Kafka", env: map[string]string{"OUTBOX_DB": "signer/events.sqlite"}, want: "broker"},
 		{name: "outbox config enables Kafka", config: "[Kafka]\nOutboxDB = 'signer-events.sqlite'\n", want: "broker"},
 		{name: "empty outbox rejected", args: []string{"--kafka-broker", "kafka://broker:9092", "--kafka-topic", "signing", "--kafka-outbox-db", ""}, want: "outbox"},
 		{name: "invalid auth method rejected", args: []string{"--kafka-broker", "kafka://broker:9092", "--kafka-topic", "signing", "--kafka-auth-method", "invalid"}, want: "auth-method"},
@@ -158,6 +158,7 @@ func TestOptionalKafkaBoaConfiguration(t *testing.T) {
 		{name: "empty auth method config rejected", config: "[Kafka]\nBroker = 'kafka://broker'\nTopic = 'signing'\nAuthMethod = ''\n", want: "auth-method"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("LIVEPEER_SIGNER_DATA_DIR", t.TempDir())
 			for name, value := range test.env {
 				t.Setenv("LIVEPEER_SIGNER_KAFKA_"+name, value)
 			}
@@ -175,14 +176,13 @@ func TestOptionalKafkaBoaConfiguration(t *testing.T) {
 				return
 			}
 			require.NotNil(t, p.Kafka)
-			require.Equal(t, "signer-events.sqlite", p.Kafka.OutboxDB)
+			require.Equal(t, filepath.Join(p.DataDir, "signer/events.sqlite"), p.Kafka.OutboxDB)
 			require.Equal(t, int64(268435456), p.Kafka.OutboxMaxBytes)
 			require.Equal(t, "scram-sha-512", p.Kafka.AuthMethod)
-			t.Chdir(t.TempDir())
 			producer, err := openKafkaProducer(t.Context(), p.Kafka, "payer")
 			require.NoError(t, err)
 			t.Cleanup(func() { require.NoError(t, producer.Close()) })
-			info, err := os.Stat("signer-events.sqlite")
+			info, err := os.Stat(p.Kafka.OutboxDB)
 			require.NoError(t, err)
 			require.Equal(t, os.FileMode(0600), info.Mode().Perm())
 		})

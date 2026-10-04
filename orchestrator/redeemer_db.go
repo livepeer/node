@@ -60,6 +60,9 @@ func openRedeemerDB(ctx context.Context, path string, create bool) (*sql.DB, err
 	}
 	flags := os.O_RDWR
 	if create {
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			return nil, err
+		}
 		flags |= os.O_CREATE
 	}
 	file, err := os.OpenFile(path, flags, 0600)

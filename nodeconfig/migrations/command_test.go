@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"testing"
 	"testing/fstest"
 
@@ -18,6 +19,22 @@ import (
 
 var files = fstest.MapFS{
 	"migrations/001_initial.sql": {Data: []byte("-- UP\nCREATE TABLE items(id INTEGER PRIMARY KEY);\n-- DOWN\nDROP TABLE items;")},
+}
+
+func command(flag, env, defaultDB string, files fs.FS, open func(context.Context, string, bool) (*sql.DB, error)) *cobra.Command {
+	type params struct {
+		DB string `persistent:"true"`
+	}
+	p := new(params)
+	return migrations.Command(boa.Cmd[params]{Params: p, InitFuncCtx: func(ctx *boa.HookContext, p *params, _ *cobra.Command) error {
+		db := boa.Param(ctx, &p.DB)
+		db.SetName(flag)
+		db.SetEnv(env)
+		if defaultDB != "" {
+			db.SetDefault(defaultDB)
+		}
+		return nil
+	}}, &p.DB, files, open)
 }
 
 func TestCommand(t *testing.T) {
@@ -46,8 +63,8 @@ func TestCommand(t *testing.T) {
 			if tc.action == "down" {
 				require.NoError(t, migrations.Up(t.Context(), db, fstest.MapFS{"001_initial.sql": files["migrations/001_initial.sql"]}))
 			}
-			command := migrations.Command("store-db", "TEST_MIGRATIONS_DB", tc.defaultDB, files, func(ctx context.Context, dbPath string, mayCreate bool) (*sql.DB, error) {
-				require.Equal(t, t.Context(), ctx)
+			command := command("store-db", "TEST_MIGRATIONS_DB", tc.defaultDB, files, func(ctx context.Context, dbPath string, mayCreate bool) (*sql.DB, error) {
+				require.Equal(t, t.Context().Done(), ctx.Done())
 				path, create = dbPath, mayCreate
 				calls++
 				return db, nil
@@ -83,7 +100,7 @@ func TestCommand(t *testing.T) {
 
 func TestCommandOpenErrorAndHelp(t *testing.T) {
 	wantError := errors.New("database open failed")
-	command := migrations.Command("store-db", "TEST_MIGRATIONS_DB", "default.sqlite", files, func(context.Context, string, bool) (*sql.DB, error) {
+	command := command("store-db", "TEST_MIGRATIONS_DB", "default.sqlite", files, func(context.Context, string, bool) (*sql.DB, error) {
 		return nil, wantError
 	})
 	var output bytes.Buffer

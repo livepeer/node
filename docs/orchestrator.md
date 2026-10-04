@@ -97,17 +97,18 @@ a lowercase DNS label of at most 63 characters.
 
 ## Enable payments
 
-Paid operation requires all of these settings:
+For paid operation, select an on-chain `Network` and supply:
 
-- `RedeemerDB` / `--redeemer-db`: persistent SQLite path for the redeemer
-- `KeystoreFile` and a password: encrypted
-  recipient account JSON and its password; see
+- An account and its password; see
   [Ethereum keystores](configuration.md#ethereum-keystores).
-- `PaymentRPCURLFile` or `LIVEPEER_ORCHESTRATOR_PAYMENT_RPC_URL`: RPC credential.
-- `PaymentChainID` and `PaymentController`: a positive uint64 chain ID and nonzero Controller address.
+- `RPCURLFile` or `LIVEPEER_ORCHESTRATOR_RPC_URL`: RPC credential.
+- `ChainID` and `Controller` for custom networks.
 - `TicketFaceValue` and `TicketWinProb`: positive uint256 ticket parameters.
   The winning probability must be less than `2^256 - 1`.
-- Exactly one conversion source: `WeiPerUSD` or `ETHUSDFeed`.
+- Exactly one conversion source: `WeiPerUSD` or `ETHUSDFeed` (Arbitrum supplies a feed).
+
+The payment database has a [default path](configuration.md); `RedeemerDB` /
+`--redeemer-db` overrides it.
 
 Incomplete paid configuration fails startup. The recipient must be active on
 the configured chain. Runner prices use USD per hour for live work or USD per

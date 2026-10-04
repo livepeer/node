@@ -1,8 +1,10 @@
 # Signer TOML uses the names shown below; flags use kebab-case.
 # See docs/signer.md and docs/configuration.md.
+# Network = "arbitrum-one-mainnet"
 Listen = "127.0.0.1:8937"
 MetricsListen = "127.0.0.1:8938"
-KeystoreFile = "/run/secrets/livepeer-signer-keystore.json"
+# Account = "0xYOUR_ACCOUNT" # Select among shared accounts.
+# KeystoreFile = "/run/secrets/livepeer-signer-keystore.json" # Override discovery.
 KeystorePasswordFile = "/run/secrets/livepeer-signer-keystore-password"
 # Encrypted geth account JSON; both files must be owner-only.
 # To use LIVEPEER_SIGNER_KEYSTORE_PASSWORD instead, remove KeystorePasswordFile.
@@ -13,7 +15,7 @@ DiscoveryGrants = []
 # The signer requires an on-chain connection at startup.
 # The RPC URL is an exact-byte secret file (omit a trailing newline).
 RPCURLFile = "/run/secrets/livepeer-signer-rpc-url"
-# Optional assertion against eth_chainId; omitted means use the RPC's chain.
+# Arbitrum mainnet defaults; custom networks require chain and contract settings.
 # ChainID = 42161
 # Defaults target Arbitrum mainnet; override for another chain.
 # Controller = "0xD8E8328501E9645d16Cf49539efC04f734606ee4"
@@ -52,8 +54,8 @@ DepositMultiplier = 1
 # Optional durable accounting events. Omit all Kafka settings to disable.
 # Supplying any Kafka setting requires Broker and Topic.
 # Provide one bootstrap host[:port]; Kafka discovers other brokers.
-# OutboxDB defaults to signer-events.sqlite in the working directory.
-# For an override, create the parent directory first; keep one outbox per replica.
+# OutboxDB defaults to signer/events.sqlite under the data directory.
+# Keep one outbox per replica.
 # TLS with system trust roots is the default when the scheme is omitted.
 # kafka:// explicitly uses plaintext transport; kafkas:// explicitly uses TLS.
 # Credentials must be paired and enable SASL. AuthMethod is a strict enum:

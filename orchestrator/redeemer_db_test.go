@@ -25,10 +25,12 @@ func TestRedeemerSQLiteFilePermissions(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "payment.sqlite")
 	store, err := OpenRedeemerDB(path)
 	require.NoError(t, err)
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		info, err := os.Stat(path + suffix)
+		require.NoError(t, err)
+		require.Equal(t, os.FileMode(0600), info.Mode().Perm())
+	}
 	require.NoError(t, store.Close())
-	info, err := os.Stat(path)
-	require.NoError(t, err)
-	require.Equal(t, os.FileMode(0600), info.Mode().Perm())
 	require.NoError(t, os.Chmod(path, 0644))
 	_, err = OpenRedeemerDB(path)
 	require.ErrorContains(t, err, "owner-only")

@@ -1,6 +1,7 @@
+# Network = "arbitrum-one-mainnet"
 RPCURLFile = "/run/secrets/livepeer-chain-rpc-url"
-# ChainID = 42161 # Optional expected RPC chain ID
-# Account = "0x0123456789abcdef0123456789abcdef01234567"
+# ChainID = 42161 # Arbitrum mainnet default
+# Account = "0x0123456789abcdef0123456789abcdef01234567" # Select among shared accounts
 # Controller = "0xD8E8328501E9645d16Cf49539efC04f734606ee4" # Arbitrum mainnet default
 # MaxFeePerGas = "1000000000" # Optional ceiling, wei per gas
 # KeystoreFile = "/run/secrets/livepeer-chain-keystore.json"
@@ -8,6 +9,7 @@ RPCURLFile = "/run/secrets/livepeer-chain-rpc-url"
 # Both files must be owner-only. The password is read as exact bytes (no newline).
 # Or use LIVEPEER_CHAIN_KEYSTORE_PASSWORD and omit KeystorePasswordFile.
 # Needed for --submit and local signing; see docs/configuration.md and docs/chain.md.
+# account create uses KeystoreFile as a new output path and the same password inputs.
 
 # Action inputs and output controls must be provided on the command line.
 # Example dry run:

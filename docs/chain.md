@@ -5,9 +5,10 @@ related to the Livepeer protocol. Use it to check balances, stake LPT, register
 an orchestrator, withdraw funds, or vote on protocol proposals.
 
 Run it as `bin/livepeer chain` or `bin/livepeer-chain`. Configure the blockchain
-connection (RPC endpoint) and `Account` using a
+connection (RPC endpoint) using a
 [chain config](../configs/chain/config.example.toml) or environment variables.
-Use `--account` or `LIVEPEER_CHAIN_ACCOUNT`; see [configuration and secrets](configuration.md) for setup and keystores.
+Accounts can be inferred from the shared keystore. Use `--account` or
+`LIVEPEER_CHAIN_ACCOUNT` to select one; see [configuration and secrets](configuration.md).
 
 ```sh
 bin/livepeer chain --config /etc/livepeer/chain.toml account get
@@ -15,31 +16,17 @@ bin/livepeer chain --config /etc/livepeer/chain.toml stake bond ADDRESS --amount
 ```
 
 Transaction commands perform a dry run by default. Add `--submit` to sign and broadcast transactions and wait for
-inclusion in a block. Submissions require a keystore matching the configured
-account; reads and dry runs need no key.
+inclusion in a block. Submissions require a keystore matching the selected
+account; reads and dry runs need no password.
 
 Prefix all commands below by `bin/livepeer chain`. Add `--config FILE` to load a configuration file, or `--help` to see a command's flags and defaults.
 
 ## Accounts and protocol state
 
-First prepare a password file, then create a new encrypted account file locally:
-
-```sh
-umask 077
-openssl rand -hex 32 | tr -d '\n' > /path/to/password
-bin/livepeer chain account create \
-  --keystore-file /path/to/account.json \
-  --keystore-password-file /path/to/password
-```
-
-The password file must already exist and be owner-only. Creation also accepts
-`LIVEPEER_CHAIN_KEYSTORE_PASSWORD`. It needs no RPC or configured account, writes
-the keystore with `0600` permissions, and prints the new public address. The
-destination's parent directory must exist; creation refuses to overwrite any
-existing path. Add `--output json` to receive `{"address":"0x..."}`. See
+`account create --keystore-password-file /path/to/password` creates an encrypted
+account in the shared keystore and prints its address. See
 [keystore setup](configuration.md#prepare-a-keystore) for password preparation
-and backups. Missing keystores during signing or service startup still cause an
-error; accounts are created only by this explicit command.
+and file overrides.
 
 | Command | Purpose |
 | --- | --- |

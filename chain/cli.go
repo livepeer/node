@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"io"
+	"path/filepath"
 	"strings"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/j0sh/boa/pkg/boa"
 	"github.com/livepeer/node/eth"
+	"github.com/livepeer/node/nodeconfig"
 	"github.com/livepeer/node/version"
 	"github.com/spf13/cobra"
 )
@@ -111,19 +113,20 @@ func accountCommand(root *RootParams) boa.Cmd[boa.NoParams] {
 	command.SubCmds = boa.SubCmds(
 		readCommand(root, "get", "Read ETH/LPT balances and pending nonce", Account),
 		boa.Cmd[boa.NoParams]{Use: "create", Short: "Create a new encrypted keystore locally without overwriting an existing file",
-			Long: "Create a new encrypted keystore locally. --keystore-file is the new output file.\n" +
-				"--keystore-password-file is an existing owner-only input file containing the\n" +
-				"encryption password; this command does not create a password file or prompt\n" +
-				"for a password. Alternatively, supply LIVEPEER_CHAIN_KEYSTORE_PASSWORD.\n" +
-				"The output's parent directory must exist. No RPC or account address is needed.\n\n" +
-				"Example:\n  umask 077\n" +
-				"  openssl rand -hex 32 | tr -d '\\n' > account.password\n" +
-				"  livepeer-chain account create --keystore-file account.json --keystore-password-file account.password",
+			Long: "Create an encrypted account in <data-dir>/keystore. Use --keystore-file to choose\n" +
+				"a new output file instead. Supply an owner-only --keystore-password-file or\n" +
+				"LIVEPEER_CHAIN_KEYSTORE_PASSWORD. No RPC or account address is needed.",
 			Args: cobra.NoArgs, RunFuncE: func(_ *boa.NoParams, cmd *cobra.Command, _ []string) error {
 				if root.PrintConfig {
 					return root.OperatorParams.printConfig(cmd.OutOrStdout())
 				}
-				address, err := eth.CreateKeystore(root.KeystoreFile, root.KeystorePassword, root.KeystorePasswordFile)
+				create := func() (common.Address, error) {
+					if root.KeystoreFile != "" {
+						return eth.CreateKeystore(nodeconfig.Path(root.DataDir, root.KeystoreFile), root.KeystorePassword, root.KeystorePasswordFile)
+					}
+					return eth.CreateAccount(filepath.Join(root.DataDir, "keystore"), root.KeystorePassword, root.KeystorePasswordFile)
+				}
+				address, err := create()
 				if err != nil {
 					return err
 				}
@@ -135,10 +138,16 @@ func accountCommand(root *RootParams) boa.Cmd[boa.NoParams] {
 
 func Root(out, errOut io.Writer) *cobra.Command {
 	params := new(RootParams)
-	root := (boa.Cmd[RootParams]{
+	root := nodeconfig.Command("chain", nodeconfig.Mainnet, boa.Cmd[RootParams]{
 		Use: "livepeer-chain", Short: "Direct Livepeer Ethereum management", Version: version.String(),
 		Params: params, RejectUnknown: true, Args: cobra.NoArgs,
-		ParamEnrich: boa.ParamEnricherCombine(boa.ParamEnricherDefault, boa.ParamEnricherEnv, boa.ParamEnricherEnvPrefix("LIVEPEER_CHAIN")),
+		PreValidateFuncCtx: func(ctx *boa.HookContext, p *RootParams, _ *cobra.Command, _ []string) error {
+			if p.Network == nodeconfig.Mainnet {
+				nodeconfig.Default(ctx, &p.ChainID, new(uint64(42161)))
+				nodeconfig.Default(ctx, &p.Controller, nodeconfig.Controller)
+			}
+			return nil
+		},
 		RunFuncE: func(p *RootParams, cmd *cobra.Command, _ []string) error {
 			if p.PrintConfig {
 				return p.OperatorParams.printConfig(cmd.OutOrStdout())

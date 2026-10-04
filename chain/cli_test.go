@@ -116,7 +116,7 @@ func TestActionValidationBeforeRPC(t *testing.T) {
 		{[]string{"ticketbroker", "fund", "--amount", "0", "--reserve", "0"}, "cannot both be zero"},
 		{[]string{"ticketbroker", "fund", "--amount", "115792089237316195423570985008687907853269984665640564039457584007913129639935", "--reserve", "1", "--base-units"}, "total exceeds uint256"},
 		{[]string{"ticketbroker", "unlock", "--no-wait", "--max-transaction-replacements", "1"}, "no-wait"},
-		{[]string{"ticketbroker", "unlock", "--submit"}, "keystore-file"},
+		{[]string{"ticketbroker", "unlock", "--submit"}, "keystore-password"},
 		{[]string{"ticketbroker", "unlock", "--submit", "--keystore-file", path}, "keystore-password-file"},
 		{[]string{"ticketbroker", "unlock", "--submit", "--keystore-password-file", passwordPath}, "keystore-file"},
 		{[]string{"ticketbroker", "unlock", "--submit", "--keystore-file", path, "--keystore-password-file", passwordPath}, "cannot decrypt keystore"},
@@ -142,6 +142,7 @@ func TestActionValidationBeforeRPC(t *testing.T) {
 }
 
 func TestAccountRequiredBeforeRPC(t *testing.T) {
+	t.Setenv("LIVEPEER_CHAIN_DATA_DIR", t.TempDir())
 	t.Setenv("LIVEPEER_CHAIN_ACCOUNT", "")
 	t.Setenv("LIVEPEER_CHAIN_RPC_URL", "http://localhost:1")
 	for _, command := range []string{"account get", "orchestrator get", "ticketbroker unlock"} {
@@ -149,7 +150,7 @@ func TestAccountRequiredBeforeRPC(t *testing.T) {
 			var output bytes.Buffer
 			root := Root(&output, &output)
 			root.SetArgs(strings.Fields(command))
-			require.ErrorContains(t, root.Execute(), "account address is required")
+			require.ErrorContains(t, root.Execute(), "keystore directory is unavailable")
 			require.Empty(t, output.String())
 		})
 	}
@@ -198,6 +199,56 @@ func TestConfigRejectsInvocationInputs(t *testing.T) {
 
 func loadInvocationConfig[T any](data []byte) error {
 	return boa.LoadConfigBytes(data, ".toml", new(T), nil)
+}
+
+func TestDataDirectoryAndConfigDiscovery(t *testing.T) {
+	working := t.TempDir()
+	t.Chdir(working)
+	t.Setenv("HOME", working)
+	for _, key := range []string{"NETWORK", "DATA_DIR", "CONFIG", "RPC_URL", "RPC_URL_FILE"} {
+		t.Setenv("LIVEPEER_CHAIN_"+key, "")
+	}
+	run := func(args ...string) (string, error) {
+		var out bytes.Buffer
+		cmd := Root(&out, &out)
+		cmd.SetArgs(append(args, "--print-config"))
+		err := cmd.Execute()
+		return out.String(), err
+	}
+	_, err := run()
+	require.NoError(t, err, "missing default config and empty environment are optional")
+	require.NoDirExists(t, filepath.Join(working, ".lpData"))
+	_, err = run("--config", "missing.toml")
+	require.ErrorContains(t, err, "no such file")
+	for i, dir := range []string{filepath.Join(".lpData", "arbitrum-one-mainnet"), "env", "cli"} {
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "chain"), 0700))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "rpc"), []byte("http://localhost:8545"), 0600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "chain/config.toml"), fmt.Appendf(nil, "Network = 'custom'\nChainID = %d\nRPCURLFile = 'rpc'\n", i+1), 0600))
+	}
+	for i, args := range [][]string{nil, {"--network", "another"}, {"--data-dir", "cli", "--network", "arbitrum-one-mainnet"}} {
+		if i > 0 {
+			t.Setenv("LIVEPEER_CHAIN_DATA_DIR", "env")
+		}
+		out, err := run(args...)
+		require.NoError(t, err)
+		require.Contains(t, out, fmt.Sprintf("ChainID = %d", i+1))
+		if i == 0 {
+			require.Contains(t, out, `Network = "custom"`)
+		}
+	}
+	for _, invalid := range []string{"[", "Unknown = true", "DataDir = 'elsewhere'"} {
+		require.NoError(t, os.WriteFile("env/chain/config.toml", []byte(invalid), 0600))
+		_, err := run()
+		require.Error(t, err)
+		_, err = run("--config=")
+		require.NoError(t, err)
+	}
+	t.Setenv("HOME", "")
+	t.Setenv("LIVEPEER_CHAIN_DATA_DIR", "")
+	_, err = run("--data-dir", "cli")
+	require.NoError(t, err)
+	_, err = run()
+	require.ErrorContains(t, err, "data-dir")
 }
 
 func TestActionEnvironmentCannotSupplyInputs(t *testing.T) {
@@ -260,7 +311,10 @@ func TestOperatorSourcesAndFlagPlacement(t *testing.T) {
 	passwordFile := filepath.Join(dir, "password")
 	require.NoError(t, os.WriteFile(passwordFile, []byte("unused password"), 0600))
 	config := filepath.Join(dir, "chain.toml")
-	require.NoError(t, os.WriteFile(config, []byte(fmt.Sprintf("RPCURLFile = %q\nChainID = 3\nAccount = %q\nMaxFeePerGas = '3'\nKeystoreFile = '/missing/account.json'\nKeystorePasswordFile = %q\n", rpcFile, testAccount, passwordFile)), 0600))
+	jsonConfig := filepath.Join(dir, "chain.json")
+	for _, path := range []string{config, jsonConfig} {
+		test.WriteConfig(t, path, fmt.Sprintf("RPCURLFile = %q\nChainID = 3\nAccount = %q\nMaxFeePerGas = '3'\nKeystoreFile = '/missing/account.json'\nKeystorePasswordFile = %q\n", rpcFile, testAccount, passwordFile))
+	}
 	partialConfig := filepath.Join(dir, "partial.toml")
 	require.NoError(t, os.WriteFile(partialConfig, []byte(fmt.Sprintf("RPCURLFile = %q\n", rpcFile)), 0600))
 
@@ -271,6 +325,8 @@ func TestOperatorSourcesAndFlagPlacement(t *testing.T) {
 		account, id string
 	}{
 		{"config only", []string{"--config", config, "account", "get", "--output", "json"}, false, testAccount, "0x3"},
+		{"JSON config", []string{"--config", jsonConfig, "account", "get", "--output", "json"}, false, testAccount, "0x3"},
+		{"CLI over JSON", []string{"--config", jsonConfig, "account", "get", "--chain-id", "1", "--account", cliAccount, "--max-fee-per-gas", "1", "--output", "json"}, true, cliAccount, "0x1"},
 		{"CLI before leaf", []string{"--config", config, "--chain-id", "1", "--account", cliAccount, "--max-fee-per-gas", "1", "--output", "json", "account", "get"}, true, cliAccount, "0x1"},
 		{"CLI after leaf", []string{"account", "get", "--config", config, "--chain-id", "1", "--account", cliAccount, "--max-fee-per-gas", "1", "--output", "json"}, true, cliAccount, "0x1"},
 		{"env over config", []string{"--config", config, "account", "get", "--output", "json"}, true, envAccount, "0x2"},
@@ -279,15 +335,11 @@ func TestOperatorSourcesAndFlagPlacement(t *testing.T) {
 		{"env over partial config", []string{"account", "get", "--config", partialConfig, "--output", "json"}, true, envAccount, "0x2"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("LIVEPEER_CHAIN_CHAIN_ID", "")
-			t.Setenv("LIVEPEER_CHAIN_ACCOUNT", "")
-			t.Setenv("LIVEPEER_CHAIN_RPC_URL_FILE", "")
-			t.Setenv("LIVEPEER_CHAIN_MAX_FEE_PER_GAS", "")
-			if tc.env {
-				t.Setenv("LIVEPEER_CHAIN_CHAIN_ID", "2")
-				t.Setenv("LIVEPEER_CHAIN_ACCOUNT", envAccount)
-				t.Setenv("LIVEPEER_CHAIN_RPC_URL_FILE", rpcFile)
-				t.Setenv("LIVEPEER_CHAIN_MAX_FEE_PER_GAS", "2")
+			for key, value := range map[string]string{"CHAIN_ID": "2", "ACCOUNT": envAccount, "RPC_URL_FILE": rpcFile, "MAX_FEE_PER_GAS": "2"} {
+				if !tc.env {
+					value = ""
+				}
+				t.Setenv("LIVEPEER_CHAIN_"+key, value)
 			}
 			wantAccount, chainID = ethcommon.HexToAddress(tc.account).Hex(), tc.id
 			var output bytes.Buffer
@@ -309,4 +361,81 @@ func TestOperatorSourcesAndFlagPlacement(t *testing.T) {
 			require.Equal(t, strings.TrimPrefix(tc.id, "0x"), printed["MaxFeePerGas"], "the fee ceiling must respect CLI, environment, and TOML priority")
 		})
 	}
+}
+
+func TestSharedKeystore(t *testing.T) {
+	root := t.TempDir()
+	key, password := test.WriteKeystore(t, nil)
+	data, err := os.ReadFile(key)
+	require.NoError(t, err)
+	secret, err := os.ReadFile(password)
+	require.NoError(t, err)
+	dir := filepath.Join(root, "keystore")
+	require.NoError(t, os.Mkdir(dir, 0700))
+	file := filepath.Join(dir, "account.json")
+	require.NoError(t, os.WriteFile(file, data, 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "password"), secret, 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "message"), []byte("shared account"), 0600))
+	run := func(args ...string) (string, error) {
+		var out bytes.Buffer
+		cmd := Root(&out, &out)
+		cmd.SetArgs(append([]string{"--data-dir", root, "--config="}, args...))
+		err := cmd.Execute()
+		return out.String(), err
+	}
+	_, err = run("sign", "message", "--message-file", "message", "--keystore-password-file", "password")
+	require.NoError(t, err)
+	var metadata map[string]any
+	require.NoError(t, json.Unmarshal(data, &metadata))
+	account := "0x" + metadata["address"].(string)
+	operator := OperatorParams{}
+	operator.DataDir = root
+	inferred, err := operator.account()
+	require.NoError(t, err)
+	require.Equal(t, ethcommon.HexToAddress(account), inferred)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "duplicate.json"), data, 0600))
+	_, err = run("sign", "message", "--message-file", "message", "--keystore-password-file", "password")
+	require.ErrorContains(t, err, "multiple keystore accounts")
+	_, err = run("sign", "message", "--keystore-file", "keystore/account.json", "--message-file", "message", "--keystore-password-file", "password")
+	require.NoError(t, err)
+	_, err = run("--print-config")
+	require.NoError(t, err)
+	require.NoError(t, os.Remove(filepath.Join(dir, "duplicate.json")))
+	metadata["address"] = "0000000000000000000000000000000000000001"
+	data, err = json.Marshal(metadata)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(file, data, 0600))
+	_, err = run("sign", "message", "--message-file", "message", "--keystore-password-file", "password")
+	require.ErrorContains(t, err, "does not match keystore account")
+}
+
+func TestAccountCreateDefaultDirectory(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.Chmod(root, 0755))
+	legacy := filepath.Join(root, "lpdb.sqlite3")
+	require.NoError(t, os.WriteFile(legacy, []byte("legacy"), 0644))
+	password := filepath.Join(root, "password")
+	require.NoError(t, os.WriteFile(password, []byte("password"), 0600))
+	var out bytes.Buffer
+	cmd := Root(&out, &out)
+	cmd.SetArgs([]string{"account", "create", "--data-dir", root, "--config=", "--keystore-password-file", "password", "--output", "json"})
+	require.NoError(t, cmd.Execute())
+	var result map[string]string
+	require.NoError(t, json.Unmarshal(out.Bytes(), &result))
+	require.NotEmpty(t, result["address"])
+	entries, err := os.ReadDir(filepath.Join(root, "keystore"))
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	info, err := os.Stat(filepath.Join(root, "keystore"))
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0700), info.Mode().Perm())
+	info, err = entries[0].Info()
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0600), info.Mode().Perm())
+	data, err := os.ReadFile(legacy)
+	require.NoError(t, err)
+	require.Equal(t, "legacy", string(data))
+	info, err = os.Stat(root)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0755), info.Mode().Perm())
 }

@@ -2,11 +2,13 @@ package eth
 
 import (
 	"crypto/ecdsa"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"uuid"
 
 	"github.com/ethereum/go-ethereum/accounts"
@@ -19,6 +21,83 @@ import (
 // Key is a local Ethereum signer. The key material never crosses the JSON-RPC
 // boundary and is not included in command output or errors.
 type Key struct{ private *ecdsa.PrivateKey }
+
+// SelectKeystore selects metadata without unlocking a key. An explicit file
+// bypasses directory discovery; its address is checked again after decryption.
+func SelectKeystore(dir, explicit string, account *ethcommon.Address) (string, ethcommon.Address, error) {
+	address := func(path string) (ethcommon.Address, error) {
+		data, err := readOwnerOnlyFile(path, "keystore file")
+		if err != nil {
+			return ethcommon.Address{}, err
+		}
+		var metadata struct{ Address string }
+		if json.Unmarshal(data, &metadata) != nil || !ethcommon.IsHexAddress(metadata.Address) {
+			return ethcommon.Address{}, errors.New("invalid keystore account metadata")
+		}
+		return ethcommon.HexToAddress(metadata.Address), nil
+	}
+	if explicit != "" {
+		a, err := address(explicit)
+		return explicit, a, err
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", ethcommon.Address{}, errors.New("keystore directory is unavailable; supply --keystore-file")
+	}
+	var selected string
+	var selectedAddress ethcommon.Address
+	for _, entry := range entries {
+		if entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		a, err := address(path)
+		if err != nil {
+			continue
+		}
+		if account != nil && a != *account {
+			continue
+		}
+		if selected != "" {
+			return "", ethcommon.Address{}, errors.New("multiple keystore accounts match; supply --account or --keystore-file")
+		}
+		selected, selectedAddress = path, a
+	}
+	if selected == "" {
+		return "", ethcommon.Address{}, errors.New("no matching keystore account; supply --account or --keystore-file")
+	}
+	return selected, selectedAddress, nil
+}
+
+// OpenAccount discovers an account and verifies its metadata against the decrypted key.
+func OpenAccount(dir, path string, password *string, passwordFile string, account *ethcommon.Address) (*Key, error) {
+	path, address, err := SelectKeystore(dir, path, account)
+	if err != nil {
+		return nil, err
+	}
+	key, err := OpenKeystore(path, password, passwordFile)
+	if err != nil {
+		return nil, err
+	}
+	if key.Address() != address || account != nil && key.Address() != *account {
+		return nil, errors.New("configured account address does not match keystore account")
+	}
+	return key, nil
+}
+
+// CreateAccount saves a fresh account in the shared keystore directory.
+func CreateAccount(dir string, password *string, passwordFile string) (ethcommon.Address, error) {
+	if password == nil && passwordFile == "" {
+		return ethcommon.Address{}, errors.New("keystore-password or keystore-password-file are required")
+	}
+	if _, err := readKeystorePassword(password, passwordFile); err != nil {
+		return ethcommon.Address{}, err
+	}
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return ethcommon.Address{}, errors.New("keystore directory cannot be created")
+	}
+	return CreateKeystore(filepath.Join(dir, uuid.NewV4().String()+".json"), password, passwordFile)
+}
 
 // OpenKeystoreFile unlocks one encrypted geth account file. Password files use
 // exact bytes, including whitespace; neither input is included in diagnostics.

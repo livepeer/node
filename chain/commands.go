@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"path/filepath"
 	"strings"
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/livepeer/node/eth"
+	"github.com/livepeer/node/nodeconfig"
 )
 
 type action struct {
@@ -23,7 +25,8 @@ type action struct {
 
 func (p OperatorParams) account() (ethcommon.Address, error) {
 	if p.Account == nil {
-		return ethcommon.Address{}, errors.New("account address is required")
+		_, address, err := eth.SelectKeystore(filepath.Join(p.DataDir, "keystore"), nodeconfig.Path(p.DataDir, p.KeystoreFile), nil)
+		return address, err
 	}
 	return *p.Account, nil
 }
@@ -40,8 +43,8 @@ func executeActions(ctx context.Context, operator OperatorParams, display Displa
 	if tx.GasLimit != nil && *tx.GasLimit == 0 {
 		return errors.New("gas-limit must be positive")
 	}
-	if tx.Submit && (operator.KeystoreFile == "" || operator.KeystorePassword == nil && operator.KeystorePasswordFile == "") {
-		return errors.New("keystore-file and keystore-password or keystore-password-file are required with submit")
+	if tx.Submit && operator.KeystorePassword == nil && operator.KeystorePasswordFile == "" {
+		return errors.New("keystore-password or keystore-password-file are required with submit")
 	}
 	from, err := operator.account()
 	if err != nil {
@@ -49,12 +52,9 @@ func executeActions(ctx context.Context, operator OperatorParams, display Displa
 	}
 	var key *eth.Key
 	if tx.Submit {
-		key, err = eth.OpenKeystore(operator.KeystoreFile, operator.KeystorePassword, operator.KeystorePasswordFile)
+		key, err = eth.OpenAccount(filepath.Join(operator.DataDir, "keystore"), nodeconfig.Path(operator.DataDir, operator.KeystoreFile), operator.KeystorePassword, operator.KeystorePasswordFile, &from)
 		if err != nil {
 			return err
-		}
-		if key.Address() != from {
-			return errors.New("configured account address does not match keystore account")
 		}
 	}
 	rpc, chainID, err := checkedClient(ctx, operator)

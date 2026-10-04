@@ -56,7 +56,7 @@ type KafkaConfig struct {
 	Password       string      `name:"password" optional:"true" secret:"true"`
 	UsernameFile   string      `name:"username-file" secretfor:"Username"`
 	PasswordFile   string      `name:"password-file" secretfor:"Password"`
-	OutboxDB       string      `name:"outbox-db" default:"signer-events.sqlite" descr:"Durable signer event SQLite path"`
+	OutboxDB       string      `name:"outbox-db" file:"optional" default:"signer/events.sqlite" descr:"Durable signer event SQLite path"`
 	OutboxMaxBytes int64       `name:"outbox-max-bytes" default:"268435456" min:"1" descr:"Maximum pending event payload bytes"`
 }
 

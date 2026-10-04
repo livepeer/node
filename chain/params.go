@@ -15,11 +15,13 @@ import (
 
 // OperatorParams is the persistent operator context shared by chain commands.
 type OperatorParams struct {
+	Network              string             `optional:"true" persistent:"true" descr:"Network name (custom networks require explicit chain settings)"`
+	DataDir              string             `basedir:"true" optional:"true" persistent:"true" descr:"Data directory; relative file paths start here"`
 	RPCURL               *url.URL           `name:"rpc-url" secret:"true" optional:"true" persistent:"true"`
 	RPCURLFile           string             `name:"rpc-url-file" secretfor:"RPCURL" persistent:"true"`
 	ChainID              *uint64            `min:"1" persistent:"true" descr:"Optional expected RPC chain ID"`
 	Account              *ethcommon.Address `persistent:"true" descr:"Account address to inspect or use for transactions; must match the keystore account when signing"`
-	Controller           ethcommon.Address  `name:"controller-address" required:"true" persistent:"true" default:"0xD8E8328501E9645d16Cf49539efC04f734606ee4" descr:"Livepeer Controller (Arbitrum mainnet)"`
+	Controller           ethcommon.Address  `name:"controller-address" optional:"true" persistent:"true" descr:"Livepeer Controller address"`
 	KeystoreFile         string             `optional:"true" persistent:"true" descr:"Encrypted geth account JSON file"`
 	KeystorePassword     *string            `secret:"true" optional:"true" persistent:"true" descr:"Keystore decryption password"`
 	KeystorePasswordFile string             `secretfor:"KeystorePassword" persistent:"true" descr:"Owner-only file containing the exact keystore password bytes"`
@@ -27,6 +29,9 @@ type OperatorParams struct {
 }
 
 func (p OperatorParams) Validate() error {
+	if p.Network != "" && p.ChainID == nil {
+		return errors.New("network requires an explicit chain-id and controller-address")
+	}
 	if err := destination.ValidateURL(p.RPCURL); err != nil {
 		return errors.New("valid RPC URL is required")
 	}
@@ -42,11 +47,12 @@ func (p OperatorParams) Validate() error {
 // printConfig deliberately includes only audited operator values.
 func (p OperatorParams) printConfig(out io.Writer) error {
 	data, err := toml.Marshal(struct {
+		Network      string
 		ChainID      *uint64
 		Account      *ethcommon.Address
 		Controller   ethcommon.Address
 		MaxFeePerGas *uint256.Int
-	}{p.ChainID, p.Account, p.Controller, p.MaxFeePerGas})
+	}{p.Network, p.ChainID, p.Account, p.Controller, p.MaxFeePerGas})
 	if err != nil {
 		return err
 	}
@@ -61,7 +67,7 @@ type DisplayOptions struct {
 }
 
 type RootParams struct {
-	ConfigFile string `name:"config" configfile:"true" file:"true" optional:"true" persistent:"true" boa:"noconfig"`
+	ConfigFile string `name:"config" configfile:"optional-default" default:"chain/config.toml" persistent:"true" boa:"noconfig" descr:"Configuration file; empty disables discovery"`
 	OperatorParams
 	DisplayOptions
 }
@@ -174,10 +180,10 @@ type ListParams struct {
 	Active bool `optional:"true" boa:"noconfig,noenv"`
 }
 type MessageParams struct {
-	MessageFile string `required:"true" boa:"noconfig,noenv"`
+	MessageFile string `file:"true" required:"true" boa:"noconfig,noenv"`
 }
 type TypedDataParams struct {
-	DataFile string `required:"true" boa:"noconfig,noenv"`
+	DataFile string `file:"true" required:"true" boa:"noconfig,noenv"`
 }
 
 type GasParams struct {

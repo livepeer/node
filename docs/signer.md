@@ -186,8 +186,8 @@ The signer can publish signing events to Kafka so an accounting service can
 track payments. For a clearinghouse that uses those events to enforce budgets,
 configure Kafka together with the authorization webhook.
 
-Add `[Kafka]` with a bootstrap broker and topic. Create the parent directory
-for `OutboxDB` before starting; it stores events waiting for delivery:
+Add `[Kafka]` with a bootstrap broker and topic. `OutboxDB` stores events waiting
+for delivery; its [default directory](configuration.md) is created automatically:
 
 ```toml
 [Kafka]

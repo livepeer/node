@@ -18,7 +18,7 @@ See [orchestrator setup](orchestrator.md#enable-payments) and
 ## Signer accounting recovery
 
 Keep `Kafka.OutboxDB` on persistent local storage, with one file per signer replica.
-Create its parent directory before startup. New files are created with mode 0600;
+Missing parent directories are created at startup. New files have mode 0600;
 existing files must be owner-only regular files. SQLite uses WAL and FULL synchronous
 commits. Back up with SQLite's backup API or stop the signer before copying the database
 and any WAL/SHM files. Monitor both pending payload bytes and actual disk usage.
@@ -70,7 +70,7 @@ reorg, unavailable finalized head or RPC failure retains uncertainty and liabili
 Inspect status without a key or RPC connection:
 
 ```sh
-livepeer orchestrator redemptions --redeemer-db /var/lib/livepeer/orchestrator-redeemer.sqlite
+livepeer orchestrator redemptions
 ```
 
 After checking the hash on the configured chain, explicitly retry the stored
@@ -78,16 +78,20 @@ transaction if it is absent or needs rebroadcast:
 
 ```sh
 livepeer orchestrator redemptions \
-  --redeemer-db /var/lib/livepeer/orchestrator-redeemer.sqlite \
+  --network arbitrum-one-mainnet \
   --retry-transaction 0xTRANSACTION_HASH --submit \
   --rpc-url-file /run/secrets/livepeer-payment-rpc-url \
   --chain-id 42161
 ```
 
-Operator-configured RPC endpoints use normal system TLS trust. This operation
-uses the exact saved signed bytes, nonce and hash; it cannot create a replacement
-or change fees. A retry error retains the hash and uncertain state. No key file
-is needed.
+Recovery uses the same configuration and database defaults as the service;
+use the service's `--data-dir` if it overrides the default. `--redeemer-db` selects
+a different database. Recovery reads `RPCURLFile` and `ChainID`
+for retries; `--rpc-url-file` and `--chain-id` override them. It does not unlock
+the account or read unrelated service credentials. RPC endpoints use normal
+system TLS trust. This operation uses the exact saved signed bytes, nonce and
+hash; it cannot create a replacement
+or change fees. A retry error retains the hash and uncertain state.
 
 In-memory control state is bounded: payment sessions have a 100,000-entry quota
 and 24-hour inactivity retention; ticket replay guards have a 1,000,000-nonce

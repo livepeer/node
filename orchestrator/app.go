@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -23,6 +24,7 @@ import (
 	"github.com/j0sh/boa/pkg/boa"
 	"github.com/livepeer/node/destination"
 	"github.com/livepeer/node/eth"
+	"github.com/livepeer/node/nodeconfig"
 	"github.com/livepeer/node/nodeconfig/migrations"
 	"github.com/livepeer/node/pm"
 	"github.com/livepeer/node/version"
@@ -30,9 +32,11 @@ import (
 )
 
 type Params struct {
+	nodeconfig.Settings
+	ConfigFile           string             `name:"config" configfile:"optional-default" default:"orchestrator/config.toml" boa:"noconfig" descr:"Configuration file; empty disables discovery"`
+	Account              *ethcommon.Address `descr:"Keystore account address"`
 	ETHUSDFeed           *ethcommon.Address `name:"eth-usd-feed" descr:"ETH/USD oracle address, alternative to a fixed wei-per-usd rate"`
 	PriceMaxAge          time.Duration      `default:"2h" descr:"Maximum age of the oracle observation"`
-	ConfigFile           string             `name:"config" configfile:"true" file:"true" optional:"true" boa:"noconfig" descr:"TOML configuration path"`
 	Listen               netip.AddrPort     `default:"127.0.0.1:8935" descr:"Public HTTP listener"`
 	MetricsListen        netip.AddrPort     `default:"127.0.0.1:8936" descr:"Loopback metrics listener"`
 	ServiceURL           boa.Text[*url.URL] `default:"http://127.0.0.1:8935" descr:"Public orchestrator base URL"`
@@ -41,15 +45,15 @@ type Params struct {
 	BootstrapSecret      string             `secret:"true" optional:"true" descr:"Dynamic runner bootstrap credential"`
 	BootstrapSecretFile  string             `secretfor:"BootstrapSecret" descr:"File containing runner bootstrap credential"`
 	RunnerConfig         string             `optional:"true" file:"true" descr:"Static runner TOML path"`
-	RedeemerDB           string             `optional:"true"`
+	RedeemerDB           string             `optional:"true" file:"optional"`
 	KeystoreFile         string             `optional:"true" descr:"Encrypted geth redemption account JSON file"`
 	KeystorePassword     *string            `secret:"true" optional:"true" descr:"Keystore decryption password"`
 	KeystorePasswordFile string             `secretfor:"KeystorePassword" descr:"Owner-only file containing the exact keystore password bytes"`
-	PaymentRPCURL        *url.URL           `name:"payment-rpc-url" secret:"true" optional:"true"`
-	PaymentRPCURLFile    string             `name:"payment-rpc-url-file" secretfor:"PaymentRPCURL"`
-	PaymentChainID       *uint64            `min:"1"`
+	RPCURL               *url.URL           `name:"rpc-url" secret:"true" optional:"true"`
+	RPCURLFile           string             `name:"rpc-url-file" secretfor:"RPCURL"`
+	ChainID              *uint64            `min:"1"`
 	RedeemerMaxFeePerGas *uint256.Int       `descr:"Optional maximum redemption fee in wei per gas"`
-	PaymentController    *ethcommon.Address `name:"payment-controller-address"`
+	Controller           *ethcommon.Address `name:"controller-address"`
 	WeiPerUSD            *big.Rat
 	TicketFaceValue      *uint256.Int
 	TicketWinProb        *uint256.Int
@@ -61,30 +65,25 @@ type Params struct {
 	PrintConfig          bool          `optional:"true" boa:"noconfig,noenv" descr:"Print audited redacted TOML configuration"`
 }
 
-func unmarshalConfig(data []byte, target any) error {
-	// Detach pointers shared with Boa's CLI/env mirrors before TOML writes
-	// through them. Boa restores higher-priority values after decoding.
-	if p, ok := target.(*Params); ok {
-		p.PaymentChainID, p.PaymentController, p.ETHUSDFeed = nil, nil, nil
-		p.RedeemerMaxFeePerGas, p.TicketFaceValue, p.TicketWinProb = nil, nil, nil
-		p.WeiPerUSD = nil
-	}
-	return toml.Unmarshal(data, target)
+func (p Params) paymentsRequested() bool {
+	return p.Account != nil || p.KeystoreFile != "" || p.KeystorePassword != nil || p.KeystorePasswordFile != "" || p.RedeemerDB != "" || p.RPCURL != nil || p.ChainID != nil || p.Controller != nil || p.WeiPerUSD != nil || p.ETHUSDFeed != nil || p.TicketFaceValue != nil || p.TicketWinProb != nil || p.RedeemerMaxFeePerGas != nil
 }
 
 func (p Params) Validate() error {
 	if p.BootstrapSecret == "" && p.RunnerConfig == "" {
 		return errors.New("bootstrap secret or static runner config is required")
 	}
-	paymentRequested := p.KeystoreFile != "" || p.KeystorePassword != nil || p.KeystorePasswordFile != "" || p.RedeemerDB != "" || p.PaymentRPCURL != nil || p.PaymentChainID != nil || p.PaymentController != nil || p.WeiPerUSD != nil || p.ETHUSDFeed != nil || p.TicketFaceValue != nil || p.TicketWinProb != nil || p.RedeemerMaxFeePerGas != nil
-	if paymentRequested {
-		if p.KeystoreFile == "" || p.KeystorePassword == nil && p.KeystorePasswordFile == "" || p.RedeemerDB == "" || p.PaymentRPCURL == nil || p.PaymentChainID == nil || p.PaymentController == nil || (p.WeiPerUSD == nil && p.ETHUSDFeed == nil) || p.TicketFaceValue == nil || p.TicketWinProb == nil {
-			return errors.New("on-chain payment requires redeemer-db, keystore-file, keystore-password or keystore-password-file, RPC, chain-id, controller, a fixed rate or ETH/USD feed, face-value and win-prob")
+	if p.paymentsRequested() {
+		if p.Network == "offchain" {
+			return errors.New("on-chain payments require an explicit on-chain --network")
 		}
-		if *p.PaymentController == (ethcommon.Address{}) {
-			return errors.New("payment-controller-address must be nonzero")
+		if p.KeystorePassword == nil && p.KeystorePasswordFile == "" || p.RedeemerDB == "" || p.RPCURL == nil || p.ChainID == nil || p.Controller == nil || (p.WeiPerUSD == nil && p.ETHUSDFeed == nil) || p.TicketFaceValue == nil || p.TicketWinProb == nil {
+			return errors.New("on-chain payment requires redeemer-db, keystore-password or keystore-password-file, RPC, chain-id, controller, a fixed rate or ETH/USD feed, face-value and win-prob")
 		}
-		if *p.PaymentChainID == 0 || p.TicketFaceValue.IsZero() || p.TicketWinProb.IsZero() {
+		if *p.Controller == (ethcommon.Address{}) {
+			return errors.New("controller-address must be nonzero")
+		}
+		if *p.ChainID == 0 || p.TicketFaceValue.IsZero() || p.TicketWinProb.IsZero() {
 			return errors.New("payment chain ID and ticket values must be positive")
 		}
 		if p.TicketWinProb.Eq(new(uint256.Int).SetAllOne()) {
@@ -100,7 +99,7 @@ func (p Params) Validate() error {
 		} else if p.WeiPerUSD.Sign() <= 0 {
 			return errors.New("wei-per-usd must be positive")
 		}
-		if err := destination.ValidateURL(p.PaymentRPCURL); err != nil {
+		if err := destination.ValidateURL(p.RPCURL); err != nil {
 			return errors.New("invalid payment RPC URL")
 		}
 	}
@@ -139,21 +138,30 @@ func (p Params) Validate() error {
 }
 
 func Root(out, errOut io.Writer) *cobra.Command {
-	cmd := (boa.Cmd[Params]{
+	params := new(Params)
+	cmd := nodeconfig.Command("orchestrator", "offchain", boa.Cmd[Params]{
 		Use: "livepeer-orchestrator", Short: "Standalone Live Runner orchestrator", Version: version.String(),
-		RejectUnknown: true,
-		ConfigFormat:  boa.UniversalConfigFormat(unmarshalConfig),
-		PreValidateFunc: func(p *Params, _ *cobra.Command, _ []string) error {
-			if p.PrintConfig {
-				return nil
+		Params: params, RejectUnknown: true,
+		PreValidateFuncCtx: func(ctx *boa.HookContext, p *Params, _ *cobra.Command, _ []string) error {
+			if p.paymentsRequested() {
+				if p.Network == nodeconfig.Mainnet {
+					nodeconfig.Default(ctx, &p.ChainID, new(uint64(42161)))
+					nodeconfig.Default(ctx, &p.Controller, new(nodeconfig.Controller))
+					if p.WeiPerUSD == nil {
+						nodeconfig.Default(ctx, &p.ETHUSDFeed, new(nodeconfig.ETHUSDFeed))
+					}
+				}
+				nodeconfig.Default(ctx, &p.RedeemerDB, "orchestrator/payments.sqlite")
 			}
-			return boa.NewUserInputError(p.Validate())
+			return nil
 		},
-		ParamEnrich: boa.ParamEnricherCombine(boa.ParamEnricherDefault, boa.ParamEnricherEnv, boa.ParamEnricherEnvPrefix("LIVEPEER_ORCHESTRATOR")),
-		Args:        cobra.NoArgs,
+		Args: cobra.NoArgs,
 		RunFuncCtxE: func(ctx *boa.HookContext, p *Params, cmd *cobra.Command, _ []string) error {
 			if p.PrintConfig {
 				return printConfig(ctx, p, cmd.OutOrStdout())
+			}
+			if err := p.Validate(); err != nil {
+				return boa.NewUserInputError(err)
 			}
 			return Serve(cmd.Context(), *p, cmd.ErrOrStderr())
 		},
@@ -162,7 +170,14 @@ func Root(out, errOut io.Writer) *cobra.Command {
 	cmd.SetErr(errOut)
 	cmd.SilenceUsage = true
 	cmd.SilenceErrors = true
-	cmd.AddCommand(redemptionCommand(), migrations.Command("redeemer-db", "LIVEPEER_ORCHESTRATOR_REDEEMER_DB", "", redeemerMigrationFiles, openRedeemerDB))
+	type storageParams struct {
+		DataDir    string `persistent:"true" basedir:"true" descr:"Data directory; relative file paths start here"`
+		ConfigFile string `persistent:"true" name:"config" configfile:"optional-default" default:"orchestrator/config.toml" boa:"noconfig"`
+		RedeemerDB string `persistent:"true" file:"optional" default:"orchestrator/payments.sqlite"`
+	}
+	storage := new(storageParams)
+	migrate := migrations.Command(nodeconfig.Command("orchestrator", "offchain", boa.Cmd[storageParams]{Params: storage}), &storage.RedeemerDB, redeemerMigrationFiles, openRedeemerDB)
+	cmd.AddCommand(redemptionCommand(), migrate)
 	cmd.InitDefaultCompletionCmd()
 	return cmd
 }
@@ -170,11 +185,12 @@ func Root(out, errOut io.Writer) *cobra.Command {
 func printConfig(ctx *boa.HookContext, p *Params, out io.Writer) error {
 	// Only audited fields are printed; secrets and sensitive paths stay omitted.
 	values := map[string]any{
+		"Network": &p.Network, "Account": &p.Account,
 		"Listen": &p.Listen, "MetricsListen": &p.MetricsListen,
 		"RunnerGrants": &p.RunnerGrants, "SessionProxyGrants": &p.SessionProxyGrants, "HealthGrants": &p.HealthGrants,
 		"HeartbeatInterval": &p.HeartbeatInterval, "HeartbeatTTL": &p.HeartbeatTTL,
-		"RedeemerDB": &p.RedeemerDB, "PaymentChainID": &p.PaymentChainID, "RedeemerMaxFeePerGas": &p.RedeemerMaxFeePerGas,
-		"PaymentController": &p.PaymentController, "WeiPerUSD": &p.WeiPerUSD, "ETHUSDFeed": &p.ETHUSDFeed,
+		"RedeemerDB": &p.RedeemerDB, "ChainID": &p.ChainID, "RedeemerMaxFeePerGas": &p.RedeemerMaxFeePerGas,
+		"Controller": &p.Controller, "WeiPerUSD": &p.WeiPerUSD, "ETHUSDFeed": &p.ETHUSDFeed,
 		"PriceMaxAge": &p.PriceMaxAge, "TicketFaceValue": &p.TicketFaceValue, "TicketWinProb": &p.TicketWinProb,
 	}
 	for name, ptr := range values {
@@ -235,10 +251,19 @@ func Serve(parent context.Context, p Params, logOut io.Writer) (result error) {
 	var paymentChain eth.PaymentChain
 	var redeemerKey *eth.Key
 	var paymentChainID *big.Int
-	if p.KeystoreFile != "" {
+	if p.paymentsRequested() {
 		registry.SetWeiPerUSD(p.WeiPerUSD)
-		redeemerKey, err = eth.OpenKeystore(p.KeystoreFile, p.KeystorePassword, p.KeystorePasswordFile)
+		redeemerKey, err = eth.OpenAccount(filepath.Join(p.DataDir, "keystore"), nodeconfig.Path(p.DataDir, p.KeystoreFile), p.KeystorePassword, p.KeystorePasswordFile, p.Account)
 		if err != nil {
+			return err
+		}
+		rpc, err := eth.NewRPC(p.RPCURL, nil)
+		if err != nil {
+			return err
+		}
+		defer rpc.Close()
+		paymentChainID = new(big.Int).SetUint64(*p.ChainID)
+		if err := rpc.CheckChainID(parent, paymentChainID); err != nil {
 			return err
 		}
 		redeemerDB, err = OpenRedeemerDB(p.RedeemerDB)
@@ -246,16 +271,7 @@ func Serve(parent context.Context, p Params, logOut io.Writer) (result error) {
 			return err
 		}
 		defer redeemerDB.Close()
-		rpc, err := eth.NewRPC(p.PaymentRPCURL, nil)
-		if err != nil {
-			return err
-		}
-		defer rpc.Close()
-		paymentChainID = new(big.Int).SetUint64(*p.PaymentChainID)
-		if err := rpc.CheckChainID(parent, paymentChainID); err != nil {
-			return err
-		}
-		contracts, err := eth.NewContracts(rpc, *p.PaymentController)
+		contracts, err := eth.NewContracts(rpc, *p.Controller)
 		if err != nil {
 			return err
 		}

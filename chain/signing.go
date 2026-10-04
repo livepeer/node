@@ -8,21 +8,20 @@ import (
 	"io"
 	"math/big"
 	"os"
+	"path/filepath"
 
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/signer/core/apitypes"
 	"github.com/livepeer/node/eth"
+	"github.com/livepeer/node/nodeconfig"
 )
 
 func signFile(p OperatorParams, d DisplayOptions, out io.Writer, path string, typed bool) error {
-	key, err := eth.OpenKeystore(p.KeystoreFile, p.KeystorePassword, p.KeystorePasswordFile)
+	key, err := eth.OpenAccount(filepath.Join(p.DataDir, "keystore"), nodeconfig.Path(p.DataDir, p.KeystoreFile), p.KeystorePassword, p.KeystorePasswordFile, p.Account)
 	if err != nil {
 		return err
-	}
-	if p.Account != nil && key.Address() != *p.Account {
-		return errors.New("configured account address does not match keystore account")
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {

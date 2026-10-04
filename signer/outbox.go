@@ -95,6 +95,9 @@ func openOutboxDB(ctx context.Context, path string, create bool) (_ *sql.DB, err
 	}
 	flags := os.O_RDWR
 	if create {
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			return nil, err
+		}
 		flags |= os.O_CREATE
 	}
 	f, err := os.OpenFile(path, flags, 0600)

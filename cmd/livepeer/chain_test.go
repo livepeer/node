@@ -77,7 +77,9 @@ func TestChainBinaryQuietExecution(t *testing.T) {
 				switch req.Method {
 				case "eth_getBlockByNumber":
 					result = &types.Header{Number: big.NewInt(1), Difficulty: new(big.Int), BaseFee: big.NewInt(1)}
-				case "eth_chainId", "eth_maxPriorityFeePerGas", "eth_getTransactionCount":
+				case "eth_chainId":
+					result = "0xa4b1"
+				case "eth_maxPriorityFeePerGas", "eth_getTransactionCount":
 				case "eth_call":
 					var call struct{ To string }
 					require.NoError(t, json.Unmarshal(req.Params[0], &call))
