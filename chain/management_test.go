@@ -236,7 +236,7 @@ func TestInspectionCommands(t *testing.T) {
 		command string
 		fields  map[string]any
 	}{
-		{"account", map[string]any{"balance_wei": "1000000000000000000", "lpt_balance_base_units": "50", "pending_nonce": float64(0)}},
+		{"account get", map[string]any{"balance_wei": "1000000000000000000", "lpt_balance_base_units": "50", "pending_nonce": float64(0)}},
 		{"stake get", map[string]any{"status": "Bonded", "bonded_stake_base_units": "20", "pending_stake_base_units": "25", "collected_fees_wei": "2", "pending_fees_wei": "7", "delegated_amount_base_units": "22", "start_round": "5", "last_claim_round": "4", "next_lock_id": "5"}},
 		{"orchestrator get", map[string]any{"registered": true, "active": true, "delegated_stake_base_units": "22", "reward_cut_percent": "1", "fee_cut_percent": "2", "last_reward_round": "4", "service_uri": "https://orchestrator.example"}},
 		{"round get", map[string]any{"current_round": "10", "last_initialized_round": "10", "initialized": true, "locked": false}},

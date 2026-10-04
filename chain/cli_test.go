@@ -30,6 +30,8 @@ func TestLeafHelpAndCompletion(t *testing.T) {
 		present, absent []string
 	}{
 		{"status", []string{"--config", "--output", "--chain-id"}, []string{"--amount", "--reserve", "--submit", "--quiet"}},
+		{"account create", []string{"--keystore-file", "--keystore-password-file", "--output"}, []string{"--submit", "--amount"}},
+		{"account get", []string{"--account", "--output"}, []string{"--submit", "--amount"}},
 		{"stake bond", []string{"--amount", "--submit", "--wait", "--quiet"}, []string{"--delegate", "--reserve", "--lock-id"}},
 		{"ticketbroker fund", []string{"--amount", "--reserve", "--quiet"}, []string{"--lock-id", "--fee-cut"}},
 		{"orchestrator register", []string{"--amount", "--redelegate", "--lock-id", "--reward-cut", "--fee-cut", "--service-uri"}, []string{"--fee-share", "--recipient"}},
@@ -120,6 +122,8 @@ func TestActionValidationBeforeRPC(t *testing.T) {
 		{[]string{"ticketbroker", "unlock", "--submit", "--keystore-file", path, "--keystore-password-file", passwordPath}, "cannot decrypt keystore"},
 		{[]string{"status", "--submit"}, "unknown flag"},
 		{[]string{"account", "--quiet"}, "unknown flag"},
+		{[]string{"account", "create"}, "are required"},
+		{[]string{"account", "create", "extra"}, "unknown command"},
 		{[]string{"status", "--chain-id", "0"}, "below min"},
 		{[]string{"status", "--controller-address", "0x0000000000000000000000000000000000000000"}, "must be nonzero"},
 		{[]string{"status", "--output", "yaml"}, "allowed values"},
@@ -140,7 +144,7 @@ func TestActionValidationBeforeRPC(t *testing.T) {
 func TestAccountRequiredBeforeRPC(t *testing.T) {
 	t.Setenv("LIVEPEER_CHAIN_ACCOUNT", "")
 	t.Setenv("LIVEPEER_CHAIN_RPC_URL", "http://localhost:1")
-	for _, command := range []string{"account", "orchestrator get", "ticketbroker unlock"} {
+	for _, command := range []string{"account get", "orchestrator get", "ticketbroker unlock"} {
 		t.Run(command, func(t *testing.T) {
 			var output bytes.Buffer
 			root := Root(&output, &output)
@@ -266,13 +270,13 @@ func TestOperatorSourcesAndFlagPlacement(t *testing.T) {
 		env         bool
 		account, id string
 	}{
-		{"config only", []string{"--config", config, "account", "--output", "json"}, false, testAccount, "0x3"},
-		{"CLI before leaf", []string{"--config", config, "--chain-id", "1", "--account", cliAccount, "--max-fee-per-gas", "1", "--output", "json", "account"}, true, cliAccount, "0x1"},
-		{"CLI after leaf", []string{"account", "--config", config, "--chain-id", "1", "--account", cliAccount, "--max-fee-per-gas", "1", "--output", "json"}, true, cliAccount, "0x1"},
-		{"env over config", []string{"--config", config, "account", "--output", "json"}, true, envAccount, "0x2"},
-		{"env only", []string{"account", "--output", "json"}, true, envAccount, "0x2"},
-		{"CLI over partial config", []string{"account", "--config", partialConfig, "--chain-id", "1", "--account", cliAccount, "--max-fee-per-gas", "1", "--output", "json"}, false, cliAccount, "0x1"},
-		{"env over partial config", []string{"account", "--config", partialConfig, "--output", "json"}, true, envAccount, "0x2"},
+		{"config only", []string{"--config", config, "account", "get", "--output", "json"}, false, testAccount, "0x3"},
+		{"CLI before leaf", []string{"--config", config, "--chain-id", "1", "--account", cliAccount, "--max-fee-per-gas", "1", "--output", "json", "account", "get"}, true, cliAccount, "0x1"},
+		{"CLI after leaf", []string{"account", "get", "--config", config, "--chain-id", "1", "--account", cliAccount, "--max-fee-per-gas", "1", "--output", "json"}, true, cliAccount, "0x1"},
+		{"env over config", []string{"--config", config, "account", "get", "--output", "json"}, true, envAccount, "0x2"},
+		{"env only", []string{"account", "get", "--output", "json"}, true, envAccount, "0x2"},
+		{"CLI over partial config", []string{"account", "get", "--config", partialConfig, "--chain-id", "1", "--account", cliAccount, "--max-fee-per-gas", "1", "--output", "json"}, false, cliAccount, "0x1"},
+		{"env over partial config", []string{"account", "get", "--config", partialConfig, "--output", "json"}, true, envAccount, "0x2"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("LIVEPEER_CHAIN_CHAIN_ID", "")

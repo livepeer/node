@@ -106,6 +106,33 @@ func readCommand(root *RootParams, use, short string, run func(context.Context, 
 	}
 }
 
+func accountCommand(root *RootParams) boa.Cmd[boa.NoParams] {
+	command := boa.Cmd[boa.NoParams]{Use: "account", Short: "Inspect accounts or create an encrypted keystore"}
+	command.SubCmds = boa.SubCmds(
+		readCommand(root, "get", "Read ETH/LPT balances and pending nonce", Account),
+		boa.Cmd[boa.NoParams]{Use: "create", Short: "Create a new encrypted keystore locally without overwriting an existing file",
+			Long: "Create a new encrypted keystore locally. --keystore-file is the new output file.\n" +
+				"--keystore-password-file is an existing owner-only input file containing the\n" +
+				"encryption password; this command does not create a password file or prompt\n" +
+				"for a password. Alternatively, supply LIVEPEER_CHAIN_KEYSTORE_PASSWORD.\n" +
+				"The output's parent directory must exist. No RPC or account address is needed.\n\n" +
+				"Example:\n  umask 077\n" +
+				"  openssl rand -hex 32 | tr -d '\\n' > account.password\n" +
+				"  livepeer-chain account create --keystore-file account.json --keystore-password-file account.password",
+			Args: cobra.NoArgs, RunFuncE: func(_ *boa.NoParams, cmd *cobra.Command, _ []string) error {
+				if root.PrintConfig {
+					return root.OperatorParams.printConfig(cmd.OutOrStdout())
+				}
+				address, err := eth.CreateKeystore(root.KeystoreFile, root.KeystorePassword, root.KeystorePasswordFile)
+				if err != nil {
+					return err
+				}
+				return formatResult(cmd.OutOrStdout(), root.Output, map[string]string{"address": address.Hex()})
+			}},
+	)
+	return groupCommand(root, command)
+}
+
 func Root(out, errOut io.Writer) *cobra.Command {
 	params := new(RootParams)
 	root := (boa.Cmd[RootParams]{
@@ -120,7 +147,7 @@ func Root(out, errOut io.Writer) *cobra.Command {
 		},
 		SubCmds: boa.SubCmds(
 			readCommand(params, "status", "Read the configured Ethereum chain status", Status),
-			readCommand(params, "account", "Read ETH/LPT balances and pending nonce", Account),
+			accountCommand(params),
 			readCommand(params, "contracts", "Read Controller-resolved contract addresses", contractsGet),
 			groupCommand(params, boa.Cmd[boa.NoParams]{Use: "protocol", Short: "Inspect protocol settings", SubCmds: boa.SubCmds(readCommand(params, "get", "Read protocol settings and participation", protocolGet))}),
 			groupCommand(params, boa.Cmd[boa.NoParams]{Use: "gas", Short: "Inspect transaction gas prices", SubCmds: boa.SubCmds(gasCommand(params))}),

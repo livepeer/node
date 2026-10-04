@@ -65,9 +65,9 @@ valid URL without a trailing newline.
 
 ## Ethereum keystores
 
-All three apps load one encrypted geth Web3 v3 account JSON file. Point to the individual account file inside the
-keystore directory. Directory discovery and account creation are handled by
-external tooling.
+All three apps load one encrypted geth Web3 v3 account JSON file. Point to the
+individual account file inside the keystore directory. The chain CLI can create
+new account files; directory discovery and account imports use external tooling.
 
 | App | Keystore TOML key | Password-file TOML key |
 | --- | --- | --- |
@@ -100,18 +100,23 @@ tracking.
 
 ### Prepare a keystore
 
-Create an encrypted account with trusted geth tooling:
+Create an encrypted account locally with the chain CLI. First prepare an
+owner-only password file in an existing directory:
 
 ```sh
 umask 077
-geth --keystore /path/to/encrypted-keystore account new
+openssl rand -hex 32 | tr -d '\n' > /path/to/password
+bin/livepeer chain account create \
+  --keystore-file /path/to/account.json \
+  --keystore-password-file /path/to/password
 ```
 
-Select the generated account JSON file and set `KeystoreFile` in the component
-configuration. Supply the password through `KeystorePasswordFile` or the app's
-password environment variable. For chain commands, set `Account` to the keystore
-account address. Back up the encrypted account and password separately. Importing
-an account key with `geth account import` is also supported by the external tooling.
+Creation requires no RPC or account address. It encrypts a freshly generated key
+with geth's standard scrypt settings and writes the keystore with `0600`
+permissions. The destination's parent directory must exist. Any existing path,
+including a symlink or directory, causes an error and is left untouched. The
+command prints the new public address; add `--output json` for scripts. The
+password can also come from `LIVEPEER_CHAIN_KEYSTORE_PASSWORD`.
 
 ## Local storage and probes
 

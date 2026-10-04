@@ -85,7 +85,7 @@ KeystorePasswordFile = %q
 ChainID = 42161
 `, rpcFile, keyFile, passwordPath)
 	require.NoError(t, os.WriteFile(configFile, []byte(config), 0600))
-	for _, command := range [][]string{nil, {"status"}, {"orchestrator"}, {"stake", "locks", "--withdrawable", "--locked"}, {"stake", "bond"}, {"orchestrator", "register"}, {"ticketbroker", "fund"}, {"sign", "message"}, {"sign", "typed-data"}} {
+	for _, command := range [][]string{nil, {"status"}, {"account", "create"}, {"account", "get"}, {"orchestrator"}, {"stake", "locks", "--withdrawable", "--locked"}, {"stake", "bond"}, {"orchestrator", "register"}, {"ticketbroker", "fund"}, {"sign", "message"}, {"sign", "typed-data"}} {
 		t.Run(fmt.Sprint(command), func(t *testing.T) {
 			var output bytes.Buffer
 			root := Root(&output, &output)

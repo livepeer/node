@@ -10,7 +10,7 @@ connection (RPC endpoint) and `Account` using a
 Use `--account` or `LIVEPEER_CHAIN_ACCOUNT`; see [configuration and secrets](configuration.md) for setup and keystores.
 
 ```sh
-bin/livepeer chain --config /etc/livepeer/chain.toml account
+bin/livepeer chain --config /etc/livepeer/chain.toml account get
 bin/livepeer chain --config /etc/livepeer/chain.toml stake bond ADDRESS --amount 10
 ```
 
@@ -22,9 +22,29 @@ Prefix all commands below by `bin/livepeer chain`. Add `--config FILE` to load a
 
 ## Accounts and protocol state
 
+First prepare a password file, then create a new encrypted account file locally:
+
+```sh
+umask 077
+openssl rand -hex 32 | tr -d '\n' > /path/to/password
+bin/livepeer chain account create \
+  --keystore-file /path/to/account.json \
+  --keystore-password-file /path/to/password
+```
+
+The password file must already exist and be owner-only. Creation also accepts
+`LIVEPEER_CHAIN_KEYSTORE_PASSWORD`. It needs no RPC or configured account, writes
+the keystore with `0600` permissions, and prints the new public address. The
+destination's parent directory must exist; creation refuses to overwrite any
+existing path. Add `--output json` to receive `{"address":"0x..."}`. See
+[keystore setup](configuration.md#prepare-a-keystore) for password preparation
+and backups. Missing keystores during signing or service startup still cause an
+error; accounts are created only by this explicit command.
+
 | Command | Purpose |
 | --- | --- |
-| `account` | Configured account's ETH/LPT balances and pending nonce |
+| `account get` | Configured account's ETH/LPT balances and pending nonce |
+| `account create` | Generate a new account and save an encrypted keystore offline |
 | `status` | Connected chain and block |
 | `round get` | Current round, initialization, and lock status |
 | `round initialize` | Initialize the current round |

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"uuid"
 
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/accounts/keystore"
@@ -37,19 +39,9 @@ func OpenKeystore(keystorePath string, password *string, passwordPath string) (k
 	if err != nil {
 		return nil, err
 	}
-	if password == nil {
-		contents, err := readOwnerOnlyFile(passwordPath, "keystore password file")
-		if err != nil {
-			return nil, err
-		}
-		defer clear(contents)
-		password = new(string(contents))
-	} else if passwordPath != "" {
-		file, err := openOwnerOnlyFile(passwordPath, "keystore password file")
-		if err != nil {
-			return nil, err
-		}
-		file.Close()
+	auth, err := readKeystorePassword(password, passwordPath)
+	if err != nil {
+		return nil, err
 	}
 	// Geth's KDF decoder can panic on malformed JSON parameters. Sanitize both
 	// panics and returned decryption errors without exposing either input.
@@ -58,11 +50,83 @@ func OpenKeystore(keystorePath string, password *string, passwordPath string) (k
 			key, err = nil, errors.New("cannot decrypt keystore: invalid file or password")
 		}
 	}()
-	decoded, err := keystore.DecryptKey(data, *password)
+	decoded, err := keystore.DecryptKey(data, auth)
 	if err != nil {
 		return nil, err
 	}
 	return &Key{private: decoded.PrivateKey}, nil
+}
+
+// CreateKeystore generates an account and writes an owner-only encrypted geth
+// keystore. The parent directory must exist; an existing path is never replaced.
+// Password sources follow the same exact-byte rules as OpenKeystore.
+func CreateKeystore(keystorePath string, password *string, passwordPath string) (ethcommon.Address, error) {
+	if keystorePath == "" || password == nil && passwordPath == "" {
+		return ethcommon.Address{}, errors.New("keystore-file and keystore-password or keystore-password-file are required")
+	}
+	if _, err := os.Lstat(keystorePath); err == nil {
+		return ethcommon.Address{}, errors.New("keystore file already exists")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return ethcommon.Address{}, errors.New("keystore file is unavailable")
+	}
+	auth, err := readKeystorePassword(password, passwordPath)
+	if err != nil {
+		return ethcommon.Address{}, err
+	}
+	file, err := os.CreateTemp(filepath.Dir(keystorePath), ".keystore-*")
+	if err != nil {
+		return ethcommon.Address{}, errors.New("keystore file cannot be created")
+	}
+	defer func() {
+		file.Close()
+		os.Remove(file.Name())
+	}()
+	private, err := crypto.GenerateKey()
+	if err != nil {
+		return ethcommon.Address{}, errors.New("cannot generate account key")
+	}
+	address := crypto.PubkeyToAddress(private.PublicKey)
+	data, err := keystore.EncryptKey(&keystore.Key{Id: [16]byte(uuid.NewV4()), Address: address, PrivateKey: private}, auth, keystore.StandardScryptN, keystore.StandardScryptP)
+	if err != nil {
+		return ethcommon.Address{}, errors.New("cannot encrypt account key")
+	}
+	if _, err := file.Write(data); err != nil {
+		return ethcommon.Address{}, errors.New("cannot write keystore file")
+	}
+	if err := file.Sync(); err != nil {
+		return ethcommon.Address{}, errors.New("cannot sync keystore file")
+	}
+	if err := file.Close(); err != nil {
+		return ethcommon.Address{}, errors.New("cannot close keystore file")
+	}
+	// Publish the complete file atomically. Link also refuses a destination
+	// created after the initial check, including a dangling symlink.
+	if err := os.Link(file.Name(), keystorePath); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return ethcommon.Address{}, errors.New("keystore file already exists")
+		}
+		return ethcommon.Address{}, errors.New("keystore file cannot be created")
+	}
+	return address, nil
+}
+
+func readKeystorePassword(password *string, passwordPath string) (string, error) {
+	if password == nil {
+		contents, err := readOwnerOnlyFile(passwordPath, "keystore password file")
+		if err != nil {
+			return "", err
+		}
+		defer clear(contents)
+		return string(contents), nil
+	}
+	if passwordPath != "" {
+		file, err := openOwnerOnlyFile(passwordPath, "keystore password file")
+		if err != nil {
+			return "", err
+		}
+		file.Close()
+	}
+	return *password, nil
 }
 
 func readOwnerOnlyFile(path, label string) ([]byte, error) {

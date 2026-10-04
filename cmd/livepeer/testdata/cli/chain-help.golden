@@ -5,7 +5,7 @@ Usage:
   livepeer-chain [command]
 
 Available Commands:
-  account      Read ETH/LPT balances and pending nonce
+  account      Inspect accounts or create an encrypted keystore
   completion   Generate the autocompletion script for the specified shell
   contracts    Read Controller-resolved contract addresses
   earnings     Claim earnings and withdraw fees
