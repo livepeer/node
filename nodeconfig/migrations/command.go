@@ -1,5 +1,4 @@
-// Package migratecli builds the shared database migration command group.
-package migratecli
+package migrations
 
 import (
 	"context"
@@ -8,7 +7,6 @@ import (
 	"io/fs"
 
 	"github.com/j0sh/boa/pkg/boa"
-	"github.com/livepeer/node/migrations"
 	"github.com/spf13/cobra"
 )
 
@@ -33,14 +31,14 @@ func Command(flag, env, defaultDB string, files fs.FS, open func(context.Context
 		defer db.Close()
 		switch cmd.Name() {
 		case "up":
-			err = migrations.Up(ctx, db, catalog)
+			err = Up(ctx, db, catalog)
 		case "down":
-			err = migrations.Down(ctx, db, catalog)
+			err = Down(ctx, db, catalog)
 		}
 		if err != nil {
 			return err
 		}
-		status, err := migrations.List(ctx, db, catalog)
+		status, err := List(ctx, db, catalog)
 		if err != nil {
 			return err
 		}

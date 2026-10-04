@@ -14,7 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/livepeer/node/migrations"
+	"github.com/livepeer/node/nodeconfig/migrations"
 	_ "modernc.org/sqlite"
 )
 

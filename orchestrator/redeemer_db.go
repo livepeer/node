@@ -18,7 +18,7 @@ import (
 	"time"
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
-	"github.com/livepeer/node/migrations"
+	"github.com/livepeer/node/nodeconfig/migrations"
 	"github.com/livepeer/node/pm"
 	_ "modernc.org/sqlite"
 )

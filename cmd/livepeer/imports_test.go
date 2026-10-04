@@ -51,7 +51,7 @@ func TestImportLattice(t *testing.T) {
 }
 
 func forbiddenImport(file, dep string) string {
-	if strings.HasPrefix(file, "pm/") && (dep == "database/sql" || dep == "modernc.org/sqlite" || dep == module+"migrations") {
+	if strings.HasPrefix(file, "pm/") && (dep == "database/sql" || dep == "modernc.org/sqlite" || dep == module+"nodeconfig/migrations") {
 		return "payment primitives import SQL persistence"
 	}
 	if strings.HasPrefix(dep, "google.golang.org/protobuf") && !strings.HasPrefix(file, "pm/wire/") {

@@ -1,4 +1,4 @@
-package migratecli_test
+package migrations_test
 
 import (
 	"bytes"
@@ -10,8 +10,7 @@ import (
 	"testing/fstest"
 
 	"github.com/j0sh/boa/pkg/boa"
-	"github.com/livepeer/node/migrations"
-	"github.com/livepeer/node/migrations/migratecli"
+	"github.com/livepeer/node/nodeconfig/migrations"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 	_ "modernc.org/sqlite"
@@ -47,7 +46,7 @@ func TestCommand(t *testing.T) {
 			if tc.action == "down" {
 				require.NoError(t, migrations.Up(t.Context(), db, fstest.MapFS{"001_initial.sql": files["migrations/001_initial.sql"]}))
 			}
-			command := migratecli.Command("store-db", "TEST_MIGRATIONS_DB", tc.defaultDB, files, func(ctx context.Context, dbPath string, mayCreate bool) (*sql.DB, error) {
+			command := migrations.Command("store-db", "TEST_MIGRATIONS_DB", tc.defaultDB, files, func(ctx context.Context, dbPath string, mayCreate bool) (*sql.DB, error) {
 				require.Equal(t, t.Context(), ctx)
 				path, create = dbPath, mayCreate
 				calls++
@@ -84,7 +83,7 @@ func TestCommand(t *testing.T) {
 
 func TestCommandOpenErrorAndHelp(t *testing.T) {
 	wantError := errors.New("database open failed")
-	command := migratecli.Command("store-db", "TEST_MIGRATIONS_DB", "default.sqlite", files, func(context.Context, string, bool) (*sql.DB, error) {
+	command := migrations.Command("store-db", "TEST_MIGRATIONS_DB", "default.sqlite", files, func(context.Context, string, bool) (*sql.DB, error) {
 		return nil, wantError
 	})
 	var output bytes.Buffer

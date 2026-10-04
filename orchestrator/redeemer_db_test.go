@@ -10,7 +10,7 @@ import (
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/livepeer/node/eth"
-	"github.com/livepeer/node/migrations"
+	"github.com/livepeer/node/nodeconfig/migrations"
 	"github.com/livepeer/node/pm"
 	"github.com/stretchr/testify/require"
 )

@@ -1,4 +1,4 @@
-// Package migrations applies embedded, versioned SQL files in the repository's UP/DOWN format.
+// Package migrations applies embedded SQL migrations and builds their shared CLI command.
 package migrations
 
 import (

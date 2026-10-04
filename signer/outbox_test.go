@@ -15,7 +15,7 @@ import (
 	"time"
 	"uuid"
 
-	"github.com/livepeer/node/migrations"
+	"github.com/livepeer/node/nodeconfig/migrations"
 	"github.com/segmentio/kafka-go"
 	"github.com/stretchr/testify/require"
 )

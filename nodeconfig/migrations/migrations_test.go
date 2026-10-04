@@ -7,7 +7,7 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"github.com/livepeer/node/migrations"
+	"github.com/livepeer/node/nodeconfig/migrations"
 	"github.com/stretchr/testify/require"
 	_ "modernc.org/sqlite"
 )
