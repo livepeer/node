@@ -416,17 +416,20 @@ func (s *Service) generate(w http.ResponseWriter, r *http.Request) {
 		signerError(w, 481, "orchestrator price exceeds initial session price")
 		return
 	}
-	// Generate and sign the complete batch before authorization so the proposed
-	// state describes the actual tickets. Nothing is returned until approval.
-	draft, err := s.makePayment(r.Context(), req, info, state, oldSequence)
+	draft, err := s.preparePayment(r.Context(), req.Type, req.ManifestID, info, state, oldSequence, time.Now())
 	if err != nil {
-		if f, ok := errors.AsType[paymentFailure](err); ok {
-			if f.status == 480 {
-				w.Header().Set("Livepeer-Orchestrator-URL", info.Transcoder)
+		switch {
+		case errors.Is(err, pm.ErrRefreshRequired):
+			w.Header().Set("Livepeer-Orchestrator-URL", info.Transcoder)
+			signerError(w, 480, "refresh session for remote signer")
+		case errors.Is(err, pm.ErrNoTickets):
+			signerError(w, 482, "no tickets needed")
+		default:
+			if f, ok := errors.AsType[paymentFailure](err); ok {
+				signerError(w, f.status, f.reason)
+			} else {
+				signerError(w, 500, "payment generation failed")
 			}
-			signerError(w, f.status, f.reason)
-		} else {
-			signerError(w, 500, "payment generation failed")
 		}
 		return
 	}
@@ -436,6 +439,11 @@ func (s *Service) generate(w http.ResponseWriter, r *http.Request) {
 		} else {
 			signerError(w, 500, "payment authorization failed")
 		}
+		return
+	}
+	signed, err := draft.Sign(r.Context(), s.key)
+	if err != nil {
+		signerError(w, 500, "payment generation failed")
 		return
 	}
 	stateBytes, err := json.Marshal(draft.State)
@@ -450,7 +458,7 @@ func (s *Service) generate(w http.ResponseWriter, r *http.Request) {
 		signerError(w, 500, "payment state signing failed")
 		return
 	}
-	response, err := json.Marshal(paymentResponse{Payment: draft.Payment, SegCreds: draft.SegCreds, State: signedState{State: stateBytes, Sig: stateSig}})
+	response, err := json.Marshal(paymentResponse{Payment: signed.Payment, SegCreds: signed.SegCreds, State: signedState{State: stateBytes, Sig: stateSig}})
 	if err != nil {
 		slog.ErrorContext(r.Context(), "signer payment response encoding failed", "error", err)
 		signerError(w, 500, "payment response encoding failed")
@@ -471,19 +479,4 @@ func (s *Service) generate(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(response)
-}
-
-func (s *Service) makePayment(ctx context.Context, req paymentRequest, info wire.OrchestratorInfo, state paymentState, oldSequence int64) (paymentDraft, error) {
-	payment, err := (remotePayer{Signer: s.key, Chain: s.paymentChain, Policy: s.payerPolicy}).Generate(ctx, req.Type, req.ManifestID, info, state, oldSequence)
-	if err != nil {
-		switch {
-		case errors.Is(err, pm.ErrRefreshRequired):
-			return paymentDraft{}, paymentFailure{480, "refresh session for remote signer"}
-		case errors.Is(err, pm.ErrNoTickets):
-			return paymentDraft{}, paymentFailure{482, "no tickets needed"}
-		default:
-			return paymentDraft{}, err
-		}
-	}
-	return payment, nil
 }

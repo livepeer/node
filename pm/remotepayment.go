@@ -42,13 +42,13 @@ func RemoteBatchSize(params TicketParams, fee, balance *big.Rat) (int, error) {
 	return int(count.Int64()), nil
 }
 
-// MakeRemoteBatch constructs signed tickets for the billable fee and carries
-// forward unused expected value.
+// DraftRemoteBatch constructs unsigned tickets for the billable fee and carries
+// forward unused expected value. The caller must keep params unchanged until signing.
 // Ticket construction follows Yondon Fu's go-livepeer/pm/sender.go CreateTicketBatch
 // (a5ffbb1d31fba67077d5564c1b5161ba900e0be6), used by Josh Allmann's remote signer
 // in server/remote_signer.go (f117b4423f8614c7475f0bb0c5071433c7037b87).
-func MakeRemoteBatch(params TicketParams, signer TicketSigner, firstNonce uint32, fee, balance *big.Rat) (*TicketBatch, *big.Rat, error) {
-	if signer == nil || params.FaceValue == nil || params.WinProb == nil || params.ExpirationParams == nil || params.ExpirationBlock == nil || fee == nil || balance == nil {
+func DraftRemoteBatch(params TicketParams, payer ethcommon.Address, firstNonce uint32, fee, balance *big.Rat) (*TicketBatch, *big.Rat, error) {
+	if params.FaceValue == nil || params.WinProb == nil || params.ExpirationParams == nil || params.ExpirationBlock == nil || fee == nil || balance == nil {
 		return nil, nil, errors.New("incomplete remote payment params")
 	}
 	count, err := RemoteBatchSize(params, fee, balance)
@@ -59,15 +59,10 @@ func MakeRemoteBatch(params TicketParams, signer TicketSigner, firstNonce uint32
 	if uint64(firstNonce)+uint64(count) >= 600 {
 		return nil, nil, ErrRefreshRequired
 	}
-	batch := &TicketBatch{TicketParams: &params, TicketExpirationParams: params.ExpirationParams, PayerAddress: signer.Address()}
+	batch := &TicketBatch{TicketParams: &params, TicketExpirationParams: params.ExpirationParams, PayerAddress: payer}
 	for i := 0; i < count; i++ {
 		nonce := firstNonce + uint32(i) + 1
-		ticket := NewTicket(&params, params.ExpirationParams, signer.Address(), nonce)
-		sig, err := signer.SignMessage(ticket.Hash().Bytes())
-		if err != nil {
-			return nil, nil, err
-		}
-		batch.PayerParams = append(batch.PayerParams, &TicketPayerParams{TicketNonce: nonce, Sig: sig})
+		batch.PayerParams = append(batch.PayerParams, &TicketPayerParams{TicketNonce: nonce})
 	}
 	credit := new(big.Rat).Mul(ev, big.NewRat(int64(count), 1))
 	remaining := new(big.Rat).Sub(new(big.Rat).Add(balance, credit), fee)

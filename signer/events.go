@@ -51,7 +51,7 @@ type signedTicketEvent struct {
 	AuthID           string    `json:"auth_id"`
 }
 
-func newSignedTicketEvent(payer ethcommon.Address, req paymentRequest, info wire.OrchestratorInfo, draft paymentDraft, rate *big.Rat) signingEvent {
+func newSignedTicketEvent(payer ethcommon.Address, req paymentRequest, info wire.OrchestratorInfo, draft draftPayment, rate *big.Rat) signingEvent {
 	state, usage := draft.State, draft.Usage
 	status := "continuing"
 	if state.SequenceNumber == 0 {

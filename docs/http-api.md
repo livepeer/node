@@ -121,11 +121,12 @@ the provenance of an arbitrary challenge.
 
 ### Authorization webhook
 
-The signer sends `POST` with `Content-Type: application/json` after generating
-and signing tickets, before returning payment data. The body contains `headers`
-(the incoming client's `map[string][]string`) and `state` (updated payment
-state). It does not include the encoded ticket batch. Example request, showing
-selected state fields:
+To approve or reject payments, configure an authorization webhook. The signer
+sends it a `POST` with `Content-Type: application/json` before signing. The body
+contains `headers` (the client's request headers, with an array of values per
+name) and `state` (the proposed payment state). Use these to identify the caller
+and evaluate the payment against your policy. The ticket batch is not included.
+Example request, showing selected state fields:
 
 ```json
 {

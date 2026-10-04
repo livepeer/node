@@ -386,12 +386,12 @@ func (f payerChainFunc) PayerFunds(ctx context.Context, payer, recipient ethcomm
 
 type failingPaymentSigner struct {
 	pm.TicketSigner
-	failAt, calls int
+	failAt int
+	calls  atomic.Int32
 }
 
 func (s *failingPaymentSigner) SignMessage(message []byte) ([]byte, error) {
-	s.calls++
-	if s.calls == s.failAt {
+	if int(s.calls.Add(1)) == s.failAt {
 		return nil, errors.New("key /private/keys/signer.json: private-signing-detail")
 	}
 	return s.TicketSigner.SignMessage(message)
@@ -456,6 +456,7 @@ func TestPaymentFailureStatuses(t *testing.T) {
 			info := original
 			info.Price.PricePerUnit = tc.price
 			s.key = &failingPaymentSigner{TicketSigner: key, failAt: tc.failAt}
+			s.events = eventSinkFunc(func(context.Context, signingEvent) error { t.Fatal("signing failure emitted an event"); return nil })
 			response := postPayment(t, s, map[string]any{"orchestrator": wire.EncodeOrchestratorInfo(info), "type": "fixed"})
 			requirePaymentFailure(t, response, 500)
 			require.NotContains(t, response.Body.String(), "/private/keys")

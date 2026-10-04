@@ -1,6 +1,7 @@
 package signer
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"io"
@@ -18,6 +19,8 @@ import (
 
 func TestAuthWebhookCachePriceAndIdentity(t *testing.T) {
 	s, info := testService(t)
+	countingKey := &failingPaymentSigner{TicketSigner: s.key}
+	s.key = countingKey
 	var calls atomic.Int32
 	var reject atomic.Bool
 	webhook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -56,16 +59,20 @@ func TestAuthWebhookCachePriceAndIdentity(t *testing.T) {
 	r := httptest.NewRequest("POST", "/generate-live-payment", strings.NewReader(string(body)))
 	r.Header.Set("Signer-Auth-Id", "bob")
 	w = httptest.NewRecorder()
+	beforeSignatures := countingKey.calls.Load()
 	s.ServeHTTP(w, r)
 	require.Equal(t, 403, w.Code)
+	require.Equal(t, beforeSignatures, countingKey.calls.Load(), "cached identity rejection must not sign")
 	// Changing configured credentials invalidates prior webhook authorization.
 	var second paymentResponse
 	require.NoError(t, json.Unmarshal(postPayment(t, s, req).Body.Bytes(), &second))
 	req["state"] = second.State
 	reject.Store(true)
 	require.NoError(t, s.SetAuthWebhook(testURL(t, webhook.URL), Headers{"X-Webhook-Secret": {"configured"}, "X-Policy": {"new"}}))
+	beforeSignatures = countingKey.calls.Load()
 	w = postPayment(t, s, req)
 	require.Equal(t, 403, w.Code, w.Body.String())
+	require.Equal(t, beforeSignatures, countingKey.calls.Load())
 	require.Equal(t, int32(3), calls.Load())
 	require.NotContains(t, w.Body.String(), `"payment"`)
 	require.NotContains(t, w.Body.String(), `"state"`)
@@ -108,6 +115,12 @@ func TestAuthWebhookFailuresWithholdPayment(t *testing.T) {
 	defer webhook.Close()
 	s, info := testService(t)
 	defer s.Close()
+	countingKey := &failingPaymentSigner{TicketSigner: s.key}
+	s.key = countingKey
+	s.events = eventSinkFunc(func(context.Context, signingEvent) error {
+		t.Fatal("authorization failure emitted an event")
+		return nil
+	})
 	request := map[string]any{"orchestrator": wire.EncodeOrchestratorInfo(info), "type": "fixed"}
 	for path, test := range tests {
 		t.Run(path, func(t *testing.T) {
@@ -116,6 +129,7 @@ func TestAuthWebhookFailuresWithholdPayment(t *testing.T) {
 			require.NoError(t, s.SetAuthWebhook(testURL(t, webhook.URL+path), nil))
 			response := postPayment(t, s, request)
 			requirePaymentFailure(t, response, test.want)
+			require.Zero(t, countingKey.calls.Load(), "failed authorization must not sign tickets, segment credentials, or state")
 			require.NotContains(t, response.Body.String(), "private-webhook-detail")
 			require.NotEmpty(t, logs.String())
 			require.NotContains(t, logs.String(), "private-webhook-detail")
@@ -141,6 +155,7 @@ func TestAuthWebhookFailuresWithholdPayment(t *testing.T) {
 	require.NoError(t, s.SetAuthWebhook(testURL(t, webhook.URL+"?token=private-webhook-detail"), nil))
 	response := postPayment(t, s, request)
 	requirePaymentFailure(t, response, 502)
+	require.Zero(t, countingKey.calls.Load())
 	require.NotContains(t, response.Body.String(), "private-webhook-detail")
 	require.Contains(t, logs.String(), "signer auth webhook unavailable")
 	require.Contains(t, logs.String(), "private-webhook-detail")

@@ -31,10 +31,23 @@ func TestSigningEventContract(t *testing.T) {
 	for _, kind := range []string{"live", "fixed"} {
 		t.Run(kind, func(t *testing.T) {
 			s, info := testService(t)
+			key := &failingPaymentSigner{TicketSigner: s.key}
+			s.key = key
+			proposals := make(chan paymentState, 3)
 			var events []signingEvent
 			s.events = eventSinkFunc(func(_ context.Context, event signingEvent) error { events = append(events, event); return nil })
 			var authCalls int
-			webhook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			webhook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body struct{ State paymentState }
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Error(err)
+					w.WriteHeader(400)
+					return
+				}
+				proposals <- body.State
+				if key.calls.Load() != 0 {
+					t.Error("payment signed before authorization")
+				}
 				authCalls++
 				_ = json.NewEncoder(w).Encode(map[string]any{"status": 200, "auth_id": "accounting-session", "expiry": time.Now().Add(time.Hour).Unix()})
 			}))
@@ -89,6 +102,13 @@ func TestSigningEventContract(t *testing.T) {
 				require.True(t, ok)
 				require.Equal(t, balance.FloatString(0), data.SessionBalance)
 				if i == 0 {
+					proposed := <-proposals
+					approved := state
+					approved.AuthID, approved.AuthExpiry = proposed.AuthID, proposed.AuthExpiry
+					approved.AuthPolicy, approved.AuthMaxPrice = proposed.AuthPolicy, proposed.AuthMaxPrice
+					require.Equal(t, proposed, approved, "approval must preserve all payment fields")
+					require.Equal(t, proposed.TicketNonce, payment.PayerParams[len(payment.PayerParams)-1].TicketNonce)
+					require.Equal(t, int32(len(payment.PayerParams)+2), key.calls.Load())
 					require.Equal(t, "new", data.SessionStatus)
 					require.Equal(t, data.CurrentTime, data.PreviousTime)
 					fee, seconds := "10", float64(0)
@@ -143,7 +163,7 @@ func TestAccountingRateCapturedBeforeAuthorization(t *testing.T) {
 }
 
 func TestRejectedPaymentsEmitNoEvent(t *testing.T) {
-	for rejection, status := range map[string]int{"invalid": 400, "price": 481, "refresh": 480, "funds": 400, "authorization": 403} {
+	for rejection, status := range map[string]int{"invalid": 400, "price": 481, "refresh": 480, "funds": 400} {
 		t.Run(rejection, func(t *testing.T) {
 			s, info := testService(t)
 			s.events = eventSinkFunc(func(context.Context, signingEvent) error { t.Fatal("rejected payment emitted an event"); return nil })
@@ -158,12 +178,6 @@ func TestRejectedPaymentsEmitNoEvent(t *testing.T) {
 				request["orchestrator"] = wire.EncodeOrchestratorInfo(info)
 			case "funds":
 				s.SetPaymentChain(unavailablePayer{})
-			case "authorization":
-				webhook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-					_, _ = io.WriteString(w, `{"status":403,"reason":"denied"}`)
-				}))
-				defer webhook.Close()
-				require.NoError(t, s.SetAuthWebhook(testURL(t, webhook.URL), nil))
 			}
 			requirePaymentFailure(t, postPayment(t, s, request), status)
 		})

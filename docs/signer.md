@@ -32,7 +32,9 @@ sequenceDiagram
   Client->>Orchestrator: Request work
   Orchestrator-->>Client: Payment requirements
   Client->>Signer: Request payment
-  Note over Signer: Check price limits and authorization
+  Note over Signer: Check limits and draft payment
+  Note over Signer: Authorize new payment state
+  Note over Signer: Sign payment and record for accounting
   Signer-->>Client: Signed payment
   Client->>Orchestrator: Submit payment and use the application
 ```
@@ -203,7 +205,7 @@ accounting. Give each replica its own outbox.
 Events are persisted before the payment response and delivered at least once;
 consumers must deduplicate event IDs. Separate signing requests produce separate
 events, including requests whose responses are interrupted. Accounting lag can
-allow a budget to be exceeded before authorization stops further signing.
+allow a budget to be exceeded before authorization stops further payment.
 
 ## Readiness and monitoring
 

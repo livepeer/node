@@ -8,12 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type batchTestSigner struct{}
-
-func (batchTestSigner) Address() ethcommon.Address         { return ethcommon.HexToAddress("0x1234") }
-func (batchTestSigner) SignMessage([]byte) ([]byte, error) { return []byte{1, 2, 3}, nil }
-
-func TestMakeRemoteBatchCreditAndNonceBoundaries(t *testing.T) {
+func TestDraftRemoteBatchCreditAndNonceBoundaries(t *testing.T) {
 	// maxWinProb is divisible by three, so each ticket has exactly 10/3 wei EV.
 	params := TicketParams{Recipient: ethcommon.HexToAddress("0x5678"), FaceValue: big.NewInt(10), WinProb: new(big.Int).Quo(maxWinProb, big.NewInt(3)), ExpirationBlock: big.NewInt(100), ExpirationParams: &TicketExpirationParams{CreationRound: 10}}
 	for _, tt := range []struct {
@@ -36,7 +31,7 @@ func TestMakeRemoteBatchCreditAndNonceBoundaries(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			balance := new(big.Rat).Set(tt.balance)
-			batch, remaining, err := MakeRemoteBatch(params, batchTestSigner{}, tt.firstNonce, tt.fee, balance)
+			batch, remaining, err := DraftRemoteBatch(params, ethcommon.HexToAddress("0x1234"), tt.firstNonce, tt.fee, balance)
 			require.Equal(t, tt.balance.RatString(), balance.RatString(), "the caller owns its prior balance")
 			if tt.message != "" {
 				require.ErrorContains(t, err, tt.message)

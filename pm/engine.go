@@ -225,7 +225,7 @@ func (e *Engine) Receive(ctx context.Context, runner, manifest, paymentHeader, s
 	}
 	flatten := append([]byte(manifest), make([]byte, 32)...)
 	flatten = append(flatten, segment.Hash...)
-	if !(DefaultSigVerifier{}).Verify(payer, flatten, segment.Signature) {
+	if !(DefaultSigVerifier{}).Verify(payer, crypto.Keccak256(flatten), segment.Signature) {
 		return ethcommon.Address{}, nil, ErrInvalidPayment
 	}
 	funds, err := e.chain.PayerFunds(ctx, payer, e.recipient)

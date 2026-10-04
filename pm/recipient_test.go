@@ -122,8 +122,16 @@ func receiveRecipientPayment(t *testing.T, e *Engine, key *ecdsa.PrivateKey, inf
 	flatten := append([]byte(info.Auth.SessionID), make([]byte, 32)...)
 	flatten = append(flatten, hash...)
 	segment := wire.SegData{ManifestID: []byte(info.Auth.SessionID), Hash: hash, Signature: sign(flatten), Auth: info.Auth}
-	_, _, err := e.Receive(t.Context(), "runner", info.Auth.SessionID, base64.StdEncoding.EncodeToString(wire.EncodePayment(payment)), base64.StdEncoding.EncodeToString(wire.EncodeSegData(segment)))
-	return err
+	receive := func() error {
+		_, _, err := e.Receive(t.Context(), "runner", info.Auth.SessionID, base64.StdEncoding.EncodeToString(wire.EncodePayment(payment)), base64.StdEncoding.EncodeToString(wire.EncodeSegData(segment)))
+		return err
+	}
+	require.ErrorIs(t, receive(), ErrInvalidPayment, "unhashed credentials")
+	segment.Signature = sign(crypto.Keccak256(flatten))
+	segment.Hash[0] ^= 1
+	require.ErrorIs(t, receive(), ErrInvalidPayment, "tampered payload hash")
+	segment.Hash[0] ^= 1
+	return receive()
 }
 
 func TestRecipientHMACRejectsTamperedParameters(t *testing.T) {
