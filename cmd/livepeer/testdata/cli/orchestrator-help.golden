@@ -7,6 +7,7 @@ Usage:
 Available Commands:
   completion  Generate the autocompletion script for the specified shell
   help        Help about any command
+  migrate     Manage embedded SQL migrations
   redemptions Inspect recipient redemption state or explicitly retry stored transaction bytes
 
 Flags:

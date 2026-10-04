@@ -87,6 +87,8 @@ func TestRealBinaryOffchainFlow(t *testing.T) {
 		}
 	}
 
+	testBinaryMigrations(t, install)
+
 	runner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.NotEmpty(t, r.Header.Get("Livepeer-Session-Token"))
 		if r.URL.Path == "/credentials" {

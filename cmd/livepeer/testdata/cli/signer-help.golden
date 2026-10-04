@@ -2,6 +2,12 @@ Standalone remote signer
 
 Usage:
   livepeer-signer [flags]
+  livepeer-signer [command]
+
+Available Commands:
+  completion  Generate the autocompletion script for the specified shell
+  help        Help about any command
+  migrate     Manage embedded SQL migrations
 
 Flags:
   -k, --kafka-broker string                One Kafka bootstrap address (TLS by default; kafka:// selects plaintext) (env: LIVEPEER_SIGNER_KAFKA_BROKER, required)
@@ -33,6 +39,8 @@ Flags:
       --discovery-grants strings           Private discovery host[:port] grants (env: LIVEPEER_SIGNER_DISCOVERY_GRANTS)
   -h, --help                               help for livepeer-signer
   -v, --version                            version for livepeer-signer
+
+Use "livepeer-signer [command] --help" for more information about a command.
 
 Environment Variables:
   LIVEPEER_SIGNER_KAFKA_USERNAME

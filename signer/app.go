@@ -20,6 +20,7 @@ import (
 	"github.com/j0sh/boa/pkg/boa"
 	"github.com/livepeer/node/destination"
 	"github.com/livepeer/node/eth"
+	"github.com/livepeer/node/migrations/migratecli"
 	"github.com/livepeer/node/pm"
 	"github.com/livepeer/node/version"
 	"github.com/spf13/cobra"
@@ -279,6 +280,7 @@ func Root(out, errOut io.Writer) *cobra.Command {
 	cmd.SetErr(errOut)
 	cmd.SilenceUsage = true
 	cmd.SilenceErrors = true
+	cmd.AddCommand(migratecli.Command("kafka-outbox-db", "LIVEPEER_SIGNER_KAFKA_OUTBOX_DB", "signer-events.sqlite", outboxMigrationFiles, openOutboxDB))
 	cmd.InitDefaultCompletionCmd()
 	return cmd
 }

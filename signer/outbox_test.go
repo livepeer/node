@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sync"
@@ -14,6 +15,7 @@ import (
 	"time"
 	"uuid"
 
+	"github.com/livepeer/node/migrations"
 	"github.com/segmentio/kafka-go"
 	"github.com/stretchr/testify/require"
 )
@@ -107,6 +109,21 @@ func TestOutboxDurabilityBindingAndPermissions(t *testing.T) {
 	changed, err := openEventOutbox(ctx, path, outboxBinding{"new-payer", "new:9092", "new-topic"}, 1<<20)
 	require.NoError(t, err)
 	require.NoError(t, changed.Close())
+}
+
+func TestOutboxMigrationRollback(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.sqlite")
+	binding := outboxBinding{"payer", "broker:9092", "signing"}
+	outbox, err := openEventOutbox(t.Context(), path, binding, 1<<20)
+	require.NoError(t, err)
+	defer outbox.Close()
+	files, err := fs.Sub(outboxMigrationFiles, "migrations")
+	require.NoError(t, err)
+	require.NoError(t, migrations.Down(t.Context(), outbox.db, files))
+	require.NoError(t, outbox.Close())
+	outbox, err = openEventOutbox(t.Context(), path, binding, 1<<20)
+	require.NoError(t, err, "startup must reapply the rolled-back catalog")
+	require.NoError(t, outbox.Close())
 }
 
 func TestOutboxCapacityConcurrentAdmissionAndRecovery(t *testing.T) {

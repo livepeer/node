@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"io/fs"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/livepeer/node/eth"
+	"github.com/livepeer/node/migrations"
 	"github.com/livepeer/node/pm"
 	"github.com/stretchr/testify/require"
 )
@@ -30,6 +32,20 @@ func TestRedeemerSQLiteFilePermissions(t *testing.T) {
 	require.NoError(t, os.Chmod(path, 0644))
 	_, err = OpenRedeemerDB(path)
 	require.ErrorContains(t, err, "owner-only")
+}
+
+func TestRedeemerMigrationRollback(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "redeemer.sqlite")
+	store, err := OpenRedeemerDB(path)
+	require.NoError(t, err)
+	defer store.Close()
+	files, err := fs.Sub(redeemerMigrationFiles, "migrations")
+	require.NoError(t, err)
+	require.NoError(t, migrations.Down(t.Context(), store.db, files))
+	require.NoError(t, store.Close())
+	store, err = OpenRedeemerDB(path)
+	require.NoError(t, err, "startup must reapply the rolled-back catalog")
+	require.NoError(t, store.Close())
 }
 
 // Adapted from go-livepeer/common/db_test.go's winning-ticket store tests,

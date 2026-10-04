@@ -23,6 +23,7 @@ import (
 	"github.com/j0sh/boa/pkg/boa"
 	"github.com/livepeer/node/destination"
 	"github.com/livepeer/node/eth"
+	"github.com/livepeer/node/migrations/migratecli"
 	"github.com/livepeer/node/pm"
 	"github.com/livepeer/node/version"
 	"github.com/spf13/cobra"
@@ -161,7 +162,7 @@ func Root(out, errOut io.Writer) *cobra.Command {
 	cmd.SetErr(errOut)
 	cmd.SilenceUsage = true
 	cmd.SilenceErrors = true
-	cmd.AddCommand(redemptionCommand())
+	cmd.AddCommand(redemptionCommand(), migratecli.Command("redeemer-db", "LIVEPEER_ORCHESTRATOR_REDEEMER_DB", "", redeemerMigrationFiles, openRedeemerDB))
 	cmd.InitDefaultCompletionCmd()
 	return cmd
 }

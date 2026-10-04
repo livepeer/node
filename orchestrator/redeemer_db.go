@@ -6,30 +6,63 @@ package orchestrator
 import (
 	"context"
 	"database/sql"
+	"embed"
 	"errors"
 	"fmt"
+	"io/fs"
 	"math/big"
+	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
+	"github.com/livepeer/node/migrations"
 	"github.com/livepeer/node/pm"
 	_ "modernc.org/sqlite"
 )
+
+//go:embed migrations/*.sql
+var redeemerMigrationFiles embed.FS
 
 // RedeemerDB owns the orchestrator redeemer's durable winning-ticket queue,
 // redemption lifecycle, and chain activity observations.
 type RedeemerDB struct{ db *sql.DB }
 
 func OpenRedeemerDB(path string) (*RedeemerDB, error) {
+	ctx := context.Background()
+	db, err := openRedeemerDB(ctx, path, true)
+	if err != nil {
+		return nil, err
+	}
+	files, err := fs.Sub(redeemerMigrationFiles, "migrations")
+	if err == nil {
+		err = migrations.Up(ctx, db, files)
+	}
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("initialize redeemer SQLite: %w", err)
+	}
+	return &RedeemerDB{db: db}, nil
+}
+
+func openRedeemerDB(ctx context.Context, path string, create bool) (*sql.DB, error) {
 	if path == "" {
 		return nil, errors.New("redeemer SQLite path is required")
 	}
 	if path == ":memory:" || strings.HasPrefix(path, "file:") {
 		return nil, errors.New("redeemer SQLite state requires a filesystem path")
 	}
-	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0600)
+	path, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	flags := os.O_RDWR
+	if create {
+		flags |= os.O_CREATE
+	}
+	file, err := os.OpenFile(path, flags, 0600)
 	if err != nil {
 		return nil, errors.New("redeemer SQLite file is unavailable")
 	}
@@ -40,7 +73,8 @@ func OpenRedeemerDB(path string) (*RedeemerDB, error) {
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
 		return nil, errors.New("redeemer SQLite file must be owner-only")
 	}
-	db, err := sql.Open("sqlite", path)
+	u := url.URL{Scheme: "file", Path: path, RawQuery: "mode=rw"}
+	db, err := sql.Open("sqlite", u.String())
 	if err != nil {
 		return nil, err
 	}
@@ -48,32 +82,13 @@ func OpenRedeemerDB(path string) (*RedeemerDB, error) {
 	for _, stmt := range []string{
 		"PRAGMA busy_timeout=5000",
 		"PRAGMA journal_mode=WAL",
-		`CREATE TABLE IF NOT EXISTS winning_tickets (
-			seq INTEGER PRIMARY KEY AUTOINCREMENT,
-			payer_address TEXT NOT NULL, recipient TEXT NOT NULL,
-			face_value BLOB NOT NULL, win_prob BLOB NOT NULL,
-			ticket_nonce INTEGER NOT NULL, recipient_rand BLOB NOT NULL,
-			recipient_rand_hash TEXT NOT NULL, sig BLOB NOT NULL UNIQUE,
-			creation_round INTEGER NOT NULL, creation_round_block_hash TEXT NOT NULL,
-			params_expiration_block TEXT NOT NULL,
-			redeemed_at TEXT, tx_hash TEXT)`,
-		"CREATE INDEX IF NOT EXISTS winning_tickets_pending ON winning_tickets(payer_address, creation_round, seq) WHERE tx_hash IS NULL",
-		"CREATE INDEX IF NOT EXISTS winning_tickets_epoch ON winning_tickets(recipient_rand_hash)",
-		"CREATE INDEX IF NOT EXISTS winning_tickets_liability ON winning_tickets(payer_address,creation_round) WHERE redeemed_at IS NULL",
-		`CREATE TABLE IF NOT EXISTS orchestrator_rounds (
-			address TEXT NOT NULL, round TEXT NOT NULL, active INTEGER NOT NULL,
-			PRIMARY KEY(address, round))`,
-		`CREATE TABLE IF NOT EXISTS redemption_attempts (
-			sig BLOB PRIMARY KEY, attempted_at TEXT NOT NULL, error TEXT,
-			phase TEXT NOT NULL, raw_transaction BLOB, redeemer_address TEXT, nonce TEXT)`,
-		"CREATE UNIQUE INDEX IF NOT EXISTS redemption_nonce ON redemption_attempts(redeemer_address,nonce) WHERE nonce IS NOT NULL",
 	} {
-		if _, err := db.Exec(stmt); err != nil {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
 			_ = db.Close()
 			return nil, fmt.Errorf("initialize redeemer SQLite: %w", err)
 		}
 	}
-	return &RedeemerDB{db: db}, nil
+	return db, nil
 }
 
 func (s *RedeemerDB) Close() error { return s.db.Close() }

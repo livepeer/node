@@ -3,15 +3,23 @@ package signer
 import (
 	"context"
 	"database/sql"
+	"embed"
 	"encoding/json"
 	"errors"
+	"io/fs"
+	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"time"
 
+	"github.com/livepeer/node/migrations"
 	_ "modernc.org/sqlite"
 )
+
+//go:embed migrations/*.sql
+var outboxMigrationFiles embed.FS
 
 var (
 	errOutboxFull    = errors.New("signer Kafka outbox capacity exhausted")
@@ -42,22 +50,62 @@ type outboxStats struct {
 }
 
 func openEventOutbox(ctx context.Context, path string, binding outboxBinding, maxBytes int64) (_ *eventOutbox, err error) {
-	if path == "" || path == ":memory:" || strings.HasPrefix(path, "file:") || strings.Contains(path, "?") || maxBytes <= 0 {
+	if maxBytes <= 0 {
 		return nil, errors.New("kafka outbox requires a filesystem path and positive capacity")
+	}
+	db, err := openOutboxDB(ctx, path, true)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err != nil {
+			_ = db.Close()
+		}
+	}()
+	files, err := fs.Sub(outboxMigrationFiles, "migrations")
+	if err != nil {
+		return nil, err
+	}
+	if err := migrations.Up(ctx, db, files); err != nil {
+		return nil, err
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO signer_kafka_state(id,signer,broker,topic) VALUES(1,?,?,?)
+		ON CONFLICT(id) DO UPDATE SET signer=excluded.signer,broker=excluded.broker,topic=excluded.topic WHERE pending_count=0`, binding.Signer, binding.Broker, binding.Topic); err != nil {
+		return nil, err
+	}
+	o := &eventOutbox{db: db, binding: binding, maxBytes: maxBytes}
+	if _, err := o.stats(ctx); err != nil {
+		return nil, err
+	}
+	return o, nil
+}
+
+func openOutboxDB(ctx context.Context, path string, create bool) (_ *sql.DB, err error) {
+	if path == "" || path == ":memory:" || strings.HasPrefix(path, "file:") || strings.Contains(path, "?") {
+		return nil, errors.New("kafka outbox requires a filesystem path")
+	}
+	path, err = filepath.Abs(path)
+	if err != nil {
+		return nil, err
 	}
 	for _, suffix := range []string{"", "-wal", "-shm"} {
 		if info, statErr := os.Lstat(path + suffix); statErr == nil && (!info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0) {
 			return nil, errors.New("kafka outbox and sidecars must be owner-only regular files")
 		}
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
+	flags := os.O_RDWR
+	if create {
+		flags |= os.O_CREATE
+	}
+	f, err := os.OpenFile(path, flags, 0600)
 	if err != nil {
 		return nil, errors.New("kafka outbox file is unavailable")
 	}
 	if err := f.Close(); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", path)
+	u := url.URL{Scheme: "file", Path: path, RawQuery: "mode=rw"}
+	db, err := sql.Open("sqlite", u.String())
 	if err != nil {
 		return nil, err
 	}
@@ -69,31 +117,12 @@ func openEventOutbox(ctx context.Context, path string, binding outboxBinding, ma
 	db.SetMaxOpenConns(1)
 	for _, stmt := range []string{
 		"PRAGMA busy_timeout=1000", "PRAGMA journal_mode=WAL", "PRAGMA synchronous=FULL",
-		`CREATE TABLE IF NOT EXISTS signer_kafka_state (
-			id INTEGER PRIMARY KEY CHECK(id=1), signer TEXT NOT NULL, broker TEXT NOT NULL, topic TEXT NOT NULL,
-			pending_count INTEGER NOT NULL DEFAULT 0 CHECK(pending_count>=0),
-			pending_bytes INTEGER NOT NULL DEFAULT 0 CHECK(pending_bytes>=0), probe INTEGER NOT NULL DEFAULT 0)`,
-		`CREATE TABLE IF NOT EXISTS signer_kafka_events (
-			seq INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL UNIQUE,
-			payload BLOB NOT NULL, created_ms INTEGER NOT NULL)`,
-		`CREATE TRIGGER IF NOT EXISTS signer_kafka_insert AFTER INSERT ON signer_kafka_events BEGIN
-			UPDATE signer_kafka_state SET pending_count=pending_count+1,pending_bytes=pending_bytes+length(NEW.payload) WHERE id=1; END`,
-		`CREATE TRIGGER IF NOT EXISTS signer_kafka_delete AFTER DELETE ON signer_kafka_events BEGIN
-			UPDATE signer_kafka_state SET pending_count=pending_count-1,pending_bytes=pending_bytes-length(OLD.payload) WHERE id=1; END`,
 	} {
 		if _, err := db.ExecContext(ctx, stmt); err != nil {
 			return nil, err
 		}
 	}
-	if _, err := db.ExecContext(ctx, `INSERT INTO signer_kafka_state(id,signer,broker,topic) VALUES(1,?,?,?)
-		ON CONFLICT(id) DO UPDATE SET signer=excluded.signer,broker=excluded.broker,topic=excluded.topic WHERE pending_count=0`, binding.Signer, binding.Broker, binding.Topic); err != nil {
-		return nil, err
-	}
-	o := &eventOutbox{db: db, binding: binding, maxBytes: maxBytes}
-	if _, err := o.stats(ctx); err != nil {
-		return nil, err
-	}
-	return o, nil
+	return db, nil
 }
 
 func (o *eventOutbox) Close() error { return o.db.Close() }
