@@ -1,0 +1,197 @@
+name: Release
+
+on:
+  pull_request:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  CGO_ENABLED: '0'
+  GOTOOLCHAIN: local
+  GOENV: 'off'
+  GOWORK: 'off'
+  GOFLAGS: -mod=readonly
+  GOOS: linux
+  GOAMD64: v1
+  GOARM64: v8.0
+
+jobs:
+  checks:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    name: Linux ${{ matrix.arch }}
+    outputs:
+      commit: ${{ steps.metadata.outputs.commit }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    env:
+      GOARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: '1.27.1'
+          cache: true
+      - name: Verify pinned toolchain and dependencies
+        run: |
+          test "$(go env GOVERSION)" = go1.27.1
+          go mod download
+          go mod verify
+          git diff --exit-code -- go.mod go.sum
+      - name: Release metadata
+        id: metadata
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          commit=$(git rev-parse HEAD)
+          version="dev-${commit:0:12}"
+          if [[ "$REF_TYPE" == tag ]]; then
+            [[ "$REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
+              echo 'Release tags must be vMAJOR.MINOR.PATCH, without leading zeroes, prerelease suffixes, or build metadata.' >&2
+              exit 1
+            }
+            version="$REF_NAME"
+          fi
+          {
+            echo "version=$version"
+            echo "commit=$commit"
+            echo "epoch=$(git show -s --format=%ct HEAD)"
+            echo "bundle=livepeer-${version}-linux-${GOARCH}"
+          } >> "$GITHUB_OUTPUT"
+      - name: Build twice and verify static, reproducible binaries
+        env:
+          RELEASE_VERSION: ${{ steps.metadata.outputs.version }}
+          RELEASE_COMMIT: ${{ steps.metadata.outputs.commit }}
+        run: |
+          ldflags="-s -w -buildid= -X github.com/livepeer/node/version.Name=$RELEASE_VERSION -X github.com/livepeer/node/version.Commit=$RELEASE_COMMIT"
+          # Independent output paths and empty caches ensure the second build recompiles.
+          for build in first second; do
+            mkdir -p "$RUNNER_TEMP/$build/bin"
+            for binary in livepeer livepeer-orchestrator livepeer-signer livepeer-chain; do
+              GOCACHE="$RUNNER_TEMP/$build/cache" go build \
+                -trimpath -buildvcs=false -ldflags "$ldflags" \
+                -o "$RUNNER_TEMP/$build/bin/$binary" "./cmd/$binary"
+            done
+          done
+          for binary in livepeer livepeer-orchestrator livepeer-signer livepeer-chain; do
+            path="$RUNNER_TEMP/first/bin/$binary"
+            cmp "$path" "$RUNNER_TEMP/second/bin/$binary"
+            # A static ELF must have neither an interpreter nor shared-library dependencies.
+            readelf --program-headers "$path" > "$RUNNER_TEMP/program-headers"
+            readelf --dynamic "$path" > "$RUNNER_TEMP/dynamic"
+            if grep -Eq 'INTERP' "$RUNNER_TEMP/program-headers" || grep -Eq 'NEEDED' "$RUNNER_TEMP/dynamic"; then
+              echo "$binary is not statically linked" >&2
+              exit 1
+            fi
+            go version -m "$path" | tee "$RUNNER_TEMP/$binary.buildinfo"
+            grep -Fq 'CGO_ENABLED=0' "$RUNNER_TEMP/$binary.buildinfo"
+          done
+          git diff --exit-code -- go.mod go.sum
+      - name: Package deterministic bundle and checksums
+        env:
+          RELEASE_VERSION: ${{ steps.metadata.outputs.version }}
+          RELEASE_COMMIT: ${{ steps.metadata.outputs.commit }}
+          SOURCE_DATE_EPOCH: ${{ steps.metadata.outputs.epoch }}
+          BUNDLE: ${{ steps.metadata.outputs.bundle }}
+        run: |
+          mkdir -p dist "$RUNNER_TEMP/package/$BUNDLE/bin"
+          cp "$RUNNER_TEMP/first/bin/"* "$RUNNER_TEMP/package/$BUNDLE/bin/"
+          cp LICENSE.go-livepeer "$RUNNER_TEMP/package/$BUNDLE/"
+          printf 'version=%s\ncommit=%s\ngo=go1.27.1\nos=linux\narch=%s\n' \
+            "$RELEASE_VERSION" "$RELEASE_COMMIT" "$GOARCH" > "$RUNNER_TEMP/package/$BUNDLE/VERSION"
+          (
+            cd "$RUNNER_TEMP/package/$BUNDLE"
+            sha256sum bin/* > SHA256SUMS
+            chmod 755 . bin bin/*
+            chmod 644 LICENSE.go-livepeer VERSION SHA256SUMS
+          )
+          tar --sort=name --mtime="@$SOURCE_DATE_EPOCH" --owner=0 --group=0 --numeric-owner \
+            --format=gnu -C "$RUNNER_TEMP/package" -cf - "$BUNDLE" | gzip -n > "dist/$BUNDLE.tar.gz"
+          (cd dist && sha256sum "$BUNDLE.tar.gz" > "$BUNDLE.tar.gz.sha256")
+      - name: Install and smoke test without Go
+        env:
+          RELEASE_VERSION: ${{ steps.metadata.outputs.version }}
+          RELEASE_COMMIT: ${{ steps.metadata.outputs.commit }}
+          BUNDLE: ${{ steps.metadata.outputs.bundle }}
+        run: |
+          docker run --rm --network none --read-only --cap-drop=ALL \
+            --security-opt=no-new-privileges --user 65534:65534 \
+            --tmpfs /tmp:rw,exec,mode=1777 \
+            -v "$PWD/dist:/artifacts:ro" \
+            -v "$PWD/.github/scripts/release-smoke.sh:/smoke.sh:ro" \
+            alpine:3.23.3@sha256:25109184c71bdad752c8312a8623239686a9a2071e8825f20acb8f2198c3f659 \
+            sh /smoke.sh "/artifacts/$BUNDLE.tar.gz" "$RELEASE_VERSION" "$RELEASE_COMMIT"
+      - name: Save tested release bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-linux-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+          compression-level: 0
+
+  publish:
+    needs: [checks, build]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: release-linux-*
+          path: dist
+          merge-multiple: true
+      - name: Verify release checksums
+        run: |
+          cd dist
+          cat ./*.tar.gz.sha256 > SHA256SUMS
+          sha256sum --check SHA256SUMS
+      - name: Publish verified bundles
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_COMMIT: ${{ needs.build.outputs.commit }}
+        run: |
+          verify_tag() {
+            remote_commit=$(gh api "repos/$GH_REPO/commits/refs/tags/$RELEASE_TAG" --jq .sha)
+            if [[ "$remote_commit" != "$RELEASE_COMMIT" ]]; then
+              echo "Tag $RELEASE_TAG no longer points to built commit $RELEASE_COMMIT; refusing to publish." >&2
+              exit 1
+            fi
+          }
+          verify_tag
+          # Leave incomplete uploads as a draft, and permit a retry of that draft.
+          if draft=$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft 2>/dev/null); then
+            if [[ "$draft" != true ]]; then
+              echo "Release $RELEASE_TAG is already published; refusing to replace its assets." >&2
+              exit 1
+            fi
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --draft --generate-notes --title "$RELEASE_TAG"
+          fi
+          gh release upload "$RELEASE_TAG" dist/*.tar.gz dist/SHA256SUMS --clobber
+          verify_tag
+          gh release edit "$RELEASE_TAG" --draft=false --prerelease=false

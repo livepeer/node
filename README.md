@@ -29,8 +29,7 @@ bin/livepeer orchestrator --help
 
 ## Run a local example
 
-This example forwards a request to a small HTTP service through a static runner.
-It runs off-chain and does not require Ethereum, payments or secrets.
+This example forwards a request to a small HTTP service. It runs off-chain.
 
 In one terminal, start the example runner:
 
@@ -46,10 +45,6 @@ In a second terminal, from the repository root, start the orchestrator:
 ```sh
 bin/livepeer orchestrator --config configs/orchestrator/local.example.toml
 ```
-
-The [local configuration](configs/orchestrator/local.example.toml) loads a
-[single-shot runner](configs/orchestrator/runners.local.example.toml) and grants
-its loopback destination separately for application traffic and health checks.
 
 In a third terminal, check readiness, discovery, and forwarding. Allow up to
 five seconds for the first runner health check before checking discovery:

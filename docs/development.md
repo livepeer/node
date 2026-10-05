@@ -9,10 +9,24 @@ bin/livepeer orchestrator --help
 bin/livepeer completion orchestrator bash
 ```
 
-The dispatcher runs bundled sibling executables or executables under `libexec`;
-it does not search `PATH`. Keep the component executables with the dispatcher
-when packaging the bundle. It forwards process status, streams, and signals.
 Use `VERSION` and `COMMIT` make variables to set release metadata.
+
+## Releases
+
+Check out the commit to release, then create and push a new version tag. Replace
+the example version and remote name as needed. Tags must use `vMAJOR.MINOR.PATCH`
+without leading zeroes, prerelease suffixes, or build metadata:
+
+```sh
+git tag v0.1.0
+git push github v0.1.0
+```
+
+The [Release workflow](../.github/workflows/release.yml) publishes Linux amd64
+and arm64 bundles and checksums after CI and packaging checks pass. Release tags
+cannot be updated or deleted, and published releases are immutable. To test
+packaging before tagging, run **Release** manually from GitHub Actions; manual
+runs save artifacts without publishing a release.
 
 ## Checks
 

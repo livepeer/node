@@ -1,9 +1,10 @@
 # Running an orchestrator
 
 The orchestrator registers HTTP runners, advertises them through discovery,
-reserves sessions, and forwards application traffic. It supports persistent
-sessions and single-shot requests, HTTP streaming, server-sent events (SSE),
-WebSockets, callbacks, and [Trickle channels](../trickle/README.md).
+reserves sessions, and forwards application traffic. It can run in on-chain or
+off-chain mode, supporting persistent sessions and single-shot requests, HTTP
+streaming, server-sent events (SSE), WebSockets, callbacks, and
+[Trickle channels](../trickle/README.md).
 
 Start with the [local example](../README.md#run-a-local-example). For deployment,
 copy the [configuration example](../configs/orchestrator/config.example.toml),
