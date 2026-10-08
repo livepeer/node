@@ -39,7 +39,7 @@ type Params struct {
 	PriceMaxAge          time.Duration      `default:"2h" descr:"Maximum age of the oracle observation"`
 	Listen               netip.AddrPort     `default:"127.0.0.1:8935" descr:"Public HTTP listener"`
 	MetricsListen        netip.AddrPort     `default:"127.0.0.1:8936" descr:"Loopback metrics listener"`
-	ServiceURL           boa.Text[*url.URL] `default:"http://127.0.0.1:8935" descr:"Public orchestrator base URL"`
+	ServiceURL           boa.Text[*url.URL] `optional:"true" descr:"Public orchestrator base URL; defaults to http://listen"`
 	RunnerServiceURL     boa.Text[*url.URL] `optional:"true" descr:"Runner-facing base URL for callbacks and trickle; defaults to service-url"`
 	ProxyURLTemplate     string             `optional:"true" descr:"Generated proxy URL with {proxy} in a hostname label or final path segment"`
 	BootstrapSecret      string             `secret:"true" optional:"true" descr:"Dynamic runner bootstrap credential"`
@@ -143,6 +143,7 @@ func Root(out, errOut io.Writer) *cobra.Command {
 		Use: "livepeer-orchestrator", Short: "Standalone Live Runner orchestrator", Version: version.String(),
 		Params: params, RejectUnknown: true,
 		PreValidateFuncCtx: func(ctx *boa.HookContext, p *Params, _ *cobra.Command, _ []string) error {
+			nodeconfig.Default(ctx, &p.ServiceURL, boa.Text[*url.URL]{Value: &url.URL{Scheme: "http", Host: p.Listen.String()}})
 			if p.paymentsRequested() {
 				if p.Network == nodeconfig.Mainnet {
 					nodeconfig.Default(ctx, &p.ChainID, new(uint64(42161)))

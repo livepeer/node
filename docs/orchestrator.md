@@ -62,9 +62,9 @@ require grants.
 
 ## Public URLs and TLS
 
-`ServiceURL` is the public base URL advertised to clients. It can include a
-deployment base path. Set `RunnerServiceURL` if runners reach the listener
-through a different URL or path. That URL is used for heartbeat responses,
+`ServiceURL` is the public base URL advertised to clients, defaulting to
+`http://<Listen>`. Set `RunnerServiceURL` if runners reach the listener through
+a different URL such as Docker. That URL is used for heartbeat responses,
 session callbacks, Trickle `internal_url`, and the orchestrator-to-runner (O2R)
 control channel. Client discovery, session, proxy, and channel URLs continue
 to use `ServiceURL`.

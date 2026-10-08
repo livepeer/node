@@ -108,7 +108,7 @@ func TestRealBinaryOffchainFlow(t *testing.T) {
 	metricsURL := fmt.Sprintf("http://127.0.0.1:%d", metricsPort)
 	secretPath := filepath.Join(t.TempDir(), "bootstrap")
 	require.NoError(t, os.WriteFile(secretPath, []byte("exact-bootstrap"), 0600))
-	cmd := exec.Command(dispatcher, "orchestrator", "--listen", fmt.Sprintf("127.0.0.1:%d", mainPort), "--metrics-listen", fmt.Sprintf("127.0.0.1:%d", metricsPort), "--service-url", serviceURL, "--bootstrap-secret-file", secretPath, "--runner-grants", strings.TrimPrefix(runner.URL, "http://"), "--session-proxy-grants", strings.TrimPrefix(runner.URL, "http://"))
+	cmd := exec.Command(dispatcher, "orchestrator", "--listen", fmt.Sprintf("127.0.0.1:%d", mainPort), "--metrics-listen", fmt.Sprintf("127.0.0.1:%d", metricsPort), "--bootstrap-secret-file", secretPath, "--runner-grants", strings.TrimPrefix(runner.URL, "http://"), "--session-proxy-grants", strings.TrimPrefix(runner.URL, "http://"))
 	var log bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &log, &log
 	require.NoError(t, cmd.Start())
@@ -144,10 +144,12 @@ func TestRealBinaryOffchainFlow(t *testing.T) {
 	var registered struct {
 		RunnerID        string `json:"runner_id"`
 		HeartbeatSecret string `json:"heartbeat_secret"`
+		Orchestrator    string `json:"orchestrator"`
 	}
 	require.NoError(t, json.NewDecoder(response.Body).Decode(&registered))
 	require.NoError(t, response.Body.Close())
 	require.NotEmpty(t, registered.HeartbeatSecret)
+	require.Equal(t, serviceURL, registered.Orchestrator)
 	response, err = http.Post(serviceURL+"/apps/"+registered.RunnerID+"/session", "application/json", nil)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, response.StatusCode)
