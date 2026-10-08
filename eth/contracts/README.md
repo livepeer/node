@@ -20,7 +20,7 @@ preserves the authors, committers, dates, and messages, with `Original-Commit`
 trailers linking each retained commit to `livepeer/go-livepeer`. Contributors
 include Eric Tang, Yondon Fu, Nico Vergauwen, Rafał Leszko, Rick Staa, and
 Victor Elias. The original MIT notice is in
-[`LICENSE.go-livepeer`](../../LICENSE.go-livepeer).
+[`LICENSE`](../../LICENSE).
 
 Keep generated schemas and methods unchanged. On a deliberate upstream update,
 copy these files from the selected committed revision, review its contract/API

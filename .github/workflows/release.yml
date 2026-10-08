@@ -117,14 +117,14 @@ jobs:
         run: |
           mkdir -p dist "$RUNNER_TEMP/package/$BUNDLE/bin"
           cp "$RUNNER_TEMP/first/bin/"* "$RUNNER_TEMP/package/$BUNDLE/bin/"
-          cp LICENSE.go-livepeer "$RUNNER_TEMP/package/$BUNDLE/"
+          cp LICENSE "$RUNNER_TEMP/package/$BUNDLE/"
           printf 'version=%s\ncommit=%s\ngo=go1.27.1\nos=linux\narch=%s\n' \
             "$RELEASE_VERSION" "$RELEASE_COMMIT" "$GOARCH" > "$RUNNER_TEMP/package/$BUNDLE/VERSION"
           (
             cd "$RUNNER_TEMP/package/$BUNDLE"
             sha256sum bin/* > SHA256SUMS
             chmod 755 . bin bin/*
-            chmod 644 LICENSE.go-livepeer VERSION SHA256SUMS
+            chmod 644 LICENSE VERSION SHA256SUMS
           )
           tar --sort=name --mtime="@$SOURCE_DATE_EPOCH" --owner=0 --group=0 --numeric-owner \
             --format=gnu -C "$RUNNER_TEMP/package" -cf - "$BUNDLE" | gzip -n > "dist/$BUNDLE.tar.gz"

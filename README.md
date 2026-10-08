@@ -86,4 +86,4 @@ The [documentation index](docs/README.md) links the operating guides and protoco
 references.
 
 Imported or adapted code retains its original MIT notice in
-[MIT notice](LICENSE.go-livepeer).
+[MIT notice](LICENSE).
