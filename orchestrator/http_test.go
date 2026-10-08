@@ -44,8 +44,10 @@ func TestDynamicRunnerSessionProxyAndCapacity(t *testing.T) {
 	var heartbeat heartbeatResponse
 	require.NoError(t, json.NewDecoder(response.Body).Decode(&heartbeat))
 	require.NoError(t, response.Body.Close())
-	require.NotEmpty(t, heartbeat.HeartbeatSecret)
+	require.Regexp(t, `^[a-z2-7]{52}$`, heartbeat.HeartbeatSecret)
+	require.Regexp(t, `^runner_[a-z2-7]{8}$`, heartbeat.RunnerID)
 	require.NotNil(t, heartbeat.O2R)
+	require.Regexp(t, "^"+heartbeat.RunnerID+`-[a-z2-7]{16}-o2r$`, heartbeat.O2R.ChannelName)
 	request, err = http.NewRequest(http.MethodPost, srv.URL+"/runners/heartbeat", bytes.NewBufferString(strings.Replace(body, `{"runner_url"`, `{"runner_id":"`+heartbeat.RunnerID+`","runner_url"`, 1)))
 	require.NoError(t, err)
 	request.Header.Set("Authorization", heartbeat.HeartbeatSecret)
@@ -60,6 +62,7 @@ func TestDynamicRunnerSessionProxyAndCapacity(t *testing.T) {
 		SessionID string `json:"session_id"`
 	}
 	require.NoError(t, json.NewDecoder(response.Body).Decode(&reserved))
+	require.Regexp(t, `^session_[a-z2-7]{16}$`, reserved.SessionID)
 	require.NoError(t, response.Body.Close())
 	response, err = http.Get(srv.URL + "/ai/trickle/" + heartbeat.O2R.ChannelName + "/0")
 	require.NoError(t, err)

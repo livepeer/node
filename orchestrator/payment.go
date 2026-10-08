@@ -31,7 +31,7 @@ func (s *Server) challenge(w http.ResponseWriter, r *http.Request, runnerID stri
 		fail(w, http.StatusPaymentRequired, "Livepeer-Payer-Address is required")
 		return
 	}
-	manifest, err := randomID()
+	manifest, err := randomIDWithPrefix("session_", 10)
 	if err != nil {
 		fail(w, 500, "cannot create payment challenge")
 		return

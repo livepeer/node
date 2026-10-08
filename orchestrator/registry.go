@@ -4,7 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
-	"encoding/hex"
+	"encoding/base32"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -208,12 +208,17 @@ func normalizePriceAt(price *priceInfo, rate *big.Rat) error {
 	return nil
 }
 
-func randomID() (string, error) {
-	var raw [16]byte
-	if _, err := rand.Read(raw[:]); err != nil {
+func randomIDWithPrefix(prefix string, n int) (string, error) {
+	id, err := randomID(n)
+	return prefix + id, err
+}
+
+func randomID(n int) (string, error) {
+	raw := make([]byte, n)
+	if _, err := rand.Read(raw); err != nil {
 		return "", err
 	}
-	return hex.EncodeToString(raw[:]), nil
+	return strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(raw)), nil
 }
 
 func equalSecret(a, b string) bool {
@@ -309,12 +314,12 @@ func (r *Registry) Heartbeat(req heartbeatRequest, auth string) (heartbeatRespon
 		id := req.RunnerID
 		if id == "" {
 			var err error
-			id, err = randomID()
+			id, err = randomIDWithPrefix("runner_", 5)
 			if err != nil {
 				return heartbeatResponse{}, http.StatusInternalServerError, err
 			}
 		}
-		credential, err := randomID()
+		credential, err := randomID(32)
 		if err != nil {
 			return heartbeatResponse{}, http.StatusInternalServerError, err
 		}
@@ -450,7 +455,7 @@ func (r *Registry) reserveWithPrice(id, requestedID string, agreed *priceInfo) (
 	sessionID := requestedID
 	if sessionID == "" {
 		var err error
-		sessionID, err = randomID()
+		sessionID, err = randomIDWithPrefix("session_", 10)
 		if err != nil {
 			return "", "", "", http.StatusInternalServerError, err
 		}
@@ -458,7 +463,7 @@ func (r *Registry) reserveWithPrice(id, requestedID string, agreed *priceInfo) (
 	if !validRouteID(sessionID) || item.Sessions[sessionID] != nil {
 		return "", "", "", http.StatusConflict, errors.New("session already exists or invalid")
 	}
-	token, err := randomID()
+	token, err := randomID(32)
 	if err != nil {
 		return "", "", "", http.StatusInternalServerError, err
 	}
@@ -471,7 +476,7 @@ func (r *Registry) reserveWithPrice(id, requestedID string, agreed *priceInfo) (
 	appURL := r.appURL(id, item.Mode, sessionID)
 	if item.Proxy && item.Mode == "persistent" {
 		target, _ := url.Parse(item.RunnerURL)
-		proxyID, err := randomID()
+		proxyID, err := randomID(10)
 		if err != nil {
 			cancel()
 			delete(item.Sessions, sessionID)
@@ -624,7 +629,7 @@ func (r *Registry) addProxy(id, sid, token string, target *url.URL) (string, err
 	if item == nil || item.Sessions[sid] == nil || !equalSecret(item.Sessions[sid].Token, token) {
 		return "", errors.New("invalid session token")
 	}
-	proxyID, err := randomID()
+	proxyID, err := randomID(10)
 	if err != nil {
 		return "", err
 	}

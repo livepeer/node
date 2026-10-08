@@ -166,11 +166,12 @@ func (s *Server) heartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if resp.HeartbeatSecret != "" {
-		id, err := randomID()
+		id, err := randomIDWithPrefix(resp.RunnerID+"-", 10)
 		if err != nil {
 			fail(w, http.StatusInternalServerError, "runner channel creation failed")
 			return
 		}
+		id += "-o2r"
 		s.registry.mu.Lock()
 		current := s.registry.runners[resp.RunnerID]
 		if s.registry.closed || current == nil || current.Credential != resp.HeartbeatSecret {
@@ -310,7 +311,7 @@ func (s *Server) proxySingleShot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	runnerID := r.PathValue("runner_id")
-	id, err := randomID()
+	id, err := randomIDWithPrefix("session_", 10)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, "session creation failed")
 		return
@@ -435,10 +436,13 @@ func (s *Server) createChannels(w http.ResponseWriter, r *http.Request) {
 	missing := map[string]string{}
 	for _, item := range body.Channels {
 		if existing[item.Name] == "" && missing[item.Name] == "" {
-			id, err := randomID()
+			id, err := randomIDWithPrefix("channel_", 10)
 			if err != nil {
 				fail(w, http.StatusInternalServerError, "channel creation failed")
 				return
+			}
+			if validRouteID(item.Name) {
+				id += "-" + item.Name
 			}
 			missing[item.Name] = id
 		}
