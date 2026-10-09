@@ -71,46 +71,46 @@ func (p Params) paymentsRequested() bool {
 
 func (p Params) Validate() error {
 	if p.BootstrapSecret == "" && p.RunnerConfig == "" {
-		return errors.New("bootstrap secret or static runner config is required")
+		return errors.New("bootstrap secret or static runner config is required: set LIVEPEER_ORCHESTRATOR_BOOTSTRAP_SECRET, supply --bootstrap-secret-file (or LIVEPEER_ORCHESTRATOR_BOOTSTRAP_SECRET_FILE), or supply --runner-config (or LIVEPEER_ORCHESTRATOR_RUNNER_CONFIG) with a static runner TOML file")
 	}
 	if p.paymentsRequested() {
 		if p.Network == "offchain" {
-			return errors.New("on-chain payments require an explicit on-chain --network")
+			return errors.New("on-chain payments require an explicit on-chain --network (or LIVEPEER_ORCHESTRATOR_NETWORK), e.g. '--network arbitrum-one-mainnet'")
 		}
 		if p.KeystorePassword == nil && p.KeystorePasswordFile == "" || p.RedeemerDB == "" || p.RPCURL == nil || p.ChainID == nil || p.Controller == nil || (p.WeiPerUSD == nil && p.ETHUSDFeed == nil) || p.TicketFaceValue == nil || p.TicketWinProb == nil {
-			return errors.New("on-chain payment requires redeemer-db, keystore-password or keystore-password-file, RPC, chain-id, controller, a fixed rate or ETH/USD feed, face-value and win-prob")
+			return errors.New("on-chain payment requires --redeemer-db, LIVEPEER_ORCHESTRATOR_KEYSTORE_PASSWORD or --keystore-password-file, LIVEPEER_ORCHESTRATOR_RPC_URL or --rpc-url-file, --chain-id, --controller-address, --wei-per-usd or --eth-usd-feed, --ticket-face-value and --ticket-win-prob")
 		}
 		if *p.Controller == (ethcommon.Address{}) {
-			return errors.New("controller-address must be nonzero")
+			return errors.New("--controller-address must be a nonzero Ethereum address")
 		}
 		if *p.ChainID == 0 || p.TicketFaceValue.IsZero() || p.TicketWinProb.IsZero() {
-			return errors.New("payment chain ID and ticket values must be positive")
+			return errors.New("--chain-id, --ticket-face-value and --ticket-win-prob must be positive")
 		}
 		if p.TicketWinProb.Eq(new(uint256.Int).SetAllOne()) {
-			return errors.New("ticket-win-prob must be less than 2^256 - 1")
+			return errors.New("--ticket-win-prob must be less than 2^256 - 1")
 		}
 		if p.RedeemerMaxFeePerGas != nil && p.RedeemerMaxFeePerGas.IsZero() {
-			return errors.New("redeemer-max-fee-per-gas must be positive")
+			return errors.New("--redeemer-max-fee-per-gas must be positive")
 		}
 		if p.ETHUSDFeed != nil {
 			if p.WeiPerUSD != nil || *p.ETHUSDFeed == (ethcommon.Address{}) || p.PriceMaxAge <= 0 {
-				return errors.New("eth-usd-feed requires a nonzero address, positive price-max-age and no fixed wei-per-usd")
+				return errors.New("--eth-usd-feed requires a nonzero Ethereum address, positive --price-max-age and no fixed --wei-per-usd")
 			}
 		} else if p.WeiPerUSD.Sign() <= 0 {
-			return errors.New("wei-per-usd must be positive")
+			return errors.New("--wei-per-usd must be positive")
 		}
 		if err := destination.ValidateURL(p.RPCURL); err != nil {
-			return errors.New("invalid payment RPC URL")
+			return fmt.Errorf("invalid payment RPC URL (LIVEPEER_ORCHESTRATOR_RPC_URL or --rpc-url-file): %w", err)
 		}
 	}
 	if err := validateProxyTemplate(p.ProxyURLTemplate); err != nil {
-		return err
+		return fmt.Errorf("invalid --proxy-url-template: %w", err)
 	}
 	if !p.Listen.IsValid() {
-		return errors.New("listen must be IP:port")
+		return errors.New("--listen (or LIVEPEER_ORCHESTRATOR_LISTEN) must be an IP:port address, e.g. 127.0.0.1:8935 or [::1]:8935")
 	}
 	if !p.MetricsListen.Addr().IsLoopback() {
-		return errors.New("metrics listener must bind loopback")
+		return errors.New("--metrics-listen (or LIVEPEER_ORCHESTRATOR_METRICS_LISTEN) must bind a loopback IP:port address, e.g. 127.0.0.1:8936 or [::1]:8936")
 	}
 	for _, endpoint := range []struct {
 		name string
@@ -120,16 +120,16 @@ func (p Params) Validate() error {
 			continue
 		}
 		if u := endpoint.url; destination.ValidateURL(u) != nil || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
-			return fmt.Errorf("%s must be an absolute HTTP or HTTPS URL without credentials, query or fragment", endpoint.name)
+			return fmt.Errorf("--%s must be an absolute HTTP or HTTPS URL without credentials, query or fragment", endpoint.name)
 		}
 	}
 	if p.HeartbeatInterval <= 0 || p.HeartbeatTTL <= p.HeartbeatInterval {
-		return errors.New("heartbeat-ttl must exceed positive heartbeat-interval")
+		return errors.New("--heartbeat-interval must be positive and --heartbeat-ttl must be greater than --heartbeat-interval")
 	}
 	for _, item := range []struct {
 		purpose string
 		grants  []string
-	}{{"runner", p.RunnerGrants}, {"session-proxy", p.SessionProxyGrants}, {"static-runner-health", p.HealthGrants}} {
+	}{{"--runner-grants", p.RunnerGrants}, {"--session-proxy-grants", p.SessionProxyGrants}, {"--health-grants", p.HealthGrants}} {
 		if _, err := destination.New(item.purpose, item.grants); err != nil {
 			return err
 		}
@@ -256,25 +256,25 @@ func Serve(parent context.Context, p Params, logOut io.Writer) (result error) {
 		registry.SetWeiPerUSD(p.WeiPerUSD)
 		redeemerKey, err = eth.OpenAccount(filepath.Join(p.DataDir, "keystore"), nodeconfig.Path(p.DataDir, p.KeystoreFile), p.KeystorePassword, p.KeystorePasswordFile, p.Account)
 		if err != nil {
-			return err
+			return fmt.Errorf("open payment keystore (check --keystore-file or --data-dir and --account, and LIVEPEER_ORCHESTRATOR_KEYSTORE_PASSWORD or --keystore-password-file): %w", err)
 		}
 		rpc, err := eth.NewRPC(p.RPCURL, nil)
 		if err != nil {
-			return err
+			return fmt.Errorf("configure payment RPC (LIVEPEER_ORCHESTRATOR_RPC_URL or --rpc-url-file): %w", err)
 		}
 		defer rpc.Close()
 		paymentChainID = new(big.Int).SetUint64(*p.ChainID)
 		if err := rpc.CheckChainID(parent, paymentChainID); err != nil {
-			return err
+			return fmt.Errorf("verify payment RPC chain ID (check LIVEPEER_ORCHESTRATOR_RPC_URL or --rpc-url-file, --chain-id and --network): %w", err)
 		}
 		redeemerDB, err = OpenRedeemerDB(p.RedeemerDB)
 		if err != nil {
-			return err
+			return fmt.Errorf("open payment database %q (--redeemer-db or LIVEPEER_ORCHESTRATOR_REDEEMER_DB): %w", p.RedeemerDB, err)
 		}
 		defer redeemerDB.Close()
 		contracts, err := eth.NewContracts(rpc, *p.Controller)
 		if err != nil {
-			return err
+			return fmt.Errorf("initialize payment contract bindings: %w", err)
 		}
 		if p.RedeemerMaxFeePerGas != nil {
 			contracts.MaxFeePerGas = p.RedeemerMaxFeePerGas.ToBig()
@@ -283,18 +283,18 @@ func Serve(parent context.Context, p Params, logOut io.Writer) (result error) {
 		if p.ETHUSDFeed != nil {
 			rate, until, err := contracts.WeiPerUSD(parent, *p.ETHUSDFeed, p.PriceMaxAge)
 			if err != nil {
-				return err
+				return fmt.Errorf("read ETH/USD price feed (check --eth-usd-feed, --price-max-age, and LIVEPEER_ORCHESTRATOR_RPC_URL or --rpc-url-file): %w", err)
 			}
 			registry.setRate(rate, until)
 		}
 		engine, err = NewPaymentEngine(redeemerDB, pm.EthereumChain{Client: paymentChain}, redeemerKey.Address(), p.TicketFaceValue.ToBig(), p.TicketWinProb.ToBig())
 		if err != nil {
-			return err
+			return fmt.Errorf("initialize payment engine (check --account, --ticket-face-value and --ticket-win-prob): %w", err)
 		}
 	}
 	registry.proxyTemplate = p.ProxyURLTemplate
 	if err := loadStatic(p.RunnerConfig, registry); err != nil {
-		return err
+		return fmt.Errorf("load static runners from %q (--runner-config or LIVEPEER_ORCHESTRATOR_RUNNER_CONFIG): %w", p.RunnerConfig, err)
 	}
 	logger := slog.New(slog.NewTextHandler(logOut, nil))
 	app := NewServer(registry, runnerPolicy, proxyPolicy, logger)
@@ -302,12 +302,12 @@ func Serve(parent context.Context, p Params, logOut io.Writer) (result error) {
 	app.SetPayment(engine)
 	mainListener, err := net.Listen("tcp", p.Listen.String())
 	if err != nil {
-		return err
+		return fmt.Errorf("cannot start orchestrator HTTP listener on %s; choose an available address with --listen or LIVEPEER_ORCHESTRATOR_LISTEN: %w", p.Listen, err)
 	}
 	defer mainListener.Close()
 	metricsListener, err := net.Listen("tcp", p.MetricsListen.String())
 	if err != nil {
-		return err
+		return fmt.Errorf("cannot start orchestrator metrics listener on %s; choose an available loopback address with --metrics-listen or LIVEPEER_ORCHESTRATOR_METRICS_LISTEN: %w", p.MetricsListen, err)
 	}
 	defer metricsListener.Close()
 	metricsMux := http.NewServeMux()
