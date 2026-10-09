@@ -382,7 +382,7 @@ type discoveryRunner struct {
 	Capacity          int        `json:"capacity"`
 	CapacityUsed      int        `json:"capacity_used"`
 	CapacityAvailable int        `json:"capacity_available"`
-	PriceInfo         priceInfo  `json:"price_info"`
+	PriceInfo         priceInfo  `json:"price_info,omitzero"`
 }
 
 type discoveryEntry struct {
