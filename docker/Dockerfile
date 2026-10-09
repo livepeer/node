@@ -1,0 +1,37 @@
+FROM --platform=$BUILDPLATFORM golang:1.27.1@sha256:162be5298a40ed317005c8339c6de4d10d3eef336d66dc8e9259b03ab9d3a6d2 AS build
+ENV CGO_ENABLED=0 GOTOOLCHAIN=local GOENV=off GOWORK=off \
+    GOFLAGS=-mod=readonly GOAMD64=v1 GOARM64=v8.0
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN sha256sum go.mod go.sum > /tmp/modules.sha256 && \
+    test "$(go env GOVERSION)" = go1.27.1 && go mod download && go mod verify && \
+    sha256sum -c /tmp/modules.sha256
+COPY . .
+ARG TARGETOS
+ARG TARGETARCH
+ARG VERSION=dev
+ARG COMMIT=unknown
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    GOOS="$TARGETOS" GOARCH="$TARGETARCH" go build -trimpath -buildvcs=false \
+    -ldflags "-s -w -buildid= -X github.com/livepeer/node/version.Name=${VERSION} -X github.com/livepeer/node/version.Commit=${COMMIT}" \
+    -o /out/ ./cmd/... && \
+    sha256sum -c /tmp/modules.sha256 && \
+    for binary in /out/*; do \
+      go version -m "$binary" | grep -q 'CGO_ENABLED=0' || exit 1; \
+    done
+
+FROM scratch AS binaries
+COPY --from=build /out/ /
+
+FROM ubuntu:26.04@sha256:f144425ff09be612d6d9ad965196e9cdc23dae1f42110a8a11a3e9a8198759f7
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=binaries / /usr/local/bin/
+COPY LICENSE /usr/share/doc/livepeer/LICENSE
+RUN groupadd --gid 65532 livepeer && \
+    useradd --uid 65532 --gid 65532 --create-home --shell /usr/sbin/nologin livepeer && \
+    mkdir /home/livepeer/.lpData && chown 65532:65532 /home/livepeer/.lpData
+ENV HOME=/home/livepeer
+WORKDIR /home/livepeer
+USER 65532:65532
+ENTRYPOINT ["/usr/local/bin/livepeer"]
+CMD ["--help"]

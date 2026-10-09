@@ -1,0 +1,17 @@
+# Exclude everything unless it is explicitly needed by the image build.
+**
+
+!go.mod
+!go.sum
+!LICENSE
+
+!chain/
+!cmd/
+!destination/
+!eth/
+!nodeconfig/
+!orchestrator/
+!pm/
+!signer/
+!trickle/
+!version/
