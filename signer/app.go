@@ -18,12 +18,12 @@ import (
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/j0sh/boa/pkg/boa"
+	"github.com/livepeer/node/cmd/version"
 	"github.com/livepeer/node/destination"
 	"github.com/livepeer/node/eth"
 	"github.com/livepeer/node/nodeconfig"
 	"github.com/livepeer/node/nodeconfig/migrations"
 	"github.com/livepeer/node/pm"
-	"github.com/livepeer/node/version"
 	"github.com/spf13/cobra"
 )
 

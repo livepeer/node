@@ -122,7 +122,8 @@ jobs:
           repository=$(printf '%s' "$REPOSITORY" | tr '[:upper:]' '[:lower:]')
           for reference in "ghcr.io/$repository@$GHCR_DIGEST" "docker.io/$repository@$DOCKERHUB_DIGEST"; do
             docker pull --platform "$PLATFORM" "$reference"
-            test "$(docker run --rm --network none --platform "$PLATFORM" "$reference" version)" = "livepeer dev-${COMMIT:0:12} ($COMMIT)"
+            version=$(docker image inspect --platform "$PLATFORM" --format '{{index .Config.Labels "org.opencontainers.image.version"}}' "$reference")
+            test "$(docker run --rm --network none --platform "$PLATFORM" "$reference" version)" = "livepeer $version ($COMMIT)"
           done
 
   promote:

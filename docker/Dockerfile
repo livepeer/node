@@ -9,11 +9,12 @@ RUN sha256sum go.mod go.sum > /tmp/modules.sha256 && \
 COPY . .
 ARG TARGETOS
 ARG TARGETARCH
-ARG VERSION=dev
+ARG VERSION
 ARG COMMIT=unknown
 RUN --mount=type=cache,target=/root/.cache/go-build \
+    version="${VERSION:-v$(cat VERSION)-dev}" && \
     GOOS="$TARGETOS" GOARCH="$TARGETARCH" go build -trimpath -buildvcs=false \
-    -ldflags "-s -w -buildid= -X github.com/livepeer/node/version.Name=${VERSION} -X github.com/livepeer/node/version.Commit=${COMMIT}" \
+    -ldflags "-s -w -buildid= -X github.com/livepeer/node/cmd/version.Version=${version} -X github.com/livepeer/node/cmd/version.Commit=${COMMIT}" \
     -o /out/ ./cmd/... && \
     sha256sum -c /tmp/modules.sha256 && \
     for binary in /out/*; do \

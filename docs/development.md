@@ -9,24 +9,22 @@ bin/livepeer orchestrator --help
 bin/livepeer completion orchestrator bash
 ```
 
-Use `VERSION` and `COMMIT` make variables to set release metadata.
-
 ## Releases
 
-Check out the commit to release, then create and push a new version tag. Replace
-the example version and remote name as needed. Tags must use `vMAJOR.MINOR.PATCH`
-without leading zeroes, prerelease suffixes, or build metadata:
+Set the [VERSION](../VERSION) file to the next `MAJOR.MINOR.PATCH` number without
+a `v` prefix, leading zeroes, prerelease suffix, or build metadata. Commit it,
+then run the release helper with the Git remote name:
 
 ```sh
-git tag v0.1.0
-git push github v0.1.0
+./release.sh github
 ```
 
-The [Release workflow](../.github/workflows/release.yml) publishes Linux amd64
-and arm64 bundles and checksums after CI and packaging checks pass. Release tags
-cannot be updated or deleted, and published releases are immutable. To test
-packaging before tagging, run **Release** manually from GitHub Actions; manual
-runs save artifacts without publishing a release.
+The helper creates and pushes a `vMAJOR.MINOR.PATCH` tag. Release tags cannot be
+updated or deleted, and published releases are immutable.
+The [Release workflow](../.github/workflows/release.yml) on GitHub publishes
+bundles after CI and packaging tests pass. To test packaging before tagging, run
+**Release** manually from GitHub Actions; manual runs save artifacts without
+publishing a release.
 
 ## Checks
 
@@ -76,7 +74,7 @@ The fixtures cover persistent and single-shot sessions, proxy modes, discovery,
 runner callbacks, Trickle, and Python media/control round trips. Payment tests
 cover live/fixed calls, sustained refresh, payer exposure, concurrent liability,
 and crash/reorg/finality handling with deterministic Ethereum interfaces. These
-do not replace [staging against real contracts](cutover.md).
+do not replace staging against real contracts.
 
 ## CLI and wire snapshots
 

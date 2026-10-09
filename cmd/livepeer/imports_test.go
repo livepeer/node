@@ -66,7 +66,7 @@ func forbiddenImport(file, dep string) string {
 	if file == "orchestrator/payment_test.go" && local == "signer" || file == "signer/payment_test.go" && local == "orchestrator" {
 		return ""
 	}
-	if strings.HasPrefix(file, "cmd/livepeer/") && local != "version" {
+	if strings.HasPrefix(file, "cmd/livepeer/") && local != "cmd/version" {
 		return "dispatcher imports component implementation"
 	}
 	for _, component := range []string{"orchestrator", "signer", "chain"} {

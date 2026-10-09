@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"github.com/livepeer/node/version"
+	"github.com/livepeer/node/cmd/version"
 )
 
 func main() { os.Exit(run(os.Args[1:])) }

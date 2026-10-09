@@ -1,7 +1,9 @@
 GO ?= go
-VERSION ?= dev
 COMMIT ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
-LDFLAGS = -X github.com/livepeer/node/version.Name=$(VERSION) -X github.com/livepeer/node/version.Commit=$(COMMIT)
+VERSION ?= v$(shell cat VERSION)-$(COMMIT)
+DIRTY ?= $(if $(shell git status --porcelain --untracked-files=normal 2>/dev/null),-dirty)
+BUILD_VERSION = $(VERSION)$(DIRTY)
+LDFLAGS = -X github.com/livepeer/node/cmd/version.Version=$(BUILD_VERSION) -X github.com/livepeer/node/cmd/version.Commit=$(COMMIT)
 
 .PHONY: build test
 build:

@@ -4,6 +4,7 @@
 !go.mod
 !go.sum
 !LICENSE
+!VERSION
 
 !chain/
 !cmd/
@@ -14,4 +15,3 @@
 !pm/
 !signer/
 !trickle/
-!version/
