@@ -23,7 +23,7 @@ func TestRunnerProxyRoutingMatrix(t *testing.T) {
 				for _, template := range []string{"", "https://{proxy}.apps.example", "https://orch.example/custom/{proxy}"} {
 					t.Run(fmt.Sprintf("static=%t/%s/proxy=%t/%s", static, mode, proxy, template), func(t *testing.T) {
 						upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-							require.Equal(t, "/base/test/path", r.URL.Path)
+							require.Equal(t, "/base/test/price%25.txt", r.URL.Path)
 							require.Equal(t, "x=1", r.URL.RawQuery)
 							require.NotEmpty(t, r.Header.Get("Livepeer-Session-Id"))
 							require.NotEqual(t, "forged", r.Header.Get("Livepeer-Session-Token"))
@@ -67,12 +67,15 @@ func TestRunnerProxyRoutingMatrix(t *testing.T) {
 								require.Contains(t, app, "/custom/")
 							}
 						}
-						req := httptest.NewRequest("POST", app+"/test/path?x=1", strings.NewReader("request"))
+						req := httptest.NewRequest("POST", app+"/test/price%2525.txt?x=1", strings.NewReader("request"))
 						req.Header.Set("Livepeer-Session-Token", "forged")
 						w := httptest.NewRecorder()
 						s.ServeHTTP(w, req)
 						require.Equal(t, 200, w.Code, w.Body.String())
 						require.Equal(t, "ok", w.Body.String())
+						traversal := httptest.NewRecorder()
+						s.ServeHTTP(traversal, httptest.NewRequest("GET", app+"/%2e%2e/%2e%2e/metadata", nil))
+						require.Equal(t, http.StatusBadRequest, traversal.Code)
 						registry.ReleaseBySession(sid)
 						_, sessions := registry.Counts()
 						require.Zero(t, sessions)

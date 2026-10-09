@@ -78,6 +78,10 @@ func NewServer(registry *Registry, runnerPolicy, proxyPolicy destination.Policy,
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if strings.Contains(r.URL.Path+"/", "/../") {
+		fail(w, http.StatusBadRequest, "invalid path")
+		return
+	}
 	proxyID, appPath := s.registry.matchProxy(r)
 	if proxyID == "" {
 		basePath := ""
