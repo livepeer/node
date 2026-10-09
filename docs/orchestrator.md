@@ -118,8 +118,8 @@ fixed request. Hourly discovery prices are normalized to USD and wei per second.
 `WeiPerUSD` sets a fixed conversion. Alternatively, set `ETHUSDFeed` to a
 Chainlink-compatible ETH/USD feed on the payment chain. The feed is checked
 every hour; `PriceMaxAge` must be positive and defaults to two hours. Startup
-requires a valid observation. Stale rates suspend new priced discovery and
-reservations; existing sessions retain their agreed wei price.
+requires a valid observation. Stale rates suspend new sessions; existing
+sessions retain their initial price.
 
 `RedeemerMaxFeePerGas` optionally caps redemption fees in wei per gas. The
 cap is per gas, not a total spending budget. Winning tickets wait until payment
@@ -128,8 +128,7 @@ successful, canonical, finalized receipt settles their liability.
 
 Challenges, balances, and replay guards live in memory; restart requires new
 paid sessions. Winning tickets and transaction identities survive in SQLite.
-See [payment recovery](payment-recovery.md) for backup and reconciliation, and
-[staging and cutover](cutover.md) before moving production traffic.
+See [payment recovery](payment-recovery.md) for backup and reconciliation.
 
 ## Resource limits
 

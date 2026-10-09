@@ -73,8 +73,6 @@ component guides:
   transactions, and signing files locally.
 - [Payment recovery](docs/payment-recovery.md): backups, restart, and uncertain
   transaction recovery.
-- [Staging and cutover](docs/cutover.md): checks against your chain and contracts
-  before moving production traffic.
 
 Chain state changes perform a dry run by default. Add `--submit` to broadcast
 and wait for successful inclusion. Use `--no-wait` for a single transaction

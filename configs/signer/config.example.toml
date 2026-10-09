@@ -1,6 +1,7 @@
+# Deployment template: configure the RPCURLFile and KeystorePasswordFile
+
 # Signer TOML uses the names shown below; flags use kebab-case.
 # See docs/signer.md and docs/configuration.md.
-# Network = "arbitrum-one-mainnet"
 Listen = "127.0.0.1:8937"
 MetricsListen = "127.0.0.1:8938"
 # Account = "0xYOUR_ACCOUNT" # Select among shared accounts.
@@ -8,31 +9,29 @@ MetricsListen = "127.0.0.1:8938"
 KeystorePasswordFile = "/run/secrets/livepeer-signer-keystore-password"
 # Encrypted geth account JSON; both files must be owner-only.
 # To use LIVEPEER_SIGNER_KEYSTORE_PASSWORD instead, remove KeystorePasswordFile.
-# Discovery sources and grants for private destinations; see docs/signer.md.
+
+# Orchestrators to use
 Orchestrators = []
+
+# Any allowed internal / private hosts for discovery; see docs/signer.md
 DiscoveryGrants = []
 
 # The signer requires an on-chain connection at startup.
 # The RPC URL is an exact-byte secret file (omit a trailing newline).
 RPCURLFile = "/run/secrets/livepeer-signer-rpc-url"
-# Arbitrum mainnet defaults; custom networks require chain and contract settings.
+
+# On-chain defaults; custom networks require chain and contract settings.
+# Network = "arbitrum-one-mainnet" # uncomment for on-chain mode
 # ChainID = 42161
 # Defaults target Arbitrum mainnet; override for another chain.
 # Controller = "0xD8E8328501E9645d16Cf49539efC04f734606ee4"
+# ETHUSDFeed = "0x639Fe6ab55C921f74e7fac1ee960C0B6293ba612"
+# WeiPerUSD = "500000000000000" # Fixed conversion overrides oracle, for testing.
 
 # USD is implicit. Live quotes are compared with MaxHourlyPrice / 3600.
 MaxHourlyPrice = "36"
 MaxFixedPrice = "1"
-
-# The default feed is ETH/USD on Arbitrum mainnet.
-# ETHUSDFeed = "0x639Fe6ab55C921f74e7fac1ee960C0B6293ba612"
 ETHUSDMaxAge = "2h"
-# WeiPerUSD = "500000000000000" # Fixed conversion, mostly for testing.
-# WeiPerUSD overrides the feed for testing. Fixed rates never expire or refresh.
-
-# A stale/unavailable feed makes /readyz and payment generation return 503.
-# The signer retries every hour and resumes when it observes a fresh rate.
-# /sign-orchestrator-info and discovery remain available while the feed is stale.
 
 # Expected value (EV) limits are in wei and independent of work's maxPrice.
 MaxTicketEV = "3000000000000"

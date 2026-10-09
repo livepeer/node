@@ -12,7 +12,6 @@ executables and send a request through an orchestrator.
 | [Signer](signer.md) | Configure price limits, authorization, discovery, and Kafka accounting. |
 | [Chain commands](chain.md) | Inspect accounts, manage stake and funds, and submit transactions. |
 | [Payment recovery](payment-recovery.md) | Back up state, recover accounting events, and reconcile ticket redemptions. |
-| [Staging and cutover](cutover.md) | Validate a deployment, move traffic, and prepare rollback. |
 
 ## Developing and integrating
 
