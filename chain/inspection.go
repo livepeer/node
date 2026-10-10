@@ -2,6 +2,7 @@ package chain
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"math/big"
 
@@ -17,11 +18,11 @@ func inspectRead(ctx context.Context, p OperatorParams, display DisplayOptions, 
 	defer rpc.Close()
 	c, err := eth.NewContracts(rpc, p.Controller)
 	if err != nil {
-		return err
+		return fmt.Errorf("initialize chain contract bindings: %w", err)
 	}
 	s, err := c.Inspect(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("inspect chain state (check --controller-address and LIVEPEER_CHAIN_RPC_URL or --rpc-url-file): %w", err)
 	}
 	value, err := run(s)
 	if err != nil {
@@ -70,7 +71,7 @@ func rewardCallerGet(ctx context.Context, p OperatorParams, d DisplayOptions, ou
 func accountRead(ctx context.Context, p OperatorParams, d DisplayOptions, out io.Writer, run func(*eth.Inspection, common.Address) (any, error)) error {
 	address, err := p.account()
 	if err != nil {
-		return err
+		return fmt.Errorf("select chain account (set --account or check --keystore-file and --data-dir): %w", err)
 	}
 	return inspectRead(ctx, p, d, out, func(s *eth.Inspection) (any, error) { return run(s, address) })
 }
@@ -83,7 +84,7 @@ func gasGet(ctx context.Context, p OperatorParams, d DisplayOptions, out io.Writ
 	defer rpc.Close()
 	c, err := eth.NewContracts(rpc, p.Controller)
 	if err != nil {
-		return err
+		return fmt.Errorf("initialize chain contract bindings: %w", err)
 	}
 	if p.MaxFeePerGas != nil {
 		c.MaxFeePerGas = p.MaxFeePerGas.ToBig()

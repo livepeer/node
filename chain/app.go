@@ -21,7 +21,7 @@ func Status(ctx context.Context, p OperatorParams, display DisplayOptions, out i
 	defer client.Close()
 	blockNumber, err := client.BlockNumber(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("read RPC block number (check LIVEPEER_CHAIN_RPC_URL or --rpc-url-file): %w", err)
 	}
 	block := hexutil.EncodeUint64(blockNumber)
 	if display.Output == "json" {
@@ -37,16 +37,16 @@ func checkedClient(ctx context.Context, p OperatorParams) (*eth.RPC, *big.Int, e
 	}
 	rpc, err := eth.NewRPC(p.RPCURL, nil)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("configure chain RPC (LIVEPEER_CHAIN_RPC_URL or --rpc-url-file): %w", err)
 	}
 	id, err := rpc.ChainID(ctx)
 	if err != nil {
 		rpc.Close()
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("read RPC chain ID (check LIVEPEER_CHAIN_RPC_URL or --rpc-url-file): %w", err)
 	}
 	if p.ChainID != nil && id.Cmp(new(big.Int).SetUint64(*p.ChainID)) != 0 {
 		rpc.Close()
-		return nil, nil, errors.New("RPC chain ID does not match configured chain-id")
+		return nil, nil, errors.New("RPC chain ID does not match --chain-id; check --chain-id, --network and LIVEPEER_CHAIN_RPC_URL or --rpc-url-file")
 	}
 	return rpc, id, nil
 }

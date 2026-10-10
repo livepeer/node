@@ -463,7 +463,7 @@ func TestRegistrationSequence(t *testing.T) {
 		methods           []string
 		sent              int
 	}{
-		{"missing staking mode", nil, false, false, false, "", "requires amount", nil, 0},
+		{"missing staking mode", nil, false, false, false, "", "requires --amount", nil, 0},
 		{"optional URI", []string{"--redelegate"}, false, false, true, "", "", []string{"bondWithHint", "transcoder"}, 2},
 		{"unchanged commissions", []string{"--redelegate"}, false, false, true, "", "", []string{"bondWithHint"}, 1},
 		{"locked round", []string{"--amount", "5", "--base-units"}, true, false, true, "", "round is locked", nil, 0},

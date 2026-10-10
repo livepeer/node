@@ -3,6 +3,7 @@ package chain
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"path/filepath"
 	"strings"
@@ -56,7 +57,7 @@ func invocationCommand[T any](command boa.Cmd[T]) boa.Cmd[T] {
 }
 
 func transactionCommand[T transactionParams](root *RootParams, command string, build func(T) ([]action, error)) boa.Cmd[T] {
-	return invocationCommand(boa.Cmd[T]{Use: command[strings.LastIndex(command, " ")+1:], Short: "Simulate or explicitly submit " + command, RunFuncE: func(p *T, cmd *cobra.Command, _ []string) error {
+	return invocationCommand(boa.Cmd[T]{Use: command[strings.LastIndex(command, " ")+1:], Short: "Simulate or explicitly submit '" + command + "'", RunFuncE: func(p *T, cmd *cobra.Command, _ []string) error {
 		tx, out := (*p).transactionOptions(), cmd.OutOrStdout()
 		if tx.Quiet {
 			out = io.Discard
@@ -128,7 +129,7 @@ func accountCommand(root *RootParams) boa.Cmd[boa.NoParams] {
 				}
 				address, err := create()
 				if err != nil {
-					return err
+					return fmt.Errorf("create chain keystore (check --keystore-file or --data-dir, and LIVEPEER_CHAIN_KEYSTORE_PASSWORD or --keystore-password-file): %w", err)
 				}
 				return formatResult(cmd.OutOrStdout(), root.Output, map[string]string{"address": address.Hex()})
 			}},
@@ -242,13 +243,13 @@ func locksCommand(root *RootParams) boa.Cmd[LocksParams] {
 	command := inspectionCommand(root, "locks", "List outstanding unbonding locks", func(ctx context.Context, p LocksParams, s *eth.Inspection) (any, error) {
 		a, err := root.account()
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("select chain account (set --account or check --keystore-file and --data-dir): %w", err)
 		}
 		return s.Locks(ctx, a, eth.LockQuery{FromID: p.FromID.ToBig(), Limit: p.Limit, Withdrawable: p.Withdrawable, Locked: p.Locked})
 	})
 	command.PreValidateFunc = func(p *LocksParams, _ *cobra.Command, _ []string) error {
 		if !root.PrintConfig && p.Withdrawable && p.Locked {
-			return boa.NewUserInputError(errors.New("withdrawable and locked filters are mutually exclusive"))
+			return boa.NewUserInputError(errors.New("--withdrawable and --locked filters are mutually exclusive"))
 		}
 		return nil
 	}

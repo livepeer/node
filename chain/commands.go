@@ -33,28 +33,28 @@ func (p OperatorParams) account() (ethcommon.Address, error) {
 
 func executeActions(ctx context.Context, operator OperatorParams, display DisplayOptions, tx TransactionOptions, out io.Writer, command string, actions []action) error {
 	if tx.TransactionTimeout <= 0 {
-		return errors.New("transaction-timeout must be positive")
+		return errors.New("--transaction-timeout must be positive")
 	}
 
 	wait := tx.Wait && !tx.NoWait
 	if !wait && tx.MaxTransactionReplacements > 0 {
-		return errors.New("no-wait cannot be used with transaction replacements")
+		return errors.New("--max-transaction-replacements requires waiting; omit --no-wait and use --wait=true")
 	}
 	if tx.GasLimit != nil && *tx.GasLimit == 0 {
-		return errors.New("gas-limit must be positive")
+		return errors.New("--gas-limit must be positive")
 	}
 	if tx.Submit && operator.KeystorePassword == nil && operator.KeystorePasswordFile == "" {
-		return errors.New("keystore-password or keystore-password-file are required with submit")
+		return errors.New("--submit requires LIVEPEER_CHAIN_KEYSTORE_PASSWORD or --keystore-password-file (or LIVEPEER_CHAIN_KEYSTORE_PASSWORD_FILE)")
 	}
 	from, err := operator.account()
 	if err != nil {
-		return err
+		return fmt.Errorf("select chain account (set --account or check --keystore-file and --data-dir): %w", err)
 	}
 	var key *eth.Key
 	if tx.Submit {
 		key, err = eth.OpenAccount(filepath.Join(operator.DataDir, "keystore"), nodeconfig.Path(operator.DataDir, operator.KeystoreFile), operator.KeystorePassword, operator.KeystorePasswordFile, &from)
 		if err != nil {
-			return err
+			return fmt.Errorf("open chain keystore (check --keystore-file or --data-dir and --account, and LIVEPEER_CHAIN_KEYSTORE_PASSWORD or --keystore-password-file): %w", err)
 		}
 	}
 	rpc, chainID, err := checkedClient(ctx, operator)
@@ -64,7 +64,7 @@ func executeActions(ctx context.Context, operator OperatorParams, display Displa
 	defer rpc.Close()
 	contracts, err := eth.NewContracts(rpc, operator.Controller)
 	if err != nil {
-		return err
+		return fmt.Errorf("initialize chain contract bindings: %w", err)
 	}
 	if operator.MaxFeePerGas != nil {
 		contracts.MaxFeePerGas = operator.MaxFeePerGas.ToBig()
@@ -82,7 +82,7 @@ func executeActions(ctx context.Context, operator OperatorParams, display Displa
 		}
 	}
 	if tx.Submit && !wait && len(resolved) > 1 {
-		return errors.New("no-wait is not supported for multi-step submissions")
+		return errors.New("--no-wait and --wait=false are not supported for multi-step submissions; use --wait=true")
 	}
 	if len(resolved) == 0 {
 		return formatResult(out, display.Output, map[string]any{"command": command, "no_op": true, "success": true, "message": "configuration is already set"})

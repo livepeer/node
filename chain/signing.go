@@ -21,11 +21,11 @@ import (
 func signFile(p OperatorParams, d DisplayOptions, out io.Writer, path string, typed bool) error {
 	key, err := eth.OpenAccount(filepath.Join(p.DataDir, "keystore"), nodeconfig.Path(p.DataDir, p.KeystoreFile), p.KeystorePassword, p.KeystorePasswordFile, p.Account)
 	if err != nil {
-		return err
+		return fmt.Errorf("open signing keystore (check --keystore-file or --data-dir and --account, and LIVEPEER_CHAIN_KEYSTORE_PASSWORD or --keystore-password-file): %w", err)
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return fmt.Errorf("signing input file is unavailable: %w", err)
+		return fmt.Errorf("signing input file is unavailable (check --message-file for 'sign message' or --data-file for 'sign typed-data'): %w", err)
 	}
 	var hash []byte
 	if typed {
@@ -34,30 +34,30 @@ func signFile(p OperatorParams, d DisplayOptions, out io.Writer, path string, ty
 		decoder.UseNumber()
 		decoder.DisallowUnknownFields()
 		if err := decoder.Decode(&value); err != nil {
-			return fmt.Errorf("invalid typed data JSON: %w", err)
+			return fmt.Errorf("invalid typed data JSON in --data-file: %w", err)
 		}
 		var fields map[string]json.RawMessage
 		if err := json.Unmarshal(data, &fields); err != nil {
-			return fmt.Errorf("invalid typed data JSON: %w", err)
+			return fmt.Errorf("invalid typed data JSON in --data-file: %w", err)
 		}
 		for _, name := range []string{"types", "domain", "message"} {
 			raw := bytes.TrimSpace(fields[name])
 			if len(raw) == 0 || raw[0] != '{' {
-				return fmt.Errorf("typed data %s must be an object", name)
+				return fmt.Errorf("typed data %s in --data-file must be an object", name)
 			}
 		}
 		var extra any
 		if err := decoder.Decode(&extra); err != io.EOF {
-			return errors.New("typed data must contain one JSON object")
+			return errors.New("--data-file must contain one typed data JSON object")
 		}
 		exact, conversionErr := exactTypedValues(value.Message)
 		if conversionErr != nil {
-			return conversionErr
+			return fmt.Errorf("invalid --data-file: %w", conversionErr)
 		}
 		value.Message = exact.(map[string]any)
 		hash, err = typedDataHash(value)
 		if err != nil {
-			return fmt.Errorf("invalid typed data: %w", err)
+			return fmt.Errorf("invalid typed data in --data-file: %w", err)
 		}
 	} else {
 		hash = accounts.TextHash(data)

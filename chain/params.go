@@ -30,16 +30,16 @@ type OperatorParams struct {
 
 func (p OperatorParams) Validate() error {
 	if p.Network != "" && p.ChainID == nil {
-		return errors.New("network requires an explicit chain-id and controller-address")
+		return errors.New("--network (or LIVEPEER_CHAIN_NETWORK) requires an explicit --chain-id and --controller-address for custom networks")
 	}
 	if err := destination.ValidateURL(p.RPCURL); err != nil {
-		return errors.New("valid RPC URL is required")
+		return errors.New("valid RPC URL is required: set LIVEPEER_CHAIN_RPC_URL or supply --rpc-url-file containing an absolute HTTP or HTTPS URL")
 	}
 	if p.Controller == (ethcommon.Address{}) {
-		return errors.New("controller-address must be nonempty")
+		return errors.New("--controller-address (or LIVEPEER_CHAIN_CONTROLLER_ADDRESS) must be nonempty")
 	}
 	if p.MaxFeePerGas != nil && p.MaxFeePerGas.IsZero() {
-		return errors.New("max-fee-per-gas must be positive")
+		return errors.New("--max-fee-per-gas must be positive")
 	}
 	return nil
 }

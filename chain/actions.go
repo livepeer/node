@@ -3,6 +3,7 @@ package chain
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math/big"
 	"net/url"
 
@@ -20,7 +21,7 @@ func resolvedActions(resolve func(context.Context, *eth.Contracts, common.Addres
 func validateURI(u *url.URL) error {
 	if u != nil {
 		if err := destination.ValidateURL(u); err != nil || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-			return errors.New("service-uri must be an absolute HTTP or HTTPS URL")
+			return errors.New("--service-uri must be an absolute HTTP or HTTPS URL without credentials, query or fragment")
 		}
 	}
 	return nil
@@ -31,13 +32,13 @@ func (p PercentageOptions) commissions() (*big.Int, *big.Int, error) {
 	if p.RewardCut != nil {
 		reward, err = parsePercent(*p.RewardCut)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, fmt.Errorf("invalid --reward-cut: %w", err)
 		}
 	}
 	if p.FeeCut != nil {
 		cut, err := parsePercent(*p.FeeCut)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, fmt.Errorf("invalid --fee-cut: %w", err)
 		}
 		share = new(big.Int).Sub(big.NewInt(1000000), cut)
 	}
@@ -80,7 +81,7 @@ func configActions(ctx context.Context, snapshot *eth.Inspection, from common.Ad
 }
 func (p SetConfigParams) actions() ([]action, error) {
 	if p.RewardCut == nil && p.FeeCut == nil && p.ServiceURI.Value == nil {
-		return nil, errors.New("reward-cut, fee-cut or service-uri is required")
+		return nil, errors.New("--reward-cut, --fee-cut or --service-uri is required")
 	}
 	reward, share, err := p.commissions()
 	if err != nil {
@@ -157,7 +158,7 @@ func bondActions(ctx context.Context, c *eth.Contracts, from, to common.Address,
 }
 func validateBondMode(amount string, redelegate bool) error {
 	if (amount != "") == redelegate {
-		return errors.New("choose exactly one of amount or redelegate")
+		return errors.New("choose exactly one of --amount or --redelegate")
 	}
 	return nil
 }
@@ -167,7 +168,7 @@ func (p BondParams) actions() ([]action, error) {
 	}
 	if !p.Redelegate {
 		if _, err := parseAmount(p.Amount, p.BaseUnits, true, true); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("invalid --amount (interpreted as integer base units when --base-units is set): %w", err)
 		}
 	}
 	return resolvedActions(func(ctx context.Context, c *eth.Contracts, from common.Address) ([]action, error) {
@@ -176,7 +177,7 @@ func (p BondParams) actions() ([]action, error) {
 }
 func (p RegisterParams) actions() ([]action, error) {
 	if p.RewardCut == nil || p.FeeCut == nil {
-		return nil, errors.New("reward-cut and fee-cut are required")
+		return nil, errors.New("--reward-cut and --fee-cut are required")
 	}
 	reward, share, err := p.commissions()
 	if err != nil {
@@ -196,11 +197,11 @@ func (p RegisterParams) actions() ([]action, error) {
 		modes++
 	}
 	if modes > 1 {
-		return nil, errors.New("amount, redelegate and lock-id are mutually exclusive")
+		return nil, errors.New("--amount, --redelegate and --lock-id are mutually exclusive")
 	}
 	if p.Amount != "" {
 		if _, err := parseAmount(p.Amount, p.BaseUnits, true, true); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("invalid --amount (interpreted as integer base units when --base-units is set): %w", err)
 		}
 	}
 	return resolvedActions(func(ctx context.Context, c *eth.Contracts, from common.Address) ([]action, error) {
@@ -214,7 +215,7 @@ func (p RegisterParams) actions() ([]action, error) {
 		}
 		self := stake.Status != "Unbonded" && stake.Delegate == from
 		if !self && modes == 0 {
-			return nil, errors.New("registration requires amount, redelegate or lock-id when not self-bonded")
+			return nil, errors.New("registration requires --amount, --redelegate or --lock-id when not self-bonded")
 		}
 		var result []action
 		switch {
@@ -227,7 +228,7 @@ func (p RegisterParams) actions() ([]action, error) {
 				return nil, lockErr
 			}
 			if values[1].(*big.Int).Sign() == 0 {
-				return nil, errors.New("unbonding lock does not exist")
+				return nil, errors.New("unbonding lock does not exist; check --lock-id")
 			}
 			if stake.Status == "Unbonded" {
 				result = contractAction("bondingManager", "rebondFromUnbonded", from, lock)
@@ -263,7 +264,7 @@ func (p CancelUnbondParams) actions() ([]action, error) {
 		}
 		if stake.Status == "Unbonded" {
 			if p.Delegate == nil {
-				return nil, errors.New("an address is required to cancel unbonding when unbonded")
+				return nil, errors.New("a delegate address is required when unbonded: use 'livepeer chain stake cancel-unbond <delegate> --lock-id <id>'")
 			}
 			return contractAction("bondingManager", "rebondFromUnbonded", *p.Delegate, p.LockID.ToBig()), nil
 		}
@@ -276,7 +277,7 @@ func (p CancelUnbondParams) actions() ([]action, error) {
 func amountAction(contract, method, raw string, base bool, kind string, recipient *common.Address) ([]action, error) {
 	amount, err := parseAmount(raw, base, true, true)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("invalid --amount (interpreted as integer base units when --base-units is set): %w", err)
 	}
 	return resolvedActions(func(ctx context.Context, c *eth.Contracts, from common.Address) ([]action, error) {
 		resolved := amount
@@ -351,7 +352,7 @@ func (p ClaimParams) actions() ([]action, error) {
 			return nil, err
 		}
 		if !round.Initialized {
-			return nil, errors.New("current round is not initialized; initialize the round before claiming")
+			return nil, errors.New("current round is not initialized; run 'livepeer chain round initialize --submit' before claiming, or specify --end-round to claim an earlier round")
 		}
 		value, _ := new(big.Int).SetString(round.CurrentRound, 10)
 		return contractAction("bondingManager", "claimEarnings", value), nil
@@ -360,18 +361,18 @@ func (p ClaimParams) actions() ([]action, error) {
 func (p FundParams) actions() ([]action, error) {
 	deposit, err := parseAmount(p.Amount, p.BaseUnits, false, false)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("invalid --amount (interpreted as wei when --base-units is set): %w", err)
 	}
 	reserve, err := parseAmount(p.Reserve, p.BaseUnits, false, false)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("invalid --reserve (interpreted as wei when --base-units is set): %w", err)
 	}
 	value := new(big.Int).Add(deposit, reserve)
 	if value.BitLen() > 256 {
-		return nil, errors.New("deposit and reserve total exceeds uint256")
+		return nil, errors.New("--amount and --reserve total exceeds uint256")
 	}
 	if value.Sign() == 0 {
-		return nil, errors.New("deposit and reserve cannot both be zero")
+		return nil, errors.New("--amount and --reserve cannot both be zero")
 	}
 	return []action{{Contract: "ticketBroker", Method: "fundDepositAndReserve", Args: []any{deposit, reserve}, Value: value}}, nil
 }
@@ -416,7 +417,7 @@ func rewardCallerActions(target common.Address) []action {
 }
 func (p RewardCallerParams) actions() ([]action, error) {
 	if p.Address == (common.Address{}) {
-		return nil, errors.New("reward caller must be nonempty; use unset")
+		return nil, errors.New("reward caller address argument must be nonempty; use 'livepeer chain orchestrator reward-caller unset' to remove it")
 	}
 	return rewardCallerActions(p.Address), nil
 }

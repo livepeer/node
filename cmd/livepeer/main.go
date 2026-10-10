@@ -45,7 +45,7 @@ func run(args []string) int {
 func usage() {
 	fmt.Fprintln(os.Stdout, "Usage: livepeer <orchestrator|signer|chain|completion|version> [args...]")
 	fmt.Fprintln(os.Stdout)
-	fmt.Fprintln(os.Stdout, "Run livepeer help <component> for component options.")
+	fmt.Fprintln(os.Stdout, "Run 'livepeer help <component>' for component options.")
 }
 
 // bundledExecutable never searches PATH. This prevents an unrelated program
