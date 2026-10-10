@@ -247,7 +247,7 @@ func checkGoSDK(t *testing.T, root, serviceURL, runnerURL string) {
 	require.NoError(t, err)
 	require.Empty(t, status, "SDK checkout must be clean for compatibility result")
 	dir := t.TempDir()
-	goMod := "module sdkcompat\n\ngo 1.27.1\n\nrequire github.com/livepeer/golang-runner v0.0.0\n\nreplace github.com/livepeer/golang-runner => " + sdkDir + "\n"
+	goMod := "module sdkcompat\n\ngo 1.27.2\n\nrequire github.com/livepeer/golang-runner v0.0.0\n\nreplace github.com/livepeer/golang-runner => " + sdkDir + "\n"
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte(goMod), 0600))
 	source, err := os.ReadFile(filepath.Join(root, "cmd", "livepeer", "testdata", "go_sdk_compat.go"))
 	require.NoError(t, err)
