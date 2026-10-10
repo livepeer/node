@@ -36,7 +36,7 @@ func (p OperatorParams) Validate() error {
 		return errors.New("valid RPC URL is required")
 	}
 	if p.Controller == (ethcommon.Address{}) {
-		return errors.New("controller-address must be nonzero")
+		return errors.New("controller-address must be nonempty")
 	}
 	if p.MaxFeePerGas != nil && p.MaxFeePerGas.IsZero() {
 		return errors.New("max-fee-per-gas must be positive")

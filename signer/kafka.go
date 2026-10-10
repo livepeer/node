@@ -67,19 +67,19 @@ func (c KafkaConfig) Validate() error {
 	if c.Topic == "" || len(c.Topic) > 249 || c.Topic == "." || c.Topic == ".." || strings.ContainsFunc(c.Topic, func(r rune) bool {
 		return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '_' || r == '-')
 	}) {
-		return errors.New("valid Kafka topic is required")
+		return errors.New("--kafka-topic must be 1–249 ASCII letters, digits, '.', '_' or '-', and cannot be '.' or '..'")
 	}
 	if c.OutboxDB == "" || c.OutboxDB == ":memory:" || strings.HasPrefix(c.OutboxDB, "file:") || strings.Contains(c.OutboxDB, "?") {
-		return errors.New("kafka outbox-db must be a filesystem path")
+		return errors.New("--kafka-outbox-db must be a filesystem path, not :memory:, a file: URI or a path containing '?'")
 	}
 	if c.OutboxMaxBytes <= 0 {
-		return errors.New("kafka outbox-max-bytes must be positive")
+		return errors.New("--kafka-outbox-max-bytes must be positive")
 	}
 	if (c.Username == "") != (c.Password == "") || (c.UsernameFile != "" || c.PasswordFile != "") && (c.Username == "" || c.Password == "") {
-		return errors.New("kafka username and password must be supplied together")
+		return errors.New("Kafka username and password must be supplied together: set LIVEPEER_SIGNER_KAFKA_USERNAME and LIVEPEER_SIGNER_KAFKA_PASSWORD, or use --kafka-username-file and --kafka-password-file")
 	}
 	if strings.ContainsRune(c.Username, 0) || strings.ContainsRune(c.Password, 0) {
-		return errors.New("kafka credentials must not contain NUL bytes")
+		return errors.New("Kafka credentials must not contain NUL bytes; check LIVEPEER_SIGNER_KAFKA_USERNAME or --kafka-username-file and LIVEPEER_SIGNER_KAFKA_PASSWORD or --kafka-password-file")
 	}
 	_, err := c.transport()
 	return err
@@ -88,12 +88,12 @@ func (c KafkaConfig) Validate() error {
 func (c KafkaConfig) brokerAddress() (string, error) {
 	broker := (*url.URL)(&c.Broker)
 	if broker.Host == "" {
-		return "", errors.New("kafka broker is required when Kafka is enabled")
+		return "", errors.New("kafka broker is required when Kafka is enabled: set --kafka-broker or LIVEPEER_SIGNER_KAFKA_BROKER")
 	}
 	if (broker.Scheme != "kafka" && broker.Scheme != "kafkas") ||
 		broker.User != nil || broker.Path != "" || broker.RawPath != "" || broker.Opaque != "" ||
 		broker.RawQuery != "" || broker.ForceQuery || broker.Fragment != "" || broker.RawFragment != "" {
-		return "", errors.New("kafka broker must be one host[:port] address with optional kafka:// or kafkas:// scheme and no credentials, path, query or fragment")
+		return "", errors.New("--kafka-broker must be one host[:port] address with optional kafka:// or kafkas:// scheme and no credentials, path, query or fragment")
 	}
 	address := broker.Host
 	if broker.Port() == "" && !strings.HasSuffix(address, ":") {
@@ -116,12 +116,12 @@ func (c KafkaConfig) brokerAddress() (string, error) {
 	// unbracketed colons. SplitHostPort rejects those ambiguous authorities.
 	host, port, err := net.SplitHostPort(address)
 	if err != nil || host == "" || strings.Contains(host, ",") {
-		return "", errors.New("kafka broker must have one host and an optional numeric port; IPv6 addresses must be bracketed")
+		return "", errors.New("--kafka-broker must have one host and an optional numeric port; IPv6 addresses must be bracketed")
 	}
 	// URL ports are numeric strings, without a TCP/UDP port range constraint.
 	portNumber, err := strconv.ParseUint(port, 10, 16)
 	if err != nil || portNumber == 0 {
-		return "", errors.New("kafka broker port must be between 1 and 65535")
+		return "", errors.New("--kafka-broker port must be between 1 and 65535")
 	}
 	return net.JoinHostPort(host, strconv.FormatUint(portNumber, 10)), nil
 }
@@ -160,11 +160,11 @@ func (c KafkaConfig) transport() (*kafka.Transport, error) {
 			var err error
 			transport.SASL, err = scram.Mechanism(algorithm, c.Username, c.Password)
 			if err != nil {
-				return nil, errors.New("invalid Kafka SCRAM credentials")
+				return nil, errors.New("invalid Kafka SCRAM credentials; check LIVEPEER_SIGNER_KAFKA_USERNAME or --kafka-username-file and LIVEPEER_SIGNER_KAFKA_PASSWORD or --kafka-password-file")
 			}
 		}
 	default:
-		return nil, errors.New("kafka auth-method must be plain, scram-sha-256 or scram-sha-512")
+		return nil, errors.New("--kafka-auth-method must be plain, scram-sha-256 or scram-sha-512")
 	}
 	return transport, nil
 }
@@ -186,7 +186,7 @@ func openKafkaProducer(ctx context.Context, c *KafkaConfig, signer string) (*kaf
 	}
 	outbox, err := openEventOutbox(ctx, c.OutboxDB, outboxBinding{Signer: signer, Broker: address, Topic: c.Topic}, c.OutboxMaxBytes)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("open Kafka outbox %q (--kafka-outbox-db or LIVEPEER_SIGNER_KAFKA_OUTBOX_DB): %w", c.OutboxDB, err)
 	}
 	writer := &kafka.Writer{
 		Addr: kafka.TCP(address), Topic: c.Topic, Balancer: kafka.CRC32Balancer{}, Transport: transport,

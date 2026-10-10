@@ -125,7 +125,7 @@ func TestActionValidationBeforeRPC(t *testing.T) {
 		{[]string{"account", "create"}, "are required"},
 		{[]string{"account", "create", "extra"}, "unknown command"},
 		{[]string{"status", "--chain-id", "0"}, "below min"},
-		{[]string{"status", "--controller-address", "0x0000000000000000000000000000000000000000"}, "must be nonzero"},
+		{[]string{"status", "--controller-address", "0x0000000000000000000000000000000000000000"}, "must be nonempty"},
 		{[]string{"status", "--output", "yaml"}, "allowed values"},
 	} {
 		t.Run(strings.Join(tc.args, " "), func(t *testing.T) {

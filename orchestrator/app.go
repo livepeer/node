@@ -81,7 +81,7 @@ func (p Params) Validate() error {
 			return errors.New("on-chain payment requires --redeemer-db, LIVEPEER_ORCHESTRATOR_KEYSTORE_PASSWORD or --keystore-password-file, LIVEPEER_ORCHESTRATOR_RPC_URL or --rpc-url-file, --chain-id, --controller-address, --wei-per-usd or --eth-usd-feed, --ticket-face-value and --ticket-win-prob")
 		}
 		if *p.Controller == (ethcommon.Address{}) {
-			return errors.New("--controller-address must be a nonzero Ethereum address")
+			return errors.New("--controller-address must be a nonempty Ethereum address")
 		}
 		if *p.ChainID == 0 || p.TicketFaceValue.IsZero() || p.TicketWinProb.IsZero() {
 			return errors.New("--chain-id, --ticket-face-value and --ticket-win-prob must be positive")
@@ -94,7 +94,7 @@ func (p Params) Validate() error {
 		}
 		if p.ETHUSDFeed != nil {
 			if p.WeiPerUSD != nil || *p.ETHUSDFeed == (ethcommon.Address{}) || p.PriceMaxAge <= 0 {
-				return errors.New("--eth-usd-feed requires a nonzero Ethereum address, positive --price-max-age and no fixed --wei-per-usd")
+				return errors.New("--eth-usd-feed requires a nonempty Ethereum address, positive --price-max-age and no fixed --wei-per-usd")
 			}
 		} else if p.WeiPerUSD.Sign() <= 0 {
 			return errors.New("--wei-per-usd must be positive")

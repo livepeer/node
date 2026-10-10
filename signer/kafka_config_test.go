@@ -61,7 +61,7 @@ func TestKafkaConfigurationValidation(t *testing.T) {
 	}
 	valid.Username = "invalid\x07username"
 	_, err = valid.transport()
-	require.EqualError(t, err, "invalid Kafka SCRAM credentials")
+	require.EqualError(t, err, "invalid Kafka SCRAM credentials; check LIVEPEER_SIGNER_KAFKA_USERNAME or --kafka-username-file and LIVEPEER_SIGNER_KAFKA_PASSWORD or --kafka-password-file")
 }
 
 func TestKafkaBrokerURLsAndDefaultPorts(t *testing.T) {

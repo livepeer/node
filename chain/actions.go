@@ -99,7 +99,7 @@ func (p SetConfigParams) actions() ([]action, error) {
 }
 func bondActions(ctx context.Context, c *eth.Contracts, from, to common.Address, raw string, base, redelegate bool) ([]action, error) {
 	if to == (common.Address{}) {
-		return nil, errors.New("orchestrator address must be nonzero")
+		return nil, errors.New("orchestrator address must be nonempty")
 	}
 	if redelegate {
 		s, err := c.Inspect(ctx)
@@ -250,7 +250,7 @@ func (p RegisterParams) actions() ([]action, error) {
 }
 func (p CancelUnbondParams) actions() ([]action, error) {
 	if p.Delegate != nil && *p.Delegate == (common.Address{}) {
-		return nil, errors.New("delegate must be nonzero")
+		return nil, errors.New("delegate must be nonempty")
 	}
 	return resolvedActions(func(ctx context.Context, c *eth.Contracts, from common.Address) ([]action, error) {
 		s, err := c.Inspect(ctx)
@@ -316,7 +316,7 @@ func amountAction(contract, method, raw string, base bool, kind string, recipien
 				to = *recipient
 			}
 			if to == (common.Address{}) {
-				return nil, errors.New("recipient must be nonzero")
+				return nil, errors.New("recipient must be nonempty")
 			}
 			return contractAction(contract, method, to, resolved), nil
 		default:
@@ -416,13 +416,13 @@ func rewardCallerActions(target common.Address) []action {
 }
 func (p RewardCallerParams) actions() ([]action, error) {
 	if p.Address == (common.Address{}) {
-		return nil, errors.New("reward caller must be nonzero; use unset")
+		return nil, errors.New("reward caller must be nonempty; use unset")
 	}
 	return rewardCallerActions(p.Address), nil
 }
 func (p PollVoteParams) actions() ([]action, error) {
 	if p.Address == (common.Address{}) {
-		return nil, errors.New("poll address must be nonzero")
+		return nil, errors.New("poll address must be nonempty")
 	}
 	choice := int64(0)
 	if p.Choice == "no" {

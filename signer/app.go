@@ -3,6 +3,7 @@ package signer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"math/big"
@@ -79,10 +80,10 @@ func (p Params) discoveryURLs() []*url.URL {
 
 func (p Params) Validate() error {
 	if p.Network != "" && p.ChainID == nil {
-		return errors.New("network requires an explicit chain-id and controller-address")
+		return errors.New("--network (or LIVEPEER_SIGNER_NETWORK) requires an explicit --chain-id and --controller-address for custom networks")
 	}
 	if p.KeystorePassword == nil && p.KeystorePasswordFile == "" {
-		return errors.New("keystore-password or keystore-password-file are required")
+		return errors.New("keystore password is required: set LIVEPEER_SIGNER_KEYSTORE_PASSWORD or supply --keystore-password-file (or LIVEPEER_SIGNER_KEYSTORE_PASSWORD_FILE)")
 	}
 	if p.Kafka != nil {
 		if err := p.Kafka.Validate(); err != nil {
@@ -91,42 +92,42 @@ func (p Params) Validate() error {
 	}
 	if p.AuthWebhook != nil || len(p.AuthWebhookHeaders) > 0 {
 		if err := validateAuthWebhook(p.AuthWebhook); err != nil {
-			return err
+			return errors.New("auth webhook URL (LIVEPEER_SIGNER_AUTH_WEBHOOK or --auth-webhook-file) must be an absolute HTTP or HTTPS URL without credentials or fragment")
 		}
 	}
 	if _, err := p.AuthWebhookHeaders.MarshalText(); err != nil {
-		return err
+		return fmt.Errorf("invalid auth webhook headers (LIVEPEER_SIGNER_AUTH_WEBHOOK_HEADERS or --auth-webhook-headers-file): %w", err)
 	}
 	if _, err := p.payerPolicy(); err != nil {
-		return err
+		return fmt.Errorf("invalid payer limits (--max-ticket-ev, --max-batch-ev, --deposit-multiplier): %w", err)
 	}
 	if !p.MetricsListen.Addr().IsLoopback() {
-		return errors.New("metrics listener must bind loopback")
+		return errors.New("--metrics-listen (or LIVEPEER_SIGNER_METRICS_LISTEN) must bind a loopback IP:port address, e.g. 127.0.0.1:8938 or [::1]:8938")
 	}
 	if err := destination.ValidateURL(p.RPCURL); err != nil {
-		return errors.New("valid RPC URL is required")
+		return fmt.Errorf("invalid RPC URL (LIVEPEER_SIGNER_RPC_URL or --rpc-url-file): %w", err)
 	}
-	// A required, parseable address can still be the all-zero address.
+	// A required, parseable address can still be empty.
 	if p.Controller == (ethcommon.Address{}) || p.WeiPerUSD == nil && p.ETHUSDFeed == (ethcommon.Address{}) {
-		return errors.New("controller-address and eth-usd-feed must be nonzero")
+		return errors.New("--controller-address must be nonempty; supply a nonempty --eth-usd-feed or a positive --wei-per-usd conversion rate")
 	}
 	if _, err := newPricePolicy(p.MaxHourlyPrice, p.MaxFixedPrice); err != nil {
-		return err
+		return fmt.Errorf("invalid price limits (--max-hourly-price and --max-fixed-price): %w", err)
 	}
 	if p.WeiPerUSD != nil {
 		if p.WeiPerUSD.Sign() <= 0 {
-			return errors.New("wei-per-usd must be positive")
+			return errors.New("--wei-per-usd must be positive")
 		}
 	} else if p.ETHUSDMaxAge <= 0 {
-		return errors.New("eth-usd-feed requires positive eth-usd-max-age")
+		return errors.New("--eth-usd-feed requires positive --eth-usd-max-age")
 	}
 	for _, endpoint := range p.discoveryURLs() {
 		if err := validateDiscoveryURL(endpoint); err != nil {
-			return err
+			return errors.New("--orchestrators must contain absolute HTTP or HTTPS URLs without credentials, query or fragment")
 		}
 	}
 	if _, err := destination.New("signer-discovery", p.DiscoveryGrants); err != nil {
-		return err
+		return fmt.Errorf("invalid --discovery-grants: %w", err)
 	}
 	return nil
 }
@@ -145,14 +146,14 @@ func serve(parent context.Context, p Params) error {
 	defer stop()
 	key, err := eth.OpenAccount(filepath.Join(p.DataDir, "keystore"), nodeconfig.Path(p.DataDir, p.KeystoreFile), p.KeystorePassword, p.KeystorePasswordFile, p.Account)
 	if err != nil {
-		return err
+		return fmt.Errorf("open signer keystore (check --keystore-file or --data-dir and --account, and LIVEPEER_SIGNER_KEYSTORE_PASSWORD or --keystore-password-file): %w", err)
 	}
 	service := newService(key)
 	defer service.Close()
 	service.payerPolicy, _ = p.payerPolicy()
 	rpc, err := eth.NewRPC(p.RPCURL, nil)
 	if err != nil {
-		return err
+		return fmt.Errorf("configure signer RPC (LIVEPEER_SIGNER_RPC_URL or --rpc-url-file): %w", err)
 	}
 	defer rpc.Close()
 	var chainID *big.Int
@@ -160,20 +161,20 @@ func serve(parent context.Context, p Params) error {
 		chainID = new(big.Int).SetUint64(*p.ChainID)
 	}
 	if err := rpc.CheckChainID(ctx, chainID); err != nil {
-		return err
+		return fmt.Errorf("verify signer RPC chain ID (check LIVEPEER_SIGNER_RPC_URL or --rpc-url-file, --chain-id and --network): %w", err)
 	}
 	contracts, err := eth.NewContracts(rpc, p.Controller)
 	if err != nil {
-		return err
+		return fmt.Errorf("initialize signer contract bindings: %w", err)
 	}
 	service.SetPaymentChain(pm.EthereumChain{Client: eth.PaymentChain{Contracts: contracts}})
 	policy, _ := newPricePolicy(p.MaxHourlyPrice, p.MaxFixedPrice)
 	if p.WeiPerUSD == nil {
 		rate, until, err := contracts.WeiPerUSD(ctx, p.ETHUSDFeed, p.ETHUSDMaxAge)
 		if err != nil {
-			slog.Error("signer price feed unavailable at startup", "error", err)
+			slog.Error("signer price feed unavailable at startup; check --eth-usd-feed, --eth-usd-max-age and LIVEPEER_SIGNER_RPC_URL or --rpc-url-file", "error", err)
 		} else if err := policy.setRate(rate, until); err != nil {
-			slog.Error("signer price feed invalid at startup", "error", err)
+			slog.Error("signer price feed invalid at startup; check --eth-usd-feed and --eth-usd-max-age", "error", err)
 		}
 	} else if err := policy.setRate(p.WeiPerUSD, time.Time{}); err != nil {
 		return err
@@ -197,12 +198,12 @@ func serve(parent context.Context, p Params) error {
 	}
 	listener, err := net.Listen("tcp", p.Listen.String())
 	if err != nil {
-		return err
+		return fmt.Errorf("cannot start signer HTTP listener on %s; choose an available address with --listen or LIVEPEER_SIGNER_LISTEN: %w", p.Listen, err)
 	}
 	defer listener.Close()
 	metricsListener, err := net.Listen("tcp", p.MetricsListen.String())
 	if err != nil {
-		return err
+		return fmt.Errorf("cannot start signer metrics listener on %s; choose an available loopback address with --metrics-listen or LIVEPEER_SIGNER_METRICS_LISTEN: %w", p.MetricsListen, err)
 	}
 	defer metricsListener.Close()
 	metricsMux := http.NewServeMux()
