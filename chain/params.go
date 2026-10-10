@@ -11,20 +11,20 @@ import (
 	"github.com/holiman/uint256"
 	"github.com/j0sh/boa/pkg/boa"
 	"github.com/livepeer/node/destination"
+	"github.com/livepeer/node/nodeconfig"
 )
 
 // OperatorParams is the persistent operator context shared by chain commands.
 type OperatorParams struct {
-	Network              string             `optional:"true" persistent:"true" descr:"Network name (custom networks require explicit chain settings)"`
-	DataDir              string             `basedir:"true" optional:"true" persistent:"true" descr:"Data directory; relative file paths start here"`
+	nodeconfig.PersistentSettings
 	RPCURL               *url.URL           `name:"rpc-url" secret:"true" optional:"true" persistent:"true"`
-	RPCURLFile           string             `name:"rpc-url-file" secretfor:"RPCURL" persistent:"true"`
+	RPCURLFile           string             `basepath:"source" name:"rpc-url-file" secretfor:"RPCURL" persistent:"true"`
 	ChainID              *uint64            `min:"1" persistent:"true" descr:"Optional expected RPC chain ID"`
 	Account              *ethcommon.Address `persistent:"true" descr:"Account address to inspect or use for transactions; must match the keystore account when signing"`
 	Controller           ethcommon.Address  `name:"controller-address" optional:"true" persistent:"true" descr:"Livepeer Controller address"`
-	KeystoreFile         string             `optional:"true" persistent:"true" descr:"Encrypted geth account JSON file"`
+	KeystoreFile         string             `basepath:"source" optional:"true" persistent:"true" descr:"Encrypted geth account JSON file"`
 	KeystorePassword     *string            `secret:"true" optional:"true" persistent:"true" descr:"Keystore decryption password"`
-	KeystorePasswordFile string             `secretfor:"KeystorePassword" persistent:"true" descr:"Owner-only file containing the exact keystore password bytes"`
+	KeystorePasswordFile string             `basepath:"source" secretfor:"KeystorePassword" persistent:"true" descr:"Owner-only file containing the exact keystore password bytes"`
 	MaxFeePerGas         *uint256.Int       `persistent:"true" descr:"Ceiling on the calculated transaction fee cap in wei per gas"`
 }
 
@@ -67,7 +67,7 @@ type DisplayOptions struct {
 }
 
 type RootParams struct {
-	ConfigFile string `name:"config" configfile:"optional-default" default:"chain/config.toml" persistent:"true" boa:"noconfig" descr:"Configuration file; empty disables discovery"`
+	ConfigFile string `persistent:"true" name:"config" configfile:"optional-default" basepath:"source" default:"config.toml" boa:"noconfig" descr:"Configuration file; empty disables discovery"`
 	OperatorParams
 	DisplayOptions
 }
@@ -180,10 +180,10 @@ type ListParams struct {
 	Active bool `optional:"true" boa:"noconfig,noenv"`
 }
 type MessageParams struct {
-	MessageFile string `file:"true" required:"true" boa:"noconfig,noenv"`
+	MessageFile string `basepath:"source" file:"true" required:"true" boa:"noconfig,noenv"`
 }
 type TypedDataParams struct {
-	DataFile string `file:"true" required:"true" boa:"noconfig,noenv"`
+	DataFile string `basepath:"source" file:"true" required:"true" boa:"noconfig,noenv"`
 }
 
 type GasParams struct {

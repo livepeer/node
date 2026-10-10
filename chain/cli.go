@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"path/filepath"
 	"strings"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -114,18 +113,18 @@ func accountCommand(root *RootParams) boa.Cmd[boa.NoParams] {
 	command.SubCmds = boa.SubCmds(
 		readCommand(root, "get", "Read ETH/LPT balances and pending nonce", Account),
 		boa.Cmd[boa.NoParams]{Use: "create", Short: "Create a new encrypted keystore locally without overwriting an existing file",
-			Long: "Create an encrypted account in <data-dir>/keystore. Use --keystore-file to choose\n" +
-				"a new output file instead. Supply an owner-only --keystore-password-file or\n" +
-				"LIVEPEER_CHAIN_KEYSTORE_PASSWORD. No RPC or account address is needed.",
+			Long: "Create an encrypted account in the shared network keystore, or <DataDir>/keystore\n" +
+				"when DataDir is supplied. --keystore-file selects a new output file. Supply\n" +
+				"--keystore-password-file or LIVEPEER_CHAIN_KEYSTORE_PASSWORD. No RPC is needed.",
 			Args: cobra.NoArgs, RunFuncE: func(_ *boa.NoParams, cmd *cobra.Command, _ []string) error {
 				if root.PrintConfig {
 					return root.OperatorParams.printConfig(cmd.OutOrStdout())
 				}
 				create := func() (common.Address, error) {
 					if root.KeystoreFile != "" {
-						return eth.CreateKeystore(nodeconfig.Path(root.DataDir, root.KeystoreFile), root.KeystorePassword, root.KeystorePasswordFile)
+						return eth.CreateKeystore(root.KeystoreFile, root.KeystorePassword, root.KeystorePasswordFile)
 					}
-					return eth.CreateAccount(filepath.Join(root.DataDir, "keystore"), root.KeystorePassword, root.KeystorePasswordFile)
+					return eth.CreateAccount(root.KeystoreDir(), root.KeystorePassword, root.KeystorePasswordFile)
 				}
 				address, err := create()
 				if err != nil {
@@ -206,7 +205,7 @@ func Root(out, errOut io.Writer) *cobra.Command {
 				staticTransaction(params, "round initialize", "roundsManager", "initializeRound"),
 			)}),
 		),
-	}).ToCobra()
+	}, &params.ConfigFile).ToCobra()
 	// Boa tracks CLI presence through the declaring command's Flags(). Keep
 	// the same persistent flag objects there so CLI still wins over env/config
 	// when Cobra parses them on a descendant.

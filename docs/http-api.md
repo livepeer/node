@@ -231,7 +231,7 @@ ID and payload, and consumers must deduplicate IDs. Separate signing requests
 emit separate events, including requests whose responses are interrupted after
 persistence. See [Kafka accounting](signer.md#kafka-accounting-and-budgets).
 
-The outbox defaults to `signer-events.sqlite` and 256 MiB of pending JSON
+The outbox defaults to `events.sqlite` and 256 MiB of pending JSON
 payloads; SQLite and WAL overhead are additional. Serialized events exceeding
 either the total outbox quota or 1 MiB minus 1 KiB for Kafka framing return 413,
 without payment credentials or changing readiness. Failed local persistence

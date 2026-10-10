@@ -1,3 +1,5 @@
+# DataDir may be set in an explicitly selected config; relative DataDir values use this file's directory.
+# DataDir = "/var/lib/livepeer/signer" # Accounts then use DataDir/keystore.
 # Deployment template: configure the RPCURLFile and KeystorePasswordFile
 
 # Signer TOML uses the names shown below; flags use kebab-case.
@@ -21,7 +23,7 @@ DiscoveryGrants = []
 RPCURLFile = "/run/secrets/livepeer-signer-rpc-url"
 
 # On-chain defaults; custom networks require chain and contract settings.
-# Network = "arbitrum-one-mainnet" # uncomment for on-chain mode
+# Network = "arbitrum-one-mainnet" # Signer default
 # ChainID = 42161
 # Defaults target Arbitrum mainnet; override for another chain.
 # Controller = "0xD8E8328501E9645d16Cf49539efC04f734606ee4"
@@ -53,7 +55,7 @@ DepositMultiplier = 1
 # Optional durable accounting events. Omit all Kafka settings to disable.
 # Supplying any Kafka setting requires Broker and Topic.
 # Provide one bootstrap host[:port]; Kafka discovers other brokers.
-# OutboxDB defaults to signer/events.sqlite under the data directory.
+# OutboxDB defaults to events.sqlite under the data directory.
 # Keep one outbox per replica.
 # TLS with system trust roots is the default when the scheme is omitted.
 # kafka:// explicitly uses plaintext transport; kafkas:// explicitly uses TLS.

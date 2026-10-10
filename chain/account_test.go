@@ -27,7 +27,7 @@ func TestAccountCreate(t *testing.T) {
 			args := []string{"account", "create"}
 			if source == "config password file" {
 				config := filepath.Join(dir, "chain.toml")
-				require.NoError(t, os.WriteFile(config, []byte(fmt.Sprintf("KeystoreFile = %q\nKeystorePasswordFile = %q\nAccount = %q\n", path, passwordPath, testAccount)), 0600))
+				require.NoError(t, os.WriteFile(config, []byte(fmt.Sprintf("KeystoreFile = 'account.json'\nKeystorePasswordFile = 'password'\nAccount = %q\n", testAccount)), 0600))
 				args = append(args, "--config", config, "--output", "json")
 			} else {
 				t.Setenv("LIVEPEER_CHAIN_KEYSTORE_PASSWORD", password)

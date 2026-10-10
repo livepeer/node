@@ -18,16 +18,15 @@ func testBinaryMigrations(t *testing.T, install string) {
 	} {
 		t.Run(component.name+" migrations", func(t *testing.T) {
 			root := t.TempDir()
-			require.NoError(t, os.Mkdir(filepath.Join(root, component.name), 0700))
-			require.NoError(t, os.WriteFile(filepath.Join(root, component.name, "config.toml"), []byte("KeystoreFile = 'missing-key'\nKeystorePasswordFile = 'missing-password'\n"+component.config), 0600))
+			require.NoError(t, os.WriteFile(filepath.Join(root, "config.toml"), []byte("KeystoreFile = 'missing-key'\nKeystorePasswordFile = 'missing-password'\n"+component.config), 0600))
 			path := filepath.Join(root, "custom", "state.sqlite")
 			direct, err := exec.Command(filepath.Join(install, "livepeer-"+component.name),
 				"migrate", "--data-dir", root, "up").CombinedOutput()
 			require.NoError(t, err, string(direct))
 			require.FileExists(t, path)
-			entries, err := os.ReadDir(filepath.Join(root, component.name))
+			entries, err := os.ReadDir(root)
 			require.NoError(t, err)
-			require.Len(t, entries, 1, "migration must not create the default database")
+			require.Len(t, entries, 2, "only config and the custom database directory are created")
 			t.Setenv("LIVEPEER_"+strings.ToUpper(component.name)+"_"+strings.ToUpper(strings.ReplaceAll(strings.TrimPrefix(component.flag, "--"), "-", "_")), "missing.sqlite")
 			forwarded, err := exec.Command(filepath.Join(install, "livepeer"),
 				component.name, "migrate", "status", "--data-dir", root, component.flag, path).CombinedOutput()

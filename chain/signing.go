@@ -8,18 +8,16 @@ import (
 	"io"
 	"math/big"
 	"os"
-	"path/filepath"
 
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/signer/core/apitypes"
 	"github.com/livepeer/node/eth"
-	"github.com/livepeer/node/nodeconfig"
 )
 
 func signFile(p OperatorParams, d DisplayOptions, out io.Writer, path string, typed bool) error {
-	key, err := eth.OpenAccount(filepath.Join(p.DataDir, "keystore"), nodeconfig.Path(p.DataDir, p.KeystoreFile), p.KeystorePassword, p.KeystorePasswordFile, p.Account)
+	key, err := eth.OpenAccount(p.KeystoreDir(), p.KeystoreFile, p.KeystorePassword, p.KeystorePasswordFile, p.Account)
 	if err != nil {
 		return fmt.Errorf("open signing keystore (check --keystore-file or --data-dir and --account, and LIVEPEER_CHAIN_KEYSTORE_PASSWORD or --keystore-password-file): %w", err)
 	}

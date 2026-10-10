@@ -12,7 +12,6 @@ import (
 	"net/netip"
 	"net/url"
 	"os/signal"
-	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -29,13 +28,13 @@ import (
 )
 
 type Params struct {
+	ConfigFile string `name:"config" configfile:"optional-default" basepath:"source" default:"config.toml" boa:"noconfig" descr:"Configuration file; empty disables discovery"`
 	nodeconfig.Settings
-	ConfigFile             string               `name:"config" configfile:"optional-default" default:"signer/config.toml" boa:"noconfig" descr:"Configuration file; empty disables discovery"`
 	Account                *ethcommon.Address   `descr:"Keystore account address"`
 	Kafka                  *KafkaConfig         `optional:"true"`
-	AuthWebhookHeadersFile string               `name:"auth-webhook-headers-file" secretfor:"AuthWebhookHeaders"`
+	AuthWebhookHeadersFile string               `basepath:"source" name:"auth-webhook-headers-file" secretfor:"AuthWebhookHeaders"`
 	AuthWebhook            *url.URL             `name:"auth-webhook" optional:"true" secret:"true"`
-	AuthWebhookFile        string               `name:"auth-webhook-file" secretfor:"AuthWebhook"`
+	AuthWebhookFile        string               `basepath:"source" name:"auth-webhook-file" secretfor:"AuthWebhook"`
 	AuthWebhookHeaders     Headers              `name:"auth-webhook-headers" optional:"true" secret:"true"`
 	MaxTicketEV            *big.Rat             `name:"max-ticket-ev" default:"3000000000000" descr:"Maximum expected ticket value in wei"`
 	MaxBatchEV             *big.Rat             `name:"max-batch-ev" default:"20000000000000" descr:"Maximum expected batch value in wei"`
@@ -48,12 +47,12 @@ type Params struct {
 	Listen                 netip.AddrPort       `name:"listen" default:"127.0.0.1:8937"`
 	MetricsListen          netip.AddrPort       `name:"metrics-listen" default:"127.0.0.1:8938"`
 	RPCURL                 *url.URL             `name:"rpc-url" secret:"true" required:"true"`
-	RPCURLFile             string               `name:"rpc-url-file" secretfor:"RPCURL"`
+	RPCURLFile             string               `basepath:"source" name:"rpc-url-file" secretfor:"RPCURL"`
 	ChainID                *uint64              `name:"chain-id" min:"1" descr:"Optional expected RPC chain ID"`
 	Controller             ethcommon.Address    `name:"controller-address" optional:"true" descr:"Livepeer Controller address"`
-	KeystoreFile           string               `optional:"true" descr:"Encrypted geth account JSON file; otherwise discover in keystore/"`
+	KeystoreFile           string               `basepath:"source" optional:"true" descr:"Encrypted geth account JSON file; otherwise discover in keystore/"`
 	KeystorePassword       *string              `secret:"true" required:"true" descr:"Keystore decryption password"`
-	KeystorePasswordFile   string               `secretfor:"KeystorePassword" descr:"Owner-only file containing the exact keystore password bytes"`
+	KeystorePasswordFile   string               `basepath:"source" secretfor:"KeystorePassword" descr:"Owner-only file containing the exact keystore password bytes"`
 	Orchestrators          []boa.Text[*url.URL] `name:"orchestrators" optional:"true"`
 	DiscoveryGrants        []string             `name:"discovery-grants" optional:"true" descr:"Private discovery host[:port] grants"`
 }
@@ -144,7 +143,7 @@ func serve(parent context.Context, p Params) error {
 	}
 	ctx, stop := context.WithCancel(parent)
 	defer stop()
-	key, err := eth.OpenAccount(filepath.Join(p.DataDir, "keystore"), nodeconfig.Path(p.DataDir, p.KeystoreFile), p.KeystorePassword, p.KeystorePasswordFile, p.Account)
+	key, err := eth.OpenAccount(p.KeystoreDir(), p.KeystoreFile, p.KeystorePassword, p.KeystorePasswordFile, p.Account)
 	if err != nil {
 		return fmt.Errorf("open signer keystore (check --keystore-file or --data-dir and --account, and LIVEPEER_SIGNER_KEYSTORE_PASSWORD or --keystore-password-file): %w", err)
 	}
@@ -288,20 +287,20 @@ func Root(out, errOut io.Writer) *cobra.Command {
 		RunFuncE: func(p *Params, _ *cobra.Command, _ []string) error {
 			return Serve(*p)
 		},
-	}).ToCobra()
+	}, &params.ConfigFile).ToCobra()
 	cmd.SetOut(out)
 	cmd.SetErr(errOut)
 	cmd.SilenceUsage = true
 	cmd.SilenceErrors = true
 	type storageParams struct {
-		DataDir    string `persistent:"true" basedir:"true" descr:"Data directory; relative file paths start here"`
-		ConfigFile string `persistent:"true" name:"config" configfile:"optional-default" default:"signer/config.toml" boa:"noconfig"`
-		Kafka      struct {
-			OutboxDB string `persistent:"true" file:"optional" default:"signer/events.sqlite"`
+		ConfigFile string `persistent:"true" name:"config" configfile:"optional-default" basepath:"source" default:"config.toml" boa:"noconfig"`
+		nodeconfig.PersistentSettings
+		Kafka struct {
+			OutboxDB string `persistent:"true" file:"optional" default:"events.sqlite"`
 		}
 	}
 	storage := new(storageParams)
-	migrate := migrations.Command(nodeconfig.Command("signer", nodeconfig.Mainnet, boa.Cmd[storageParams]{Params: storage}), &storage.Kafka.OutboxDB, outboxMigrationFiles, openOutboxDB)
+	migrate := migrations.Command(nodeconfig.Command("signer", nodeconfig.Mainnet, boa.Cmd[storageParams]{Params: storage}, &storage.ConfigFile), &storage.Kafka.OutboxDB, outboxMigrationFiles, openOutboxDB)
 	cmd.AddCommand(migrate)
 	cmd.InitDefaultCompletionCmd()
 	return cmd

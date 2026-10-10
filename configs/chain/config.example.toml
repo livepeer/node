@@ -1,3 +1,5 @@
+# DataDir may be set in an explicitly selected config; relative DataDir values use this file's directory.
+# DataDir = "/var/lib/livepeer/chain" # Accounts then use DataDir/keystore.
 # Network = "arbitrum-one-mainnet"
 RPCURLFile = "/run/secrets/livepeer-chain-rpc-url"
 # ChainID = 42161 # Arbitrum mainnet default

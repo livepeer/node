@@ -25,6 +25,7 @@ import (
 	"github.com/holiman/uint256"
 	"github.com/j0sh/boa/pkg/boa"
 	"github.com/livepeer/node/internal/test"
+	"github.com/livepeer/node/nodeconfig"
 	"github.com/stretchr/testify/require"
 )
 
@@ -147,6 +148,38 @@ KeystoreFile = '/missing/account.json'
 	}
 }
 
+func TestLocalExampleConfig(t *testing.T) {
+	_, err := execute(t, "--config", "../configs/orchestrator/local.example.toml", "--print-config")
+	require.NoError(t, err)
+}
+
+func TestConfigErrorRemedies(t *testing.T) {
+	for _, tc := range []struct {
+		name, network, home, config, remedy string
+	}{
+		{name: "discovery network mismatch", home: t.TempDir(), config: "Network = 'arbitrum-one-mainnet'", remedy: "pass --network arbitrum-one-mainnet or select the file with --config"},
+		{name: "missing HOME", network: "offchain", remedy: "set HOME or pass --data-dir"},
+		{name: "invalid network", network: "..", home: t.TempDir(), remedy: "set --network to a name such as arbitrum-one-mainnet or offchain"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HOME", tc.home)
+			args := []string{"--print-config"}
+			if tc.network != "" {
+				args = append(args, "--network", tc.network)
+			}
+			if tc.config != "" {
+				dir := t.TempDir()
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "config.toml"), []byte(tc.config), 0600))
+				args = append(args, "--data-dir", dir)
+			}
+			_, err := execute(t, args...)
+			require.ErrorContains(t, err, tc.remedy)
+			require.True(t, boa.IsUserInputError(err))
+			require.NotContains(t, err.Error(), "FuncCtx")
+		})
+	}
+}
+
 func TestConfigRejectsUnknownAndDirectSecrets(t *testing.T) {
 	for _, content := range []string{
 		"unknown_key = 1\n",
@@ -177,14 +210,27 @@ func TestSecretEnvironmentFileConflict(t *testing.T) {
 }
 
 func TestSecretFilesPreserveBytesAndRedactErrors(t *testing.T) {
-	secretFile := filepath.Join(t.TempDir(), "secret")
+	t.Chdir(t.TempDir())
+	secretFile := "secret"
 	require.NoError(t, os.WriteFile(secretFile, []byte("exact-secret\n"), 0600))
 	var p Params
 	require.NoError(t, (boa.Cmd[Params]{Params: &p, RawArgs: []string{"--bootstrap-secret-file", secretFile}}).Validate())
 	require.Equal(t, "exact-secret\n", p.BootstrapSecret)
+	// A file-only payment setting must select the same defaults as its value.
+	require.NoError(t, os.WriteFile(secretFile, []byte("https://rpc.example"), 0600))
+	args := []string{"--config=", "--network", "arbitrum-one-mainnet", "--data-dir", t.TempDir(), "--print-config"}
+	fileConfig, err := execute(t, append(args, "--rpc-url-file", secretFile)...)
+	require.NoError(t, err)
+	t.Setenv("LIVEPEER_ORCHESTRATOR_RPC_URL", "https://rpc.example")
+	valueConfig, err := execute(t, args...)
+	require.NoError(t, err)
+	require.Equal(t, valueConfig, fileConfig)
+	require.Contains(t, fileConfig, "ChainID = 42161")
+	require.Contains(t, fileConfig, "payments.sqlite")
+	t.Setenv("LIVEPEER_ORCHESTRATOR_RPC_URL", "")
 	secret := "https://user:private-password@rpc.example/\n"
 	require.NoError(t, os.WriteFile(secretFile, []byte(secret), 0600))
-	_, err := execute(t, "--rpc-url-file", secretFile, "--print-config")
+	_, err = execute(t, "--rpc-url-file", secretFile, "--print-config")
 	require.Error(t, err)
 	require.NotContains(t, err.Error(), "private-password")
 	require.NotContains(t, err.Error(), "rpc.example")
@@ -330,14 +376,14 @@ func TestDefaultStorageAndRecovery(t *testing.T) {
 	require.NoError(t, os.WriteFile(legacy, []byte("legacy"), 0644))
 	_, err := execute(t, "migrate", "up", "--data-dir", root)
 	require.NoError(t, err)
-	path := filepath.Join(root, "orchestrator", "payments.sqlite")
+	path := filepath.Join(root, "payments.sqlite")
 	info, err := os.Stat(filepath.Dir(path))
 	require.NoError(t, err)
-	require.Equal(t, os.FileMode(0700), info.Mode().Perm())
+	require.Equal(t, os.FileMode(0755), info.Mode().Perm(), "existing datadir permissions are preserved")
 	require.FileExists(t, path)
-	config := `{"Network":"arbitrum-one-mainnet","KeystoreFile":"missing-key","KeystorePasswordFile":"missing-password","RPCURLFile":"missing-rpc","RunnerConfig":"missing-runners","BootstrapSecretFile":"missing-bootstrap"}`
-	require.NoError(t, os.WriteFile(filepath.Join(root, "orchestrator", "config.json"), []byte(config), 0600))
-	out, err := execute(t, "redemptions", "--data-dir", root, "--config", "orchestrator/config.json", "--network", "arbitrum-one-mainnet")
+	config := `{"Network":"arbitrum-one-mainnet","DataDir":".","KeystoreFile":"missing-key","KeystorePasswordFile":"missing-password","RPCURLFile":"missing-rpc","RunnerConfig":"missing-runners","BootstrapSecretFile":"missing-bootstrap"}`
+	require.NoError(t, os.WriteFile(filepath.Join(root, "config.json"), []byte(config), 0600))
+	out, err := execute(t, "redemptions", "--config", filepath.Join(root, "config.json"), "--network", "arbitrum-one-mainnet")
 	require.NoError(t, err)
 	require.JSONEq(t, "[]", out)
 	var requests atomic.Int32
@@ -349,7 +395,7 @@ func TestDefaultStorageAndRecovery(t *testing.T) {
 	}))
 	defer rpc.Close()
 	require.NoError(t, os.WriteFile(filepath.Join(root, "new-rpc"), []byte(rpc.URL), 0600))
-	_, err = execute(t, "redemptions", "--data-dir", root, "--config", "orchestrator/config.json", "--retry-transaction", ethcommon.Hash{31: 1}.Hex(), "--submit", "--rpc-url-file", "new-rpc", "--chain-id", "2")
+	_, err = execute(t, "redemptions", "--config", filepath.Join(root, "config.json"), "--retry-transaction", ethcommon.Hash{31: 1}.Hex(), "--submit", "--rpc-url-file", filepath.Join(root, "new-rpc"), "--chain-id", "2")
 	require.ErrorContains(t, err, "chain ID", "explicit RPC file replaces the missing service credential")
 	require.Equal(t, int32(1), requests.Load())
 	data, err := os.ReadFile(legacy)
@@ -361,6 +407,27 @@ func TestDefaultStorageAndRecovery(t *testing.T) {
 	info, err = os.Stat(root)
 	require.NoError(t, err)
 	require.Equal(t, os.FileMode(0755), info.Mode().Perm())
+}
+
+func TestOnchainCommandDefaults(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	for _, name := range []string{"CONFIG", "NETWORK", "DATA_DIR", "REDEEMER_DB"} {
+		t.Setenv("LIVEPEER_ORCHESTRATOR_"+name, "")
+	}
+	root := filepath.Join(home, ".lpData", nodeconfig.Mainnet, "orchestrator")
+	require.NoError(t, os.MkdirAll(root, 0700))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "config.toml"), []byte("Network = 'arbitrum-one-mainnet'\nRedeemerDB = 'custom.sqlite'"), 0600))
+	_, err := execute(t, "migrate", "up")
+	require.NoError(t, err)
+	require.FileExists(t, filepath.Join(root, "custom.sqlite"))
+	output, err := execute(t, "redemptions")
+	require.NoError(t, err)
+	require.JSONEq(t, "[]", output)
+	require.NoDirExists(t, filepath.Join(home, ".lpData", "offchain"))
+	output, err = execute(t, "--print-config")
+	require.NoError(t, err)
+	require.Contains(t, output, `Network = "offchain"`)
 }
 
 func TestDisabledPaymentsDoNotCreateStorage(t *testing.T) {

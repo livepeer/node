@@ -6,12 +6,10 @@ import (
 	"fmt"
 	"io"
 	"math/big"
-	"path/filepath"
 	"strings"
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/livepeer/node/eth"
-	"github.com/livepeer/node/nodeconfig"
 )
 
 type action struct {
@@ -25,7 +23,7 @@ type action struct {
 
 func (p OperatorParams) account() (ethcommon.Address, error) {
 	if p.Account == nil {
-		_, address, err := eth.SelectKeystore(filepath.Join(p.DataDir, "keystore"), nodeconfig.Path(p.DataDir, p.KeystoreFile), nil)
+		_, address, err := eth.SelectKeystore(p.KeystoreDir(), p.KeystoreFile, nil)
 		return address, err
 	}
 	return *p.Account, nil
@@ -52,7 +50,7 @@ func executeActions(ctx context.Context, operator OperatorParams, display Displa
 	}
 	var key *eth.Key
 	if tx.Submit {
-		key, err = eth.OpenAccount(filepath.Join(operator.DataDir, "keystore"), nodeconfig.Path(operator.DataDir, operator.KeystoreFile), operator.KeystorePassword, operator.KeystorePasswordFile, &from)
+		key, err = eth.OpenAccount(operator.KeystoreDir(), operator.KeystoreFile, operator.KeystorePassword, operator.KeystorePasswordFile, &from)
 		if err != nil {
 			return fmt.Errorf("open chain keystore (check --keystore-file or --data-dir and --account, and LIVEPEER_CHAIN_KEYSTORE_PASSWORD or --keystore-password-file): %w", err)
 		}

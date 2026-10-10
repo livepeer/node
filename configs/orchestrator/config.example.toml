@@ -1,3 +1,5 @@
+# DataDir may be set in an explicitly selected config; relative DataDir values use this file's directory.
+# DataDir = "/var/lib/livepeer/orchestrator" # Accounts then use DataDir/keystore.
 Listen = "127.0.0.1:8935"
 MetricsListen = "127.0.0.1:8936"
 ServiceURL = "http://127.0.0.1:8935"
@@ -20,7 +22,7 @@ HealthGrants = []
 # chain. The fee ceiling and PriceMaxAge are optional. See docs/orchestrator.md.
 # Network = "arbitrum-one-mainnet" # Default: offchain.
 # Account = "0xYOUR_ACCOUNT" # Select among shared accounts.
-# RedeemerDB = "orchestrator/payments.sqlite" # Default under the data directory.
+# RedeemerDB = "payments.sqlite" # Default under the data directory.
 # KeystoreFile = "/run/secrets/livepeer-orchestrator-keystore.json" # Override discovery.
 # KeystorePasswordFile = "/run/secrets/livepeer-orchestrator-keystore-password"
 # Both files must be owner-only; the password is read as exact bytes (no newline).

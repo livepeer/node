@@ -15,13 +15,13 @@ import (
 )
 
 type redemptionParams struct {
+	ConfigFile string `name:"config" configfile:"optional-default" basepath:"source" default:"config.toml" boa:"noconfig" descr:"Configuration file; empty disables discovery"`
 	nodeconfig.Settings
-	ConfigFile string          `name:"config" configfile:"optional-default" default:"orchestrator/config.toml" boa:"noconfig"`
-	RedeemerDB string          `file:"true" default:"orchestrator/payments.sqlite" descr:"Existing recipient SQLite database"`
+	RedeemerDB string          `file:"true" default:"payments.sqlite" descr:"Existing recipient SQLite database"`
 	Retry      *ethcommon.Hash `name:"retry-transaction" boa:"noconfig" descr:"Rebroadcast the exact stored bytes for this transaction hash"`
 	Submit     bool            `optional:"true" boa:"noconfig,noenv" descr:"Explicitly authorize rebroadcast"`
 	RPCURL     *url.URL        `name:"rpc-url" secret:"true" optional:"true"`
-	RPCURLFile string          `name:"rpc-url-file" secretfor:"RPCURL"`
+	RPCURLFile string          `basepath:"source" name:"rpc-url-file" secretfor:"RPCURL"`
 	ChainID    *uint64         `min:"1"`
 }
 
@@ -44,7 +44,7 @@ func (p redemptionParams) validateRetry() error {
 
 func redemptionCommand() *cobra.Command {
 	params := new(redemptionParams)
-	return nodeconfig.Command("orchestrator", "offchain", boa.Cmd[redemptionParams]{
+	return nodeconfig.Command("orchestrator", nodeconfig.Mainnet, boa.Cmd[redemptionParams]{
 		Use: "redemptions", Short: "Inspect recipient redemption state or explicitly retry stored transaction bytes",
 		Params: params, Args: cobra.NoArgs,
 		InitFuncCtx: func(ctx *boa.HookContext, p *redemptionParams, _ *cobra.Command) error {
@@ -95,5 +95,5 @@ func redemptionCommand() *cobra.Command {
 			}
 			return json.NewEncoder(cmd.OutOrStdout()).Encode(items)
 		},
-	}).ToCobra()
+	}, &params.ConfigFile).ToCobra()
 }

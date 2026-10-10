@@ -109,21 +109,22 @@ func TestSignerKeystoreSourcesFailBeforeStartup(t *testing.T) {
 func TestSignerLoadsConfigAndSecretFiles(t *testing.T) {
 	for _, ext := range []string{".toml", ".json"} {
 		t.Run(ext, func(t *testing.T) {
-			folder := t.TempDir()
-			rpcFile := filepath.Join(folder, "rpc")
+			t.Chdir(t.TempDir())
 			keyFile, passwordPath := test.WriteKeystore(t, nil)
+			folder := filepath.Dir(keyFile)
+			rpcFile := filepath.Join(folder, "rpc")
 			headersFile := filepath.Join(folder, "headers")
 			webhookFile := filepath.Join(folder, "webhook")
 			require.NoError(t, os.WriteFile(rpcFile, []byte("http://localhost:8545?key=private-token"), 0600))
 			require.NoError(t, os.WriteFile(webhookFile, []byte("http://localhost:9000/auth"), 0600))
 			require.NoError(t, os.WriteFile(headersFile, []byte("Authorization: Bearer private-token, X-User: alice"), 0600))
-			config := fmt.Sprintf(`Listen = "127.0.0.1:9001"
+			config := `Listen = "127.0.0.1:9001"
 MetricsListen = "127.0.0.1:9002"
-KeystoreFile = %q
-KeystorePasswordFile = %q
-RPCURLFile = %q
-AuthWebhookFile = %q
-AuthWebhookHeadersFile = %q
+KeystoreFile = "keystore.json"
+KeystorePasswordFile = "password"
+RPCURLFile = "rpc"
+AuthWebhookFile = "webhook"
+AuthWebhookHeadersFile = "headers"
 ChainID = 42161
 Controller = "0xD8E8328501E9645d16Cf49539efC04f734606ee4"
 ETHUSDFeed = "0x639Fe6ab55C921f74e7fac1ee960C0B6293ba612"
@@ -133,11 +134,11 @@ MaxFixedPrice = "1/2"
 MaxTicketEV = "3000000000000"
 Orchestrators = ["http://localhost:8935"]
 DiscoveryGrants = ["localhost:8935"]
-`, keyFile, passwordPath, rpcFile, webhookFile, headersFile)
+`
 			configFile := filepath.Join(folder, "signer"+ext)
 			test.WriteConfig(t, configFile, config)
 			var p Params
-			cmd := boa.Cmd[Params]{Params: &p, RawArgs: []string{"--config", configFile}, RejectUnknown: true}
+			cmd := boa.Cmd[Params]{Params: &p, RawArgs: []string{"--config", configFile, "--data-dir", t.TempDir()}, RejectUnknown: true}
 			require.NoError(t, cmd.Validate())
 			require.Equal(t, uint64(42161), *p.ChainID)
 			require.Equal(t, "0xD8E8328501E9645d16Cf49539efC04f734606ee4", p.Controller.Hex())
@@ -346,11 +347,17 @@ func TestStorageDefaultsAndChainCheck(t *testing.T) {
 	cmd := Root(io.Discard, io.Discard)
 	cmd.SetArgs([]string{"migrate", "up", "--data-dir", root})
 	require.NoError(t, cmd.Execute())
-	path := filepath.Join(root, "signer", "events.sqlite")
+	path := filepath.Join(root, "events.sqlite")
 	info, err := os.Stat(filepath.Dir(path))
 	require.NoError(t, err)
-	require.Equal(t, os.FileMode(0700), info.Mode().Perm())
+	require.Equal(t, os.FileMode(0755), info.Mode().Perm(), "existing datadir permissions are preserved")
 	require.FileExists(t, path)
+	config := filepath.Join(root, "config.toml")
+	require.NoError(t, os.WriteFile(config, []byte("Network = 'custom'\nDataDir = 'configured'\n"), 0600))
+	cmd = Root(io.Discard, io.Discard)
+	cmd.SetArgs([]string{"migrate", "up", "--config", config})
+	require.NoError(t, cmd.Execute())
+	require.FileExists(t, filepath.Join(root, "configured", "events.sqlite"))
 	rpc := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request struct{ ID any }
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&request))

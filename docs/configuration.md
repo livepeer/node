@@ -6,39 +6,38 @@ Use the [orchestrator](../configs/orchestrator/config.example.toml),
 [signer](../configs/signer/config.example.toml), and
 [chain](../configs/chain/config.example.toml) examples as starting points.
 
-The fixed default data directory is `~/.lpData/arbitrum-one-mainnet` for chain and
-signer, and `~/.lpData/offchain` for orchestrator. The layout shares accounts with
-go-livepeer:
+Configuration precedence is **CLI > environment > config > default**. Select an
+explicit file with `--config FILE` or the component's `CONFIG` environment
+variable; the flag wins. An explicit config can set both `Network` and `DataDir`.
+`--config=""` disables discovery. Empty environment values are ignored.
 
-```text
-keystore/                 # Shared accounts
-lpdb.sqlite3              # Legacy database, left untouched
-chain/config.toml
-signer/config.toml
-signer/events.sqlite      # When Kafka accounting is enabled
-orchestrator/config.toml
-orchestrator/payments.sqlite # When payments are enabled
-```
-
-`--network` defaults to `arbitrum-one-mainnet` for chain and signer, and `offchain`
-for orchestrator. Arbitrum supplies chain, Controller, and ETH/USD feed defaults.
-Custom networks require explicit chain and Controller settings. Signers and paid
-orchestrators also need a feed or fixed conversion rate.
+`Network` defaults to `arbitrum-one-mainnet` for chain, signer, and the
+orchestrator's `redemptions` and `migrate` commands. The orchestrator service
+defaults to `offchain`. Arbitrum supplies chain, Controller, and ETH/USD feed
+defaults. Custom networks require explicit chain and Controller settings.
+Signers and paid orchestrators also need a feed or fixed conversion rate.
 Paid orchestrators must select an on-chain network. RPC chain IDs are checked.
 
-Boa selects `DataDir` before reading TOML, using CLI > environment > default.
-A relative `--data-dir` resolves against the original working directory. Relative
-file paths from flags, environment variables, and TOML then resolve from DataDir;
-absolute paths and the working directory stay unchanged. Empty environment values
-are ignored. `Network` may come from TOML, but never relocates storage. Use
-`--data-dir` to choose another root, including sharing the mainnet keystore with
-an orchestrator. `DataDir` cannot be set in TOML.
+By default, component config and storage use `~/.lpData/<network>/<component>`;
+accounts use the shared `~/.lpData/<network>/keystore`. Network names must be
+nonempty directory names, excluding `.` and `..`.
 
-By default, each app looks for `<data-dir>/<component>/config.toml`. A missing
-file matching that default is skipped; other missing paths and invalid files
-fail. `--config FILE` or the component's `CONFIG` environment variable selects
-a file; `--config=""` disables discovery. CLI and environment values take
-precedence over TOML.
+A supplied `DataDir` is used directly, even when it equals the calculated default.
+Discovery looks for `config.toml` there; database defaults are `payments.sqlite`
+(orchestrator) and `events.sqlite` (signer). Accounts use `<DataDir>/keystore`.
+
+Explicit configs determine the effective network before default directories are
+calculated. Without `--config`, each command loads `config.toml` from its data
+directory if present. That file can't set `DataDir`, and its `Network` must match
+the network selected by flag, environment or default. For example, a paid
+orchestrator using discovery needs `--network arbitrum-one-mainnet`.
+Missing discovered configs are skipped; explicit configs must exist, even when
+their path matches the discovery path.
+
+Relative config and input paths from CLI/environment use the working directory.
+Input paths in config files use that file's directory. Relative database paths
+use the effective datadir. Absolute paths stay unchanged. These rules also apply
+to account creation, migrations, and recovery commands.
 
 ## Names and environment variables
 
@@ -98,9 +97,11 @@ valid URL without a trailing newline.
 
 ## Ethereum keystores
 
-All three apps discover encrypted geth accounts in `<data-dir>/keystore/`.
+All three apps discover encrypted geth accounts in the shared network keystore
+when `DataDir` is absent, or `<DataDir>/keystore/` when it is supplied.
 A sole account is selected automatically. Use `--account` (`Account` in TOML) to
-select among accounts, or `--keystore-file` to select a file explicitly.
+select among accounts, or `--keystore-file` to select a file directly and bypass
+discovery.
 
 | App | Keystore TOML key | Password-file TOML key |
 | --- | --- | --- |
@@ -145,7 +146,8 @@ bin/livepeer chain account create \
 
 Creation requires no RPC or account address. It encrypts a freshly generated key
 with geth's standard scrypt settings and writes the keystore with `0600`
-permissions in `<data-dir>/keystore/`. An optional `--keystore-file` chooses a
+permissions in the shared network keystore, or `<DataDir>/keystore/` when
+`DataDir` is supplied. An optional `--keystore-file` chooses a
 new file in an existing parent directory; existing paths are never overwritten. The
 command prints the new public address; add `--output json` for scripts. The
 password can also come from `LIVEPEER_CHAIN_KEYSTORE_PASSWORD`.

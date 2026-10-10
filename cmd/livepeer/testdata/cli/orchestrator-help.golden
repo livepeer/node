@@ -11,9 +11,9 @@ Available Commands:
   redemptions Inspect recipient redemption state or explicitly retry stored transaction bytes
 
 Flags:
+  -c, --config string                     Configuration file; empty disables discovery (env: LIVEPEER_ORCHESTRATOR_CONFIG) (default "config.toml")
   -n, --network string                    Network name (custom networks require explicit chain settings) (env: LIVEPEER_ORCHESTRATOR_NETWORK) (default "offchain")
-  -d, --data-dir string                   Data directory; relative file paths start here (env: LIVEPEER_ORCHESTRATOR_DATA_DIR) (default "$HOME/.lpData/offchain")
-  -c, --config string                     Configuration file; empty disables discovery (env: LIVEPEER_ORCHESTRATOR_CONFIG) (default "orchestrator/config.toml")
+  -d, --data-dir string                   Component data directory; defaults to ~/.lpData/<network>/<component> (env: LIVEPEER_ORCHESTRATOR_DATA_DIR) (default "$HOME/.lpData/offchain/orchestrator")
   -a, --account string                    Keystore account address (env: LIVEPEER_ORCHESTRATOR_ACCOUNT)
   -e, --eth-usd-feed string               ETH/USD oracle address, alternative to a fixed wei-per-usd rate (env: LIVEPEER_ORCHESTRATOR_ETH_USD_FEED)
   -p, --price-max-age duration            Maximum age of the oracle observation (env: LIVEPEER_ORCHESTRATOR_PRICE_MAX_AGE) (default 2h0m0s)

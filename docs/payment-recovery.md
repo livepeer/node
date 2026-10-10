@@ -78,15 +78,15 @@ transaction if it is absent or needs rebroadcast:
 
 ```sh
 livepeer orchestrator redemptions \
-  --network arbitrum-one-mainnet \
   --retry-transaction 0xTRANSACTION_HASH --submit \
   --rpc-url-file /run/secrets/livepeer-payment-rpc-url \
   --chain-id 42161
 ```
 
-Recovery uses the same configuration and database defaults as the service;
-use the service's `--data-dir` if it overrides the default. `--redeemer-db` selects
-a different database. Recovery reads `RPCURLFile` and `ChainID`
+Recovery and migration commands default to `arbitrum-one-mainnet`, using
+`~/.lpData/arbitrum-one-mainnet/orchestrator/`. For other networks or directories,
+pass the same `--config`, or `--network` and `--data-dir`, as the service.
+`--redeemer-db` selects a different database. Recovery reads `RPCURLFile` and `ChainID`
 for retries; `--rpc-url-file` and `--chain-id` override them. It does not unlock
 the account or read unrelated service credentials. RPC endpoints use normal
 system TLS trust. This operation uses the exact saved signed bytes, nonce and

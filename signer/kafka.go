@@ -54,9 +54,9 @@ type KafkaConfig struct {
 	AuthMethod     string      `name:"auth-method" default:"scram-sha-512" alts:"plain,scram-sha-256,scram-sha-512" strict:"true" descr:"SASL authentication method when credentials are supplied"`
 	Username       string      `name:"username" optional:"true" secret:"true"`
 	Password       string      `name:"password" optional:"true" secret:"true"`
-	UsernameFile   string      `name:"username-file" secretfor:"Username"`
-	PasswordFile   string      `name:"password-file" secretfor:"Password"`
-	OutboxDB       string      `name:"outbox-db" file:"optional" default:"signer/events.sqlite" descr:"Durable signer event SQLite path"`
+	UsernameFile   string      `basepath:"source" name:"username-file" secretfor:"Username"`
+	PasswordFile   string      `basepath:"source" name:"password-file" secretfor:"Password"`
+	OutboxDB       string      `name:"outbox-db" file:"optional" default:"events.sqlite" descr:"Durable signer event SQLite path"`
 	OutboxMaxBytes int64       `name:"outbox-max-bytes" default:"268435456" min:"1" descr:"Maximum pending event payload bytes"`
 }
 

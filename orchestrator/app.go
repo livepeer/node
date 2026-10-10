@@ -12,7 +12,6 @@ import (
 	"net/netip"
 	"net/url"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -32,8 +31,8 @@ import (
 )
 
 type Params struct {
+	ConfigFile string `name:"config" configfile:"optional-default" basepath:"source" default:"config.toml" boa:"noconfig" descr:"Configuration file; empty disables discovery"`
 	nodeconfig.Settings
-	ConfigFile           string             `name:"config" configfile:"optional-default" default:"orchestrator/config.toml" boa:"noconfig" descr:"Configuration file; empty disables discovery"`
 	Account              *ethcommon.Address `descr:"Keystore account address"`
 	ETHUSDFeed           *ethcommon.Address `name:"eth-usd-feed" descr:"ETH/USD oracle address, alternative to a fixed wei-per-usd rate"`
 	PriceMaxAge          time.Duration      `default:"2h" descr:"Maximum age of the oracle observation"`
@@ -43,14 +42,14 @@ type Params struct {
 	RunnerServiceURL     boa.Text[*url.URL] `optional:"true" descr:"Runner-facing base URL for callbacks and trickle; defaults to service-url"`
 	ProxyURLTemplate     string             `optional:"true" descr:"Generated proxy URL with {proxy} in a hostname label or final path segment"`
 	BootstrapSecret      string             `secret:"true" optional:"true" descr:"Dynamic runner bootstrap credential"`
-	BootstrapSecretFile  string             `secretfor:"BootstrapSecret" descr:"File containing runner bootstrap credential"`
-	RunnerConfig         string             `optional:"true" file:"true" descr:"Static runner TOML path"`
+	BootstrapSecretFile  string             `basepath:"source" secretfor:"BootstrapSecret" descr:"File containing runner bootstrap credential"`
+	RunnerConfig         string             `basepath:"source" optional:"true" file:"true" descr:"Static runner TOML path"`
 	RedeemerDB           string             `optional:"true" file:"optional"`
-	KeystoreFile         string             `optional:"true" descr:"Encrypted geth redemption account JSON file"`
+	KeystoreFile         string             `basepath:"source" optional:"true" descr:"Encrypted geth redemption account JSON file"`
 	KeystorePassword     *string            `secret:"true" optional:"true" descr:"Keystore decryption password"`
-	KeystorePasswordFile string             `secretfor:"KeystorePassword" descr:"Owner-only file containing the exact keystore password bytes"`
+	KeystorePasswordFile string             `basepath:"source" secretfor:"KeystorePassword" descr:"Owner-only file containing the exact keystore password bytes"`
 	RPCURL               *url.URL           `name:"rpc-url" secret:"true" optional:"true"`
-	RPCURLFile           string             `name:"rpc-url-file" secretfor:"RPCURL"`
+	RPCURLFile           string             `basepath:"source" name:"rpc-url-file" secretfor:"RPCURL"`
 	ChainID              *uint64            `min:"1"`
 	RedeemerMaxFeePerGas *uint256.Int       `descr:"Optional maximum redemption fee in wei per gas"`
 	Controller           *ethcommon.Address `name:"controller-address"`
@@ -66,7 +65,7 @@ type Params struct {
 }
 
 func (p Params) paymentsRequested() bool {
-	return p.Account != nil || p.KeystoreFile != "" || p.KeystorePassword != nil || p.KeystorePasswordFile != "" || p.RedeemerDB != "" || p.RPCURL != nil || p.ChainID != nil || p.Controller != nil || p.WeiPerUSD != nil || p.ETHUSDFeed != nil || p.TicketFaceValue != nil || p.TicketWinProb != nil || p.RedeemerMaxFeePerGas != nil
+	return p.Account != nil || p.KeystoreFile != "" || p.KeystorePassword != nil || p.KeystorePasswordFile != "" || p.RedeemerDB != "" || p.RPCURL != nil || p.RPCURLFile != "" || p.ChainID != nil || p.Controller != nil || p.WeiPerUSD != nil || p.ETHUSDFeed != nil || p.TicketFaceValue != nil || p.TicketWinProb != nil || p.RedeemerMaxFeePerGas != nil
 }
 
 func (p Params) Validate() error {
@@ -142,7 +141,7 @@ func Root(out, errOut io.Writer) *cobra.Command {
 	cmd := nodeconfig.Command("orchestrator", "offchain", boa.Cmd[Params]{
 		Use: "livepeer-orchestrator", Short: "Standalone Live Runner orchestrator", Version: version.String(),
 		Params: params, RejectUnknown: true,
-		PreValidateFuncCtx: func(ctx *boa.HookContext, p *Params, _ *cobra.Command, _ []string) error {
+		PostConfigFuncCtx: func(ctx *boa.HookContext, p *Params, _ *cobra.Command, _ []string) error {
 			nodeconfig.Default(ctx, &p.ServiceURL, boa.Text[*url.URL]{Value: &url.URL{Scheme: "http", Host: p.Listen.String()}})
 			if p.paymentsRequested() {
 				if p.Network == nodeconfig.Mainnet {
@@ -152,7 +151,7 @@ func Root(out, errOut io.Writer) *cobra.Command {
 						nodeconfig.Default(ctx, &p.ETHUSDFeed, new(nodeconfig.ETHUSDFeed))
 					}
 				}
-				nodeconfig.Default(ctx, &p.RedeemerDB, "orchestrator/payments.sqlite")
+				nodeconfig.Default(ctx, &p.RedeemerDB, "payments.sqlite")
 			}
 			return nil
 		},
@@ -166,18 +165,18 @@ func Root(out, errOut io.Writer) *cobra.Command {
 			}
 			return Serve(cmd.Context(), *p, cmd.ErrOrStderr())
 		},
-	}).ToCobra()
+	}, &params.ConfigFile).ToCobra()
 	cmd.SetOut(out)
 	cmd.SetErr(errOut)
 	cmd.SilenceUsage = true
 	cmd.SilenceErrors = true
 	type storageParams struct {
-		DataDir    string `persistent:"true" basedir:"true" descr:"Data directory; relative file paths start here"`
-		ConfigFile string `persistent:"true" name:"config" configfile:"optional-default" default:"orchestrator/config.toml" boa:"noconfig"`
-		RedeemerDB string `persistent:"true" file:"optional" default:"orchestrator/payments.sqlite"`
+		ConfigFile string `persistent:"true" name:"config" configfile:"optional-default" basepath:"source" default:"config.toml" boa:"noconfig"`
+		nodeconfig.PersistentSettings
+		RedeemerDB string `persistent:"true" file:"optional" default:"payments.sqlite"`
 	}
 	storage := new(storageParams)
-	migrate := migrations.Command(nodeconfig.Command("orchestrator", "offchain", boa.Cmd[storageParams]{Params: storage}), &storage.RedeemerDB, redeemerMigrationFiles, openRedeemerDB)
+	migrate := migrations.Command(nodeconfig.Command("orchestrator", nodeconfig.Mainnet, boa.Cmd[storageParams]{Params: storage}, &storage.ConfigFile), &storage.RedeemerDB, redeemerMigrationFiles, openRedeemerDB)
 	cmd.AddCommand(redemptionCommand(), migrate)
 	cmd.InitDefaultCompletionCmd()
 	return cmd
@@ -254,7 +253,7 @@ func Serve(parent context.Context, p Params, logOut io.Writer) (result error) {
 	var paymentChainID *big.Int
 	if p.paymentsRequested() {
 		registry.SetWeiPerUSD(p.WeiPerUSD)
-		redeemerKey, err = eth.OpenAccount(filepath.Join(p.DataDir, "keystore"), nodeconfig.Path(p.DataDir, p.KeystoreFile), p.KeystorePassword, p.KeystorePasswordFile, p.Account)
+		redeemerKey, err = eth.OpenAccount(p.KeystoreDir(), p.KeystoreFile, p.KeystorePassword, p.KeystorePasswordFile, p.Account)
 		if err != nil {
 			return fmt.Errorf("open payment keystore (check --keystore-file or --data-dir and --account, and LIVEPEER_ORCHESTRATOR_KEYSTORE_PASSWORD or --keystore-password-file): %w", err)
 		}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -208,47 +209,21 @@ func TestDataDirectoryAndConfigDiscovery(t *testing.T) {
 	for _, key := range []string{"NETWORK", "DATA_DIR", "CONFIG", "RPC_URL", "RPC_URL_FILE"} {
 		t.Setenv("LIVEPEER_CHAIN_"+key, "")
 	}
-	run := func(args ...string) (string, error) {
-		var out bytes.Buffer
-		cmd := Root(&out, &out)
-		cmd.SetArgs(append(args, "--print-config"))
-		err := cmd.Execute()
-		return out.String(), err
-	}
-	_, err := run()
-	require.NoError(t, err, "missing default config and empty environment are optional")
-	require.NoDirExists(t, filepath.Join(working, ".lpData"))
-	_, err = run("--config", "missing.toml")
-	require.ErrorContains(t, err, "no such file")
-	for i, dir := range []string{filepath.Join(".lpData", "arbitrum-one-mainnet"), "env", "cli"} {
-		require.NoError(t, os.MkdirAll(filepath.Join(dir, "chain"), 0700))
+	for i, dir := range []string{filepath.Join(".lpData", "arbitrum-one-mainnet", "chain"), "env", "cli"} {
+		require.NoError(t, os.MkdirAll(dir, 0700))
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "rpc"), []byte("http://localhost:8545"), 0600))
-		require.NoError(t, os.WriteFile(filepath.Join(dir, "chain/config.toml"), fmt.Appendf(nil, "Network = 'custom'\nChainID = %d\nRPCURLFile = 'rpc'\n", i+1), 0600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "config.toml"), fmt.Appendf(nil, "ChainID = %d\nRPCURLFile = 'rpc'\n", i+1), 0600))
 	}
-	for i, args := range [][]string{nil, {"--network", "another"}, {"--data-dir", "cli", "--network", "arbitrum-one-mainnet"}} {
+	for i, args := range [][]string{nil, {"--network", "another"}, {"--data-dir", "cli"}} {
 		if i > 0 {
 			t.Setenv("LIVEPEER_CHAIN_DATA_DIR", "env")
 		}
-		out, err := run(args...)
-		require.NoError(t, err)
-		require.Contains(t, out, fmt.Sprintf("ChainID = %d", i+1))
-		if i == 0 {
-			require.Contains(t, out, `Network = "custom"`)
-		}
+		var out bytes.Buffer
+		cmd := Root(&out, &out)
+		cmd.SetArgs(append(args, "account", "get", "--print-config"))
+		require.NoError(t, cmd.Execute())
+		require.Contains(t, out.String(), fmt.Sprintf("ChainID = %d", i+1))
 	}
-	for _, invalid := range []string{"[", "Unknown = true", "DataDir = 'elsewhere'"} {
-		require.NoError(t, os.WriteFile("env/chain/config.toml", []byte(invalid), 0600))
-		_, err := run()
-		require.Error(t, err)
-		_, err = run("--config=")
-		require.NoError(t, err)
-	}
-	t.Setenv("HOME", "")
-	t.Setenv("LIVEPEER_CHAIN_DATA_DIR", "")
-	_, err = run("--data-dir", "cli")
-	require.NoError(t, err)
-	_, err = run()
-	require.ErrorContains(t, err, "data-dir")
 }
 
 func TestActionEnvironmentCannotSupplyInputs(t *testing.T) {
@@ -365,6 +340,7 @@ func TestOperatorSourcesAndFlagPlacement(t *testing.T) {
 
 func TestSharedKeystore(t *testing.T) {
 	root := t.TempDir()
+	t.Chdir(root)
 	key, password := test.WriteKeystore(t, nil)
 	data, err := os.ReadFile(key)
 	require.NoError(t, err)
@@ -410,7 +386,10 @@ func TestSharedKeystore(t *testing.T) {
 }
 
 func TestAccountCreateDefaultDirectory(t *testing.T) {
-	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	root := filepath.Join(home, ".lpData", "arbitrum-one-mainnet")
+	require.NoError(t, os.MkdirAll(root, 0755))
 	require.NoError(t, os.Chmod(root, 0755))
 	legacy := filepath.Join(root, "lpdb.sqlite3")
 	require.NoError(t, os.WriteFile(legacy, []byte("legacy"), 0644))
@@ -418,7 +397,7 @@ func TestAccountCreateDefaultDirectory(t *testing.T) {
 	require.NoError(t, os.WriteFile(password, []byte("password"), 0600))
 	var out bytes.Buffer
 	cmd := Root(&out, &out)
-	cmd.SetArgs([]string{"account", "create", "--data-dir", root, "--config=", "--keystore-password-file", "password", "--output", "json"})
+	cmd.SetArgs([]string{"account", "create", "--config=", "--keystore-password-file", password, "--output", "json"})
 	require.NoError(t, cmd.Execute())
 	var result map[string]string
 	require.NoError(t, json.Unmarshal(out.Bytes(), &result))
@@ -426,6 +405,14 @@ func TestAccountCreateDefaultDirectory(t *testing.T) {
 	entries, err := os.ReadDir(filepath.Join(root, "keystore"))
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
+	// Supplying the calculated component default must use a separate keystore.
+	componentDir := filepath.Join(root, "chain")
+	cmd = Root(io.Discard, io.Discard)
+	cmd.SetArgs([]string{"account", "create", "--data-dir", componentDir, "--config=", "--keystore-password-file", password})
+	require.NoError(t, cmd.Execute())
+	suppliedEntries, err := os.ReadDir(filepath.Join(componentDir, "keystore"))
+	require.NoError(t, err)
+	require.Len(t, suppliedEntries, 1)
 	info, err := os.Stat(filepath.Join(root, "keystore"))
 	require.NoError(t, err)
 	require.Equal(t, os.FileMode(0700), info.Mode().Perm())

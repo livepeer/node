@@ -25,9 +25,9 @@ Available Commands:
 Flags:
       --account string                  Account address to inspect or use for transactions; must match the keystore account when signing (env: LIVEPEER_CHAIN_ACCOUNT)
       --chain-id uint                   Optional expected RPC chain ID (env: LIVEPEER_CHAIN_CHAIN_ID)
-  -c, --config string                   Configuration file; empty disables discovery (env: LIVEPEER_CHAIN_CONFIG) (default "chain/config.toml")
+  -c, --config string                   Configuration file; empty disables discovery (env: LIVEPEER_CHAIN_CONFIG) (default "config.toml")
       --controller-address string       Livepeer Controller address (env: LIVEPEER_CHAIN_CONTROLLER_ADDRESS)
-      --data-dir string                 Data directory; relative file paths start here (env: LIVEPEER_CHAIN_DATA_DIR) (default "$HOME/.lpData/arbitrum-one-mainnet")
+      --data-dir string                 Component data directory; defaults to ~/.lpData/<network>/<component> (env: LIVEPEER_CHAIN_DATA_DIR) (default "$HOME/.lpData/arbitrum-one-mainnet/chain")
   -k, --keystore-file string            Encrypted geth account JSON file (env: LIVEPEER_CHAIN_KEYSTORE_FILE)
       --keystore-password-file string   Owner-only file containing the exact keystore password bytes (env: LIVEPEER_CHAIN_KEYSTORE_PASSWORD_FILE)
       --max-fee-per-gas string          Ceiling on the calculated transaction fee cap in wei per gas (env: LIVEPEER_CHAIN_MAX_FEE_PER_GAS)
