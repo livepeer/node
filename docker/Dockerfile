@@ -4,6 +4,7 @@ ENV CGO_ENABLED=0 GOTOOLCHAIN=local GOENV=off GOWORK=off \
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN sha256sum go.mod go.sum > /tmp/modules.sha256 && \
+    test "$(go env GOVERSION)" = "go$(awk '$1 == "go" {print $2}' go.mod)" && \
     go mod download && go mod verify && \
     sha256sum -c /tmp/modules.sha256
 COPY . .
