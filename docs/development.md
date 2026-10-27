@@ -31,6 +31,15 @@ The [Release workflow](../.github/workflows/release.yml) on GitHub publishes
 bundles after CI and packaging tests pass. Successful publication also starts
 Docker image publishing.
 
+If **Create Release** creates the tag but fails to start **Release**, run:
+
+```sh
+gh workflow run release.yml --repo livepeer/node --ref vMAJOR.MINOR.PATCH -f publish=true
+```
+
+If **Release** or **Publish Docker** fails, choose **Re-run failed jobs** before
+its image artifacts expire.
+
 ## Checks
 
 ```sh
