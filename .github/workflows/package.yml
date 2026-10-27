@@ -3,9 +3,6 @@ name: Package
 on:
   workflow_call:
     inputs:
-      commit:
-        required: true
-        type: string
       release:
         type: boolean
         default: false
@@ -48,13 +45,13 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.commit }}
+          ref: ${{ github.sha }}
           persist-credentials: false
       - name: Release metadata
         id: metadata
         env:
           RELEASE: ${{ inputs.release }}
-          COMMIT: ${{ inputs.commit }}
+          COMMIT: ${{ github.sha }}
         run: |
           test "$(git rev-parse HEAD)" = "$COMMIT"
           release=$(git show HEAD:VERSION)
@@ -81,7 +78,7 @@ jobs:
           platforms: linux/${{ matrix.arch }}
           build-args: |
             VERSION=${{ steps.metadata.outputs.version }}
-            COMMIT=${{ inputs.commit }}
+            COMMIT=${{ github.sha }}
           outputs: type=local,dest=${{ runner.temp }}/bin
           cache-from: type=gha,scope=docker-${{ matrix.arch }}
       - name: Verify static binaries
@@ -100,7 +97,7 @@ jobs:
         if: env.BUILD_RELEASE == 'true'
         env:
           RELEASE_VERSION: ${{ steps.metadata.outputs.version }}
-          RELEASE_COMMIT: ${{ inputs.commit }}
+          RELEASE_COMMIT: ${{ github.sha }}
           RELEASE_GO_VERSION: ${{ steps.metadata.outputs.go }}
           SOURCE_DATE_EPOCH: ${{ steps.metadata.outputs.epoch }}
           BUNDLE: livepeer-${{ steps.metadata.outputs.version }}-linux-${{ matrix.arch }}
@@ -123,7 +120,7 @@ jobs:
         if: env.BUILD_RELEASE == 'true'
         env:
           RELEASE_VERSION: ${{ steps.metadata.outputs.version }}
-          RELEASE_COMMIT: ${{ inputs.commit }}
+          RELEASE_COMMIT: ${{ github.sha }}
           BUNDLE: livepeer-${{ steps.metadata.outputs.version }}-linux-${{ matrix.arch }}
         run: |
           docker run --rm --network none --read-only --cap-drop=ALL \
@@ -142,18 +139,18 @@ jobs:
           # Matching inputs reuse the binaries stage compiled above.
           build-args: |
             VERSION=${{ steps.metadata.outputs.version }}
-            COMMIT=${{ inputs.commit }}
+            COMMIT=${{ github.sha }}
           load: true
           tags: livepeer:test-${{ matrix.arch }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.revision=${{ inputs.commit }}
+            org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.version=${{ steps.metadata.outputs.version }}
           cache-to: type=gha,scope=docker-${{ matrix.arch }},mode=max
       - name: Smoke test image
         env:
           IMAGE_VERSION: ${{ steps.metadata.outputs.version }}
-          IMAGE_COMMIT: ${{ inputs.commit }}
+          IMAGE_COMMIT: ${{ github.sha }}
           IMAGE: livepeer:test-${{ matrix.arch }}
         run: sh .github/scripts/docker-smoke.sh "$IMAGE" "$IMAGE_VERSION" "$IMAGE_COMMIT"
       - name: Save tested release bundle

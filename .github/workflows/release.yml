@@ -41,7 +41,6 @@ jobs:
     needs: authorize
     uses: ./.github/workflows/package.yml
     with:
-      commit: ${{ github.sha }}
       release: true
       export_images: true
 
