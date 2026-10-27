@@ -193,7 +193,7 @@ func (f *recoveryRPC) serve(w http.ResponseWriter, r *http.Request) {
 		if f.loseNextResponse {
 			f.loseNextResponse = false
 			f.mu.Unlock()
-			http.Error(w, "lost response", 503)
+			http.Error(w, "lost response", http.StatusServiceUnavailable)
 			return
 		}
 	case "eth_getTransactionReceipt":

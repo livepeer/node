@@ -191,6 +191,7 @@ func TestTransactionManager_Replace(t *testing.T) {
 	expErr = errors.New("SendTx error")
 	eth.err["SendTransaction"] = expErr
 	tx, err = tm.replace(stubTx)
+	assert.NotNil(tx)
 	assert.EqualError(err, expErr.Error())
 	eth.err["SendTransaction"] = nil
 
