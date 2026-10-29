@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"log/slog"
 	"math/big"
 	"sync"
 	"time"
@@ -253,6 +254,7 @@ func (e *PaymentEngine) Receive(ctx context.Context, runner, manifest, paymentHe
 		return ethcommon.Address{}, nil, paymentObservation{err, "rejected"}
 	}
 	if funds.Reserve.Cmp(params.FaceValue) < 0 || funds.Deposit.Cmp(params.FaceValue) < 0 {
+		slog.WarnContext(ctx, "orchestrator payer funds below ticket face value", "event", "payment_receive", "operation", "receive", "outcome", "rejected", "payer", payer, "deposit", funds.Deposit, "reserve", funds.Reserve, "face_value", params.FaceValue)
 		return ethcommon.Address{}, nil, pm.ErrPayerUnavailable
 	}
 	e.mu.Lock()
