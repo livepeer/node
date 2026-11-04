@@ -40,24 +40,9 @@ images are retained as workflow artifacts for one day.
 
 ## PR Docker images
 
-Same-repository PRs targeting any branch build their exact head commit for
-Linux amd64 and arm64. After packaging and Docker smoke tests pass, the tested
-images are published to both `ghcr.io/livepeer/node` and `docker.io/livepeer/node`.
-Go CI runs separately and does not gate PR image publication.
-
-Each build publishes `pr-<number>-sha-<full-head-sha>`. The moving tag
-`pr-<number>` is updated only after both native architectures have been pulled
-and verified from both registries, and the PR is still open at the same head.
-Pull the latest verified image or a specific build:
-
-```sh
-docker pull ghcr.io/livepeer/node:pr-123
-head_sha=$(gh pr view 123 --repo livepeer/node --json headRefOid --jq .headRefOid)
-docker pull "docker.io/livepeer/node:pr-123-sha-$head_sha"
-```
-
-Fork PRs skip packaging and publication. Dependabot PRs build and smoke-test
-images without publishing them.
+Same-repository PRs (except Dependabot) publish Linux amd64/arm64 images to
+`ghcr.io/livepeer/node` and `docker.io/livepeer/node`: `pr-<number>`
+(moving) and `pr-<number>-sha-<full-head-sha>`.
 
 ## Checks
 
