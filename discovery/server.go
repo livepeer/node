@@ -54,9 +54,6 @@ func NewServer(p Params, logger *slog.Logger) (*Server, error) {
 	if !p.Listen.IsValid() {
 		return nil, errors.New("--listen (or LIVEPEER_DISCOVERY_LISTEN) must be an IP:port address")
 	}
-	if !p.MetricsListen.IsValid() || !p.MetricsListen.Addr().IsLoopback() {
-		return nil, errors.New("--metrics-listen (or LIVEPEER_DISCOVERY_METRICS_LISTEN) must bind a loopback IP:port address")
-	}
 	if p.RefreshInterval <= 0 {
 		return nil, errors.New("--refresh-interval must be positive")
 	}

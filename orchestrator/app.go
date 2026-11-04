@@ -9,7 +9,6 @@ import (
 	"math/big"
 	"net"
 	"net/http"
-	"net/netip"
 	"net/url"
 	"os/signal"
 	"strings"
@@ -38,8 +37,8 @@ type Params struct {
 	OrchestratorAddress       *ethcommon.Address `descr:"Registered orchestrator address receiving ticket payments; defaults to the keystore account"`
 	ETHUSDFeed                *ethcommon.Address `name:"eth-usd-feed" descr:"ETH/USD oracle address, alternative to a fixed wei-per-usd rate"`
 	PriceMaxAge               time.Duration      `default:"2h" descr:"Maximum age of the oracle observation"`
-	Listen                    netip.AddrPort     `default:"127.0.0.1:8935" descr:"Public HTTP listener"`
-	MetricsListen             netip.AddrPort     `default:"127.0.0.1:8936" descr:"Loopback metrics listener"`
+	Listen                    boa.HTTPBind       `default:"127.0.0.1:8935" descr:"Public HTTP listener"`
+	MetricsListen             boa.HTTPBind       `default:"127.0.0.1:8936" descr:"Metrics listener"`
 	ServiceURL                boa.Text[*url.URL] `optional:"true" descr:"Public orchestrator base URL; defaults to http://listen"`
 	RunnerServiceURL          boa.Text[*url.URL] `optional:"true" descr:"Runner-facing base URL for callbacks and trickle; defaults to service-url"`
 	ProxyURLTemplate          string             `optional:"true" descr:"Generated proxy URL with {proxy} in a hostname label or final path segment"`
@@ -117,9 +116,6 @@ func (p Params) Validate() error {
 	}
 	if !p.Listen.IsValid() {
 		return errors.New("--listen (or LIVEPEER_ORCHESTRATOR_LISTEN) must be an IP:port address, e.g. 127.0.0.1:8935 or [::1]:8935")
-	}
-	if !p.MetricsListen.Addr().IsLoopback() {
-		return errors.New("--metrics-listen (or LIVEPEER_ORCHESTRATOR_METRICS_LISTEN) must bind a loopback IP:port address, e.g. 127.0.0.1:8936 or [::1]:8936")
 	}
 	for _, endpoint := range []struct {
 		name string
@@ -333,7 +329,7 @@ func Serve(parent context.Context, p Params, logOut io.Writer) (result error) {
 	defer mainListener.Close()
 	metricsListener, err := net.Listen("tcp", p.MetricsListen.String())
 	if err != nil {
-		return fmt.Errorf("cannot start orchestrator metrics listener on %s; choose an available loopback address with --metrics-listen or LIVEPEER_ORCHESTRATOR_METRICS_LISTEN: %w", p.MetricsListen, err)
+		return fmt.Errorf("cannot start orchestrator metrics listener on %s; choose an available address with --metrics-listen or LIVEPEER_ORCHESTRATOR_METRICS_LISTEN: %w", p.MetricsListen, err)
 	}
 	defer metricsListener.Close()
 	metricsMux := http.NewServeMux()
