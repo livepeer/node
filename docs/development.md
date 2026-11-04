@@ -45,10 +45,10 @@ Linux amd64 and arm64. After packaging and Docker smoke tests pass, the tested
 images are published to both `ghcr.io/livepeer/node` and `docker.io/livepeer/node`.
 Go CI runs separately and does not gate PR image publication.
 
-Each build publishes `pr-<number>-sha-<full-head-sha>`. Once both architectures
-have been pulled and verified from both registries, `pr-<number>` is updated
-if the PR is still open with the same head commit. Pull the latest verified
-image or a specific build:
+Each build publishes `pr-<number>-sha-<full-head-sha>`. The moving tag
+`pr-<number>` is updated only after both native architectures have been pulled
+and verified from both registries, and the PR is still open at the same head.
+Pull the latest verified image or a specific build:
 
 ```sh
 docker pull ghcr.io/livepeer/node:pr-123
@@ -57,8 +57,7 @@ docker pull "docker.io/livepeer/node:pr-123-sha-$head_sha"
 ```
 
 Fork PRs skip packaging and publication. Dependabot PRs build and smoke-test
-images without publishing them. Manual Build runs produce snapshot bundles
-without publishing images.
+images without publishing them.
 
 ## Checks
 
