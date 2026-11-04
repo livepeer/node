@@ -115,6 +115,9 @@ func (p Params) Validate() error {
 	if _, err := p.payerPolicy(); err != nil {
 		return fmt.Errorf("invalid payer limits (--max-ticket-ev, --max-batch-ev, --deposit-multiplier): %w", err)
 	}
+	if !p.Listen.IsValid() || !p.MetricsListen.IsValid() {
+		return errors.New("--listen and --metrics-listen require IP:port addresses")
+	}
 	if err := destination.ValidateURL(p.RPCURL); err != nil {
 		return fmt.Errorf("invalid RPC URL (LIVEPEER_SIGNER_RPC_URL or --rpc-url-file): %w", err)
 	}

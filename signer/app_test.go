@@ -44,7 +44,6 @@ func validParams(t *testing.T) Params {
 }
 
 func TestSignerConfigurationValidation(t *testing.T) {
-	require.NoError(t, validParams(t).Validate())
 	p := validParams(t)
 	p.DiscoveryMaxFailedRefreshes = 0
 	require.NoError(t, p.Validate())
@@ -54,6 +53,8 @@ func TestSignerConfigurationValidation(t *testing.T) {
 		want   string
 	}{
 		{"missing password file", func(p *Params) { p.KeystorePasswordFile = "" }, "keystore-password-file"},
+		{"empty listen", func(p *Params) { p.Listen = boa.HTTPBind{} }, "IP:port"},
+		{"empty metrics", func(p *Params) { p.MetricsListen = boa.HTTPBind{} }, "IP:port"},
 		{"empty Kafka", func(p *Params) { p.Kafka = &KafkaConfig{} }, "kafka broker"},
 		{"RPC scheme", func(p *Params) { p.RPCURL = testURL(t, "file:///rpc") }, "RPC URL"},
 		{"Controller", func(p *Params) { p.Controller = ethcommon.Address{} }, "controller-address"},

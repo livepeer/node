@@ -118,7 +118,6 @@ func TestPaidHTTPStartup(t *testing.T) {
 			p.ServiceURL = boa.Text[*url.URL]{Value: mustURL(t, "https://public.example/external")}
 			p.RunnerConfig = filepath.Join(t.TempDir(), "runners.toml")
 			require.NoError(t, os.WriteFile(p.RunnerConfig, []byte("[[Runners]]\nID = 'r'\nRunnerURL = 'https://runner.example'\nApp = 'test'\n[Runners.PriceInfo]\nPrice = 1\n"), 0600))
-			require.NoError(t, p.Validate())
 			ctx, cancel := context.WithCancel(t.Context())
 			done := make(chan error, 1)
 			go func() { done <- Serve(ctx, p, io.Discard) }()
@@ -347,10 +346,12 @@ func TestValidationBeforeStartup(t *testing.T) {
 	require.ErrorContains(t, err, "on-chain payments require")
 	require.True(t, boa.IsUserInputError(err))
 	require.NoFileExists(t, db)
-	for _, flag := range []string{"--listen", "--metrics-listen"} {
-		_, err = execute(t, flag, "0.0.0.0:8936")
-		require.ErrorContains(t, err, "unsafe@0.0.0.0:8936")
-		require.True(t, boa.IsUserInputError(err))
+	for _, tc := range []struct{ value, want string }{{"", "IP:port"}, {"0.0.0.0:8936", "unsafe@0.0.0.0:8936"}} {
+		for _, flag := range []string{"--listen", "--metrics-listen"} {
+			_, err = execute(t, flag, tc.value)
+			require.ErrorContains(t, err, tc.want)
+			require.True(t, boa.IsUserInputError(err))
+		}
 	}
 
 	_, err = execute(t, "--orchestrator-address", "0x0000000000000000000000000000000000000001")

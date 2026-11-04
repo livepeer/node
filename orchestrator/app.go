@@ -114,8 +114,8 @@ func (p Params) Validate() error {
 	if err := validateProxyTemplate(p.ProxyURLTemplate); err != nil {
 		return fmt.Errorf("invalid --proxy-url-template: %w", err)
 	}
-	if !p.Listen.IsValid() {
-		return errors.New("--listen (or LIVEPEER_ORCHESTRATOR_LISTEN) must be an IP:port address, e.g. 127.0.0.1:8935 or [::1]:8935")
+	if !p.Listen.IsValid() || !p.MetricsListen.IsValid() {
+		return errors.New("--listen and --metrics-listen require IP:port addresses")
 	}
 	for _, endpoint := range []struct {
 		name string
@@ -205,12 +205,7 @@ func printConfig(ctx *boa.HookContext, p *Params, out io.Writer) error {
 			delete(values, name)
 		}
 	}
-	data, err := toml.Marshal(values)
-	if err != nil {
-		return err
-	}
-	_, err = out.Write(data)
-	return err
+	return toml.NewEncoder(out).Encode(values)
 }
 
 func loadStatic(path string, registry *Registry) error {

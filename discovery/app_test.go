@@ -116,8 +116,8 @@ func TestDiscoveryConfigDefaultsAndPrecedence(t *testing.T) {
 func TestDiscoveryInvalidConfig(t *testing.T) {
 	for _, args := range [][]string{
 		{"--refresh-interval=0"}, {"--max-failed-refreshes=-1"}, {"--grants=bad"},
-		{"--metrics-listen=0.0.0.0:8940"},
-		{"--listen=[::]:8939"},
+		{"--metrics-listen="}, {"--metrics-listen=0.0.0.0:8940"},
+		{"--listen="}, {"--listen=[::]:8939"},
 		{"--nodes=ftp://child.example"}, {"--nodes=https://user:secret@child.example"},
 		{"--nodes=https://child.example?token=secret"}, {"--nodes=https://child.example#fragment"}, {"--runner-config=unused"},
 	} {
