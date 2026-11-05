@@ -2,6 +2,7 @@ name: Build
 
 on:
   pull_request:
+  merge_group:
   push:
     branches: [main]
   workflow_dispatch:
@@ -19,24 +20,39 @@ jobs:
     uses: ./.github/workflows/ci.yml
 
   package:
-    if: >-
-      github.event_name != 'pull_request' ||
-      github.event.pull_request.head.repo.full_name == github.repository
     uses: ./.github/workflows/package.yml
     with:
-      commit: ${{ github.event.pull_request.head.sha || github.sha }}
+      # Same-repository PR images retain their head SHA. Fork PRs and the merge
+      # queue validate the candidate merge commit without publishing an image.
+      commit: ${{ github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.sha || github.sha }}
       bundles: ${{ github.event_name != 'push' }}
       export_images: >-
         ${{ github.event_name == 'push' ||
             (github.event_name == 'pull_request' &&
+             github.event.pull_request.head.repo.full_name == github.repository &&
+             github.event.pull_request.head.ref != 'codex/fleet-ci-freeze' &&
              github.actor != 'dependabot[bot]' &&
              github.event.pull_request.user.login != 'dependabot[bot]') }}
 
+  package-gate:
+    name: package-gate
+    if: always()
+    needs: [package]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require both Linux builds and smoke tests to succeed
+        env:
+          PACKAGE_RESULT: ${{ needs.package.result }}
+        run: test "$PACKAGE_RESULT" = success
+
   docker-pr:
     needs: package
+    # The fleet CI rollout branch validates images without publishing them.
     if: >-
       github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref != 'codex/fleet-ci-freeze' &&
       github.actor != 'dependabot[bot]' &&
       github.event.pull_request.user.login != 'dependabot[bot]'
     permissions:
