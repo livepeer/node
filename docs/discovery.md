@@ -14,6 +14,12 @@ livepeer discovery --config /etc/livepeer/discovery.toml
 [shared configuration](configuration.md) for environment variables, paths, and
 `--print-config`; the default directory is `~/.lpData/offchain/discovery`.
 
+Use `--dump` to query sources once and exit without listeners or refreshes. It writes a
+newline-terminated [discovery JSON array](http-api.md#discovery-http) to stdout; diagnostics
+go to stderr. Exit 0 includes empty or partial success, and `[]` when no requests are made
+(no sources or both advertising switches disabled). Otherwise, it exits 2, possibly with
+partial output. `--dump` is CLI-only and conflicts with `--print-config`.
+
 ## Sources and cache
 
 Each source is queried at `<base URL>/discovery`, retaining any deployment path.
@@ -50,7 +56,7 @@ omits the metadata entry or runner entries, respectively. Disabling both returns
 `[]` and stops collection. Oversized responses are served with a warning, but
 signers reject responses larger than 1 MiB.
 
-The loopback metrics listener defaults to `127.0.0.1:8940` and serves `/healthz`,
+The metrics listener defaults to `127.0.0.1:8940` and serves `/healthz`,
 `/readyz`, and `/metrics`, including source health, cached inventory, refresh
 results, and `livepeer_discovery_up`. See [metrics and events](metrics.md).
 Readiness indicates that the service is running, even with no available sources.
