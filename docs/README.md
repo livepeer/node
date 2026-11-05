@@ -19,7 +19,7 @@ Start with [installation](../README.md#install) and the
 
 | Reference | Contents |
 | --- | --- |
-| [Development](development.md) | Build and test commands, SDK fixtures, and CLI snapshots. |
-| [HTTP API](http-api.md) | Routes, payment message fields, and response codes. |
+| [Development](development.md) | Build and test commands, conformance tests, SDK fixtures, and CLI snapshots. |
+| [HTTP API](http-api.md) | Routes, client flow, payment message fields, schemas, and response codes. |
 | [Trickle protocol](../trickle/README.md) | Channel operations, sequences, streaming, and limits. |
 | [Contract bindings](../eth/contracts/README.md) | Binding provenance and upstream updates. |

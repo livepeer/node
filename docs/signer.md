@@ -112,6 +112,7 @@ polling settings above.
 Configure the signer's base URL and proxy credentials; authenticate every signer
 request. Clients need access to both signer and orchestrator, found through
 discovery or a known runner URL. Follow the
+[client session flow](http-api.md#client-session-flow) and
 [signer HTTP API](http-api.md#remote-signer-http), retaining returned signed state
 unchanged for subsequent payments in the same session. The
 [SDK fixtures](development.md#sdk-integration-fixtures) list tested versions and flows.
