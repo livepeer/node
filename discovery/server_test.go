@@ -1,8 +1,10 @@
 package discovery
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -23,7 +25,7 @@ import (
 
 func discoveryTestParams(t *testing.T, targets ...string) Params {
 	t.Helper()
-	p := Params{Listen: netip.MustParseAddrPort("127.0.0.1:8939"), MetricsListen: netip.MustParseAddrPort("127.0.0.1:8940"), AdvertiseNodes: true, AdvertiseRunners: true, RefreshInterval: 5 * time.Minute, MaxFailedRefreshes: 6, Grants: []string{"127.0.0.1"}}
+	p := Params{Listen: boa.HTTPBind{AddrPort: netip.MustParseAddrPort("127.0.0.1:8939")}, MetricsListen: boa.HTTPBind{AddrPort: netip.MustParseAddrPort("127.0.0.1:8940")}, AdvertiseNodes: true, AdvertiseRunners: true, RefreshInterval: 5 * time.Minute, MaxFailedRefreshes: 6, Grants: []string{"127.0.0.1"}}
 	for _, target := range targets {
 		p.Nodes = append(p.Nodes, boa.Text[*url.URL]{Value: mustURL(t, target)})
 	}
@@ -208,24 +210,66 @@ func TestDiscoveryFailureThreshold(t *testing.T) {
 }
 
 func TestDiscoveryPreservesWholeRecords(t *testing.T) {
-	const record = `{"url":"https://orch.example/apps/runner/session","app":"test","observed_at":"2000-01-01T00:00:00.123+00:00","mode":"persistent","capacity":4,"capacity_used":1,"capacity_available":3,"gpu":{"id":"0","name":"H100","vram_mb":80000},"price_info":{"price":123456789012345678901234567890,"currency":"wei","unit":"seconds"},"extension":{"value":9007199254740993}}`
-	s := discoveryTestServer(t, "https://child.example")
-	s.collector.Client.Transport = discoveryRoundTrip(func(*http.Request) (*http.Response, error) {
-		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`[{"address":"https://orch.example","runners":[` + record + `]}]`))}, nil
-	})
-	s.collector.Refresh(t.Context(), false)
+	const record = `{"url":"https://orch.example/apps/runner/session","app":"test","observed_at":"2000-01-01T00:00:00.123+00:00","mode":"persistent","capacity":4,"capacity_used":1,"capacity_available":3,"gpu":{"id":"0","name":"H100","vram_mb":80000},"price_info":{"price":123456789012345678901234567890,"price_usd":0.123456789012345678901234567890123456,"currency":"wei","unit":"tokens"},"extension":{"value":9007199254740993,"ratio":1.2300e+04}}`
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		owner, runner := "https://orch.example", record
+		switch r.URL.Path {
+		case "/old/discovery":
+			owner = "https://old-owner.example"
+			runner = strings.ReplaceAll(runner, "2000-01-01", "1999-01-01")
+		case "/tie/discovery":
+			runner = strings.ReplaceAll(runner, `"app":"test"`, `"app":"tie"`)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `[{"address":"`+owner+`","runners":[`+runner+`]}]`)
+	}))
+	defer upstream.Close()
+	s := discoveryTestServer(t, upstream.URL+"/old", upstream.URL+"/child", upstream.URL+"/tie")
+	var dumped bytes.Buffer
+	require.NoError(t, s.dump(t.Context(), &dumped))
+	require.Equal(t, int32(3), calls.Load())
+	server := httptest.NewServer(s)
+	defer server.Close()
+	schema := discoverySchema(t)
 	for range 2 {
-		w := httptest.NewRecorder()
-		s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/discovery", nil))
-		require.Equal(t, 200, w.Code)
+		response, err := server.Client().Get(server.URL + "/discovery")
+		require.NoError(t, err)
+		data, err := io.ReadAll(response.Body)
+		require.NoError(t, response.Body.Close())
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, response.StatusCode)
+		require.Equal(t, "application/json", response.Header.Get("Content-Type"))
+		require.NoError(t, validateDiscoveryJSON(t, schema, data))
+		require.Equal(t, dumped.String(), string(data), "dump and HTTP share the same snapshot and encoding")
 		var result []map[string]json.RawMessage
-		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &result))
+		require.NoError(t, json.Unmarshal(data, &result))
 		require.Len(t, result, 2)
 		require.NotContains(t, result[0], "address")
+		var nodes []discoveryNode
+		require.NoError(t, json.Unmarshal(result[0]["nodes"], &nodes))
+		require.Len(t, nodes, 3)
+		require.Equal(t, upstream.URL+"/old", nodes[0].URL)
 		require.Equal(t, `"https://orch.example"`, string(result[1]["address"]))
-		// Compare raw JSON so large integers cannot be rounded through float64.
+		// Compare raw JSON to retain unknown fields and exact numeric tokens.
 		require.Equal(t, "["+record+"]", string(result[1]["runners"]))
 	}
+}
+
+func TestDiscoveryEmptyInventory(t *testing.T) {
+	s := discoveryTestServer(t)
+	server := httptest.NewServer(s)
+	defer server.Close()
+	response, err := server.Client().Get(server.URL + "/discovery")
+	require.NoError(t, err)
+	defer response.Body.Close()
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	require.Equal(t, "application/json", response.Header.Get("Content-Type"))
+	data, err := io.ReadAll(response.Body)
+	require.NoError(t, err)
+	require.JSONEq(t, `[]`, string(data))
+	require.NoError(t, validateDiscoveryJSON(t, discoverySchema(t), data))
 }
 
 func TestDiscoveryPrivateSourcesRequireGrants(t *testing.T) {
@@ -250,6 +294,123 @@ func TestDiscoveryPrivateSourcesRequireGrants(t *testing.T) {
 			require.Equal(t, granted, len(s.discoveryResponse()) > 1)
 		})
 	}
+}
+
+func TestDiscoveryDumpWaitsForTimeout(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := discoveryTestServer(t, "https://fast.example", "https://slow.example")
+		s.interval = time.Nanosecond
+		var logs, out bytes.Buffer
+		s.collector.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+		var calls, writes atomic.Int32
+		s.collector.Client.Transport = discoveryRoundTrip(func(r *http.Request) (*http.Response, error) {
+			calls.Add(1)
+			if r.URL.Host == "slow.example" {
+				<-r.Context().Done()
+				return nil, r.Context().Err()
+			}
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("[]"))}, nil
+		})
+		done := make(chan error, 1)
+		go func() {
+			done <- s.dump(t.Context(), dumpWriter(func(data []byte) (int, error) {
+				writes.Add(1)
+				return out.Write(data)
+			}))
+		}()
+		synctest.Wait()
+		require.Equal(t, int32(2), calls.Load())
+		require.Zero(t, writes.Load(), "dump waits for the last request")
+		time.Sleep(3 * time.Second)
+		synctest.Wait()
+		require.NoError(t, <-done)
+		require.Equal(t, int32(1), writes.Load())
+		require.Contains(t, logs.String(), "error_kind=timeout")
+		var entries []struct{ Nodes []discoveryNode }
+		require.NoError(t, json.Unmarshal(out.Bytes(), &entries))
+		require.Len(t, entries, 1)
+		require.Len(t, entries[0].Nodes, 1)
+		require.Equal(t, "https://fast.example", entries[0].Nodes[0].URL)
+		time.Sleep(time.Hour)
+		synctest.Wait()
+		require.Equal(t, int32(2), calls.Load(), "dump never refreshes periodically")
+	})
+}
+
+func TestDiscoveryDumpCancellation(t *testing.T) {
+	for _, alreadyCanceled := range []bool{false, true} {
+		t.Run(fmt.Sprint(alreadyCanceled), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				s := discoveryTestServer(t, "https://child.example")
+				var active atomic.Int32
+				s.collector.Client.Transport = discoveryRoundTrip(func(r *http.Request) (*http.Response, error) {
+					active.Add(1)
+					defer active.Add(-1)
+					<-r.Context().Done()
+					return nil, r.Context().Err()
+				})
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				if alreadyCanceled {
+					cancel()
+				}
+				var out bytes.Buffer
+				done := make(chan error, 1)
+				go func() { done <- s.dump(ctx, &out) }()
+				synctest.Wait()
+				if !alreadyCanceled {
+					require.Equal(t, int32(1), active.Load())
+					cancel()
+					synctest.Wait()
+				}
+				require.ErrorIs(t, <-done, context.Canceled)
+				require.Zero(t, active.Load(), "pending requests are joined before returning")
+				require.Empty(t, out.String())
+			})
+		})
+	}
+}
+
+type dumpWriter func([]byte) (int, error)
+
+func (f dumpWriter) Write(data []byte) (int, error) { return f(data) }
+
+func TestDiscoveryDumpOutputErrors(t *testing.T) {
+	writeErr := errors.New("output unavailable")
+	for _, want := range []error{writeErr, io.ErrShortWrite} {
+		t.Run(want.Error(), func(t *testing.T) {
+			s := discoveryTestServer(t, "https://child.example")
+			s.collector.Client.Transport = discoveryRoundTrip(func(*http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: 503, Body: io.NopCloser(strings.NewReader(""))}, nil
+			})
+			calls := 0
+			err := s.dump(t.Context(), dumpWriter(func(data []byte) (int, error) {
+				calls++
+				require.Equal(t, "[]\n", string(data))
+				if want == io.ErrShortWrite {
+					return 1, nil
+				}
+				return 0, writeErr
+			}))
+			require.ErrorIs(t, err, want, "output errors take precedence over total source failure")
+			require.Equal(t, 1, calls)
+		})
+	}
+}
+
+func TestDiscoveryDumpOversizedOutput(t *testing.T) {
+	var logs, out bytes.Buffer
+	s, err := NewServer(discoveryTestParams(t, "https://a.example", "https://b.example"), slog.New(slog.NewTextHandler(&logs, nil)))
+	require.NoError(t, err)
+	defer s.Close()
+	s.collector.Client.Transport = discoveryRoundTrip(func(r *http.Request) (*http.Response, error) {
+		body := fmt.Sprintf(`[{"address":"https://orch.example","runners":[{"url":%q,"app":"test","observed_at":"2000-01-01T00:00:00Z","extension":%q}]}]`, r.URL.String(), strings.Repeat("x", discovery.MaxBody*3/5))
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body))}, nil
+	})
+	require.NoError(t, s.dump(t.Context(), &out))
+	require.Greater(t, out.Len(), discovery.MaxBody)
+	require.True(t, json.Valid(out.Bytes()))
+	require.Contains(t, logs.String(), "discovery response exceeds signer size limit")
 }
 
 func mustURL(t *testing.T, raw string) *url.URL {
