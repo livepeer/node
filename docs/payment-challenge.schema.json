@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Orchestrator payment challenge",
+  "description": "The 402 body from a paid reservation or single-shot request, and the 200 body from /payment and /refresh-payment. Clients pass payment_params to the signer without decoding it.",
+  "type": "object",
+  "required": ["payment_params", "orchestrator", "manifest_id", "payment_url"],
+  "properties": {
+    "payment_params": {
+      "type": "string",
+      "minLength": 1,
+      "contentEncoding": "base64",
+      "description": "Base64-encoded OrchestratorInfo Protobuf; send it as the signer request's orchestrator field."
+    },
+    "orchestrator": { "$ref": "#/$defs/httpURL" },
+    "manifest_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Becomes the session_id once the payment is accepted."
+    },
+    "payment_url": {
+      "$ref": "#/$defs/httpURL",
+      "description": "Where to POST follow-up payments."
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "httpURL": {
+      "type": "string",
+      "format": "uri",
+      "pattern": "^[Hh][Tt][Tt][Pp][Ss]?://[^/?#]+"
+    }
+  }
+}

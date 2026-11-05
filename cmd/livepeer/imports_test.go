@@ -63,7 +63,7 @@ func forbiddenImport(file, dep string) string {
 	local := strings.TrimPrefix(dep, module)
 	// A real HTTP compatibility test may compose component handlers without
 	// creating a production dependency between those components.
-	if file == "orchestrator/payment_test.go" && local == "signer" || file == "signer/payment_test.go" && local == "orchestrator" || file == "signer/discovery_test.go" && local == "discovery" {
+	if (file == "orchestrator/payment_test.go" || file == "orchestrator/conformance_test.go") && local == "signer" || file == "signer/payment_test.go" && local == "orchestrator" || file == "signer/discovery_test.go" && local == "discovery" {
 		return ""
 	}
 	if strings.HasPrefix(file, "cmd/livepeer/") && local != "cmd/version" && !(strings.HasSuffix(file, "_test.go") && local == "internal/test") {
