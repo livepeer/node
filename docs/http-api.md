@@ -70,11 +70,16 @@ returns `[]`. See [discovery setup](discovery.md) for caching,
 advertising switches, limits, and metrics.
 
 `observed_at` is an RFC3339 timestamp, allowing fractional seconds. Orchestrators
-stamp local runners at response time; discovery preserves that timestamp.
-Collectors and signers skip missing/invalid timestamps and those over 30 seconds
-in the future. Empty inventories succeed; sources advertising runners with no
-valid records fail. Duplicate runner URLs use the newest record and its owning
-address; ties keep the first in source, entry, then runner order.
+stamp local runners at response time starting in v1.0.3; discovery preserves
+that timestamp. v1.0.2 orchestrators omit it, so v1.0.3+ standalone discovery
+and signers cannot collect their `GET /discovery` inventories. Aggregators that
+forward v1.0.2 runner records unchanged have the same incompatibility.
+Collectors and signers skip runners whose timestamp is missing, invalid, or
+more than 30 seconds in the future. Producers must include a valid timestamp
+for each runner they want collected. Empty inventories succeed; a source whose
+advertised runners are all skipped has a failed refresh, not an empty success.
+Duplicate runner URLs use the newest record and its owning address; ties keep
+the first in source, entry, then runner order.
 
 ## Remote signer HTTP
 
