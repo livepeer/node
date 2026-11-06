@@ -39,10 +39,6 @@ Persist the PATH setting in your shell or use absolute executable paths in your
 service configuration. For other platforms or source builds, see
 [development](docs/development.md).
 
-Successful `main` builds publish `ghcr.io/livepeer/node:sha-<full-commit-sha>`
-for Linux amd64 and arm64. Use the manifest digest (`@sha256:…`) to pin the
-same image across deployments.
-
 ## Run a local example
 
 This example forwards a request to a small HTTP service. It runs off-chain.
