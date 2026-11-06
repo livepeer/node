@@ -1,4 +1,4 @@
-name: Check and test Node Go code
+name: Check and test code
 
 on:
   pull_request:
