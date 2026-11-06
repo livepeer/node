@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Remote signer payment messages",
+  "description": "Messages a client exchanges with the signer. Clients treat state as opaque and return it unchanged.",
+  "$defs": {
+    "signerInfo": {
+      "title": "POST /sign-orchestrator-info response",
+      "type": "object",
+      "required": ["address", "signature"],
+      "properties": {
+        "address": {
+          "type": "string",
+          "pattern": "^0x[0-9a-fA-F]{40}$",
+          "description": "The payer address for Livepeer-Payer-Address."
+        },
+        "signature": { "type": "string", "pattern": "^0x[0-9a-fA-F]+$" }
+      },
+      "additionalProperties": true
+    },
+    "request": {
+      "title": "POST /generate-live-payment request",
+      "type": "object",
+      "required": ["orchestrator", "type"],
+      "properties": {
+        "orchestrator": {
+          "type": "string",
+          "minLength": 1,
+          "contentEncoding": "base64",
+          "description": "The challenge's payment_params."
+        },
+        "type": { "enum": ["live", "fixed"] },
+        "ManifestID": {
+          "type": "string",
+          "description": "Defaults to the challenge's session; if supplied, it must match."
+        },
+        "app": { "type": "string" },
+        "state": {
+          "$ref": "#/$defs/signedState",
+          "description": "Omit on the first call; then send the latest returned state."
+        },
+        "maxPrice": { "$ref": "#/$defs/maxPrice" }
+      },
+      "additionalProperties": true
+    },
+    "response": {
+      "title": "POST /generate-live-payment response",
+      "type": "object",
+      "required": ["payment", "segCreds", "state"],
+      "properties": {
+        "payment": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Send as the Livepeer-Payment header."
+        },
+        "segCreds": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Send as the Livepeer-Segment header."
+        },
+        "state": { "$ref": "#/$defs/signedState" }
+      },
+      "additionalProperties": true
+    },
+    "error": {
+      "title": "Signer error response",
+      "type": "object",
+      "required": ["error"],
+      "properties": {
+        "error": {
+          "type": "object",
+          "required": ["message"],
+          "properties": { "message": { "type": "string", "minLength": 1 } },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "signedState": {
+      "type": "object",
+      "required": ["state", "sig"],
+      "properties": {
+        "state": { "type": "string", "contentEncoding": "base64" },
+        "sig": { "type": "string", "contentEncoding": "base64" }
+      },
+      "additionalProperties": true
+    },
+    "maxPrice": {
+      "type": "object",
+      "required": ["price", "currency", "unit"],
+      "properties": {
+        "price": { "type": "number", "exclusiveMinimum": 0 },
+        "currency": { "const": "wei" },
+        "unit": { "enum": ["seconds", "fixed"] }
+      },
+      "additionalProperties": true
+    }
+  }
+}

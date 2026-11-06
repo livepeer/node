@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "POST /apps/{app_id}/session response",
+  "description": "A reserved persistent session. These URLs are the session's only client credential, so treat them as secrets.",
+  "type": "object",
+  "required": ["session_id", "app_url", "control_url"],
+  "properties": {
+    "session_id": { "type": "string", "minLength": 1 },
+    "app_url": {
+      "$ref": "#/$defs/httpURL",
+      "description": "Base URL for application requests, which the orchestrator forwards to the runner."
+    },
+    "control_url": {
+      "$ref": "#/$defs/httpURL",
+      "description": "Base URL for /stop and, on paid sessions, /payment."
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "httpURL": {
+      "type": "string",
+      "format": "uri",
+      "pattern": "^[Hh][Tt][Tt][Pp][Ss]?://[^/?#]+"
+    }
+  }
+}

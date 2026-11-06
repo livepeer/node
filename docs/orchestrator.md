@@ -73,6 +73,37 @@ interfaces. Terminate public HTTPS in a reverse proxy and set `ServiceURL` to
 its HTTPS address. See
 [probe addresses](configuration.md#local-storage-and-probes).
 
+The reverse proxy must stream both directions and forward `Upgrade`. With only
+`proxy_pass`, nginx buffers uploads, so a live stream's output never arrives, and
+WebSocket returns 502. Use these settings for nginx:
+
+```nginx
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+server {
+    listen 443 ssl;
+    # server_name, ssl_certificate and ssl_certificate_key for ServiceURL
+
+    location / {
+        proxy_pass http://127.0.0.1:8935;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_request_buffering off;
+        proxy_buffering off;
+        client_max_body_size 0;
+        # Keep idle streams open.
+        proxy_read_timeout 1d;
+        proxy_send_timeout 1d;
+        client_body_timeout 1d;
+    }
+}
+```
+
 ## Sessions and proxies
 
 Each session keeps its reserved endpoint, app/mode settings, price, and paid status;
@@ -141,7 +172,9 @@ app/runner measurements, queue monitoring, and scrape/query examples.
 The registry accepts up to 256 runners, 128 retained apps per runner, 512 apps
 globally (including draining apps), and 10,000 sessions, with 25 generated
 proxies per session. Control requests have 64 admission slots and a five-second
-body deadline. Streaming requests have 256 separate slots.
+body deadline. Streaming requests have 256 separate slots. Every open proxied or
+Trickle request holds one, including preconnected Trickle requests, and further
+requests receive 503.
 
 The session channel quota is 1,024 entries, with 256 reserved for runner controls.
 Trickle retains five segments per channel, each capped at 10 MB (10,000,000 bytes).

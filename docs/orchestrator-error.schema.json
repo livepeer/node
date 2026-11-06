@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Orchestrator error response",
+  "description": "The body of an orchestrator error. A 402 can carry a payment challenge instead.",
+  "type": "object",
+  "required": ["error"],
+  "properties": {
+    "error": { "type": "string", "minLength": 1 }
+  },
+  "additionalProperties": true
+}
