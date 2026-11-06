@@ -25,7 +25,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 FROM scratch AS binaries
 COPY --from=build /out/ /
 
-FROM ubuntu:26.04@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b1115fb944
+FROM ubuntu:26.04@sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=binaries / /usr/local/bin/
 COPY LICENSE /usr/share/doc/livepeer/LICENSE
