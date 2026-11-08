@@ -58,6 +58,19 @@ go build ./...
 the SDK fixtures below, and saves test artifacts. Import boundaries are checked
 by `TestImportLattice` in [cmd/livepeer/imports_test.go](../cmd/livepeer/imports_test.go).
 
+## Conformance tests
+
+`TestConformance*` in
+[orchestrator/conformance_test.go](../orchestrator/conformance_test.go) follow the
+[client session flow](http-api.md#client-session-flow) with a plain HTTP client and
+no SDK, on real listeners with a fake chain. They validate JSON against
+`docs/*.schema.json`. When protocol behavior changes, update the docs, schemas, and
+these tests together:
+
+```sh
+go test ./orchestrator -run TestConformance
+```
+
 ## SDK integration fixtures
 
 Integration tests use these pinned revisions:

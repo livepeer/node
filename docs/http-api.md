@@ -14,11 +14,12 @@ See [orchestrator setup](orchestrator.md), [signer setup](signer.md), and
 | `POST /runners/{runner_id}/unregister` | Remove dynamic runner | Scoped heartbeat credential. |
 | `GET /discovery` | Find available runners | JSON discovery entries with app, URL, mode, capacity and price. |
 | `POST /apps/{app_id}/session` | Reserve persistent session | JSON `session_id`, `app_url`, `control_url`; paid mode may first return a payment challenge. |
-| `POST /apps/{app_id}/session/{session_id}/stop` | Stop client session | Session authorization and callback reconciliation. |
-| `POST /apps/{app_id}/session/{session_id}/payment` | Submit a ticket payment | On-chain only. |
+| `POST /apps/{app_id}/session/{session_id}/stop` | Stop client session | No credential beyond the session ID; see [session URLs](#session-urls). |
+| `POST /apps/{app_id}/session/{session_id}/payment` | Submit a ticket payment | On-chain only; `Livepeer-Payment` and `Livepeer-Segment` headers. |
 | `POST /refresh-payment` | Refresh ticket parameters for the same payer and manifest | On-chain only; JSON `sender` and `manifest_id`. |
-| `* /apps/{app_id}/session/{session_id}/app/{app_path...}` | Persistent proxy | Preserve HTTP method, streaming, SSE and WebSocket semantics and Livepeer session headers. |
+| `* /apps/{app_id}/session/{session_id}/app/{app_path...}` | Persistent proxy | Preserve HTTP method, streaming, SSE and WebSocket semantics and Livepeer session headers; see [proxied requests](#proxied-requests). |
 | `* /apps/{app_id}/app/{app_path...}` | Single-shot proxy | Transient capacity-limited reservation; identical session/control headers and cancellation ownership. |
+| `* /run/{proxy_id}/{app_path...}` | Generated proxy | Same proxy behavior; `/proxy/{proxy_id}/{app_path...}` is an alias. See [sessions and proxies](orchestrator.md#sessions-and-proxies). |
 | `POST /runner/{app_id}/session/{session_id}/channels` | Create generic trickle channels | Scoped session callback token; JSON `channels`. |
 | `DELETE /runner/{app_id}/session/{session_id}/channels` | Delete generic trickle channels | Scoped session callback token. |
 | `POST /runner/{app_id}/session/{session_id}/proxy` | Create session proxy URL | Scoped session callback token; JSON `target_url`; destination policy applies. |
@@ -40,6 +41,127 @@ before removal. O2R events use `app_id`.
 See [public URLs](orchestrator.md#public-urls-and-tls) for `RunnerServiceURL`, and
 [sessions and proxies](orchestrator.md#sessions-and-proxies) for pricing, release
 behavior, and proxy routes.
+
+### Client session flow
+
+Clients need only HTTP; an SDK is optional. For an off-chain or free runner:
+
+1. Choose a runner from `GET /discovery`. A persistent runner's `url` is its
+   reservation URL.
+2. `POST` to that URL. The response follows the
+   [session schema](session.schema.json).
+3. Send application requests to `{app_url}/{path}`. See
+   [proxied requests](#proxied-requests).
+4. `POST {control_url}/stop` to release the session.
+
+A paid persistent session adds payment around the reservation:
+
+1. Read the payer address from the signer's `POST /sign-orchestrator-info`.
+2. `POST` to the reservation URL with `Livepeer-Payer-Address`. The orchestrator
+   returns 402 with a [payment challenge](payment-challenge.schema.json).
+3. Send the challenge's `payment_params` as `orchestrator` to the signer's
+   [`POST /generate-live-payment`](#payment-requests-and-responses), with `type`
+   set to `live`. Keep the returned `state`.
+4. Repeat the reservation `POST` with `payment` as `Livepeer-Payment` and
+   `segCreds` as `Livepeer-Segment`. The new `session_id` equals the challenge's
+   `manifest_id`.
+5. Send application requests to `app_url`. They need no payment headers.
+6. While the session runs, generate another payment with the latest `state` and
+   `POST` it with the same two headers to the challenge's `payment_url`, which is
+   `{control_url}/payment`. The response carries the current challenge.
+7. If the signer returns 482, skip that cycle. If it returns 480, `POST
+   /refresh-payment` with the payer address as `sender` and the `manifest_id`,
+   then continue with the returned challenge and the same `state`.
+
+The orchestrator bills whole elapsed seconds about once per second and releases
+the session when its balance cannot cover the fee. The signer's first live payment
+covers 10 seconds and later payments cover the time since the previous one, so pay
+again well within 10 seconds. The Python SDK pays every 3 seconds.
+
+Fixed-price sessions use `type` `fixed` and take one payment; follow-up payments
+return 409. A paid single-shot request receives its challenge from
+`/apps/{app_id}/app` and repeats that request with the payment headers.
+
+### Session URLs
+
+The orchestrator does not authenticate clients on `app_url`, `control_url`, or
+generated proxy URLs. Anyone holding a session ID can send requests to that session
+and stop it, so treat these URLs as secrets.
+
+### Proxied requests
+
+A request to `{app_url}/{path}` reaches the runner at `{runner_url}/{path}`, with
+the client's query appended to any query in `runner_url`. The orchestrator keeps
+the method and body, streams both directions as bytes arrive, and does not inspect
+media, so the runner defines its own paths and formats. For example, a runner can
+accept a live upload and serve renditions on a second request:
+
+```sh
+ffmpeg -re -f lavfi -i testsrc2=size=1280x720:rate=30 -c:v libx264 \
+  -f matroska -method PUT "$APP_URL/in" &
+curl -N "$APP_URL/out" -o out.mkv
+```
+
+The runner receives these headers, plus `X-Forwarded-*`:
+
+| Header | Value |
+| --- | --- |
+| `Livepeer-Runner-Route` | App ID. |
+| `Livepeer-Session-Id` | Session ID, which can link separate requests. |
+| `Livepeer-Session-Token` | Credential for the session's runner callback routes. |
+| `Livepeer-Session-Control` | Base URL of the session's runner callback routes. |
+
+Proxied requests have these limits:
+
+- The runner must send response headers within one minute of receiving the full
+  request, or the client receives 502. For a long upload, this starts when the
+  upload ends.
+- One HTTP/1.1 request cannot stream in both directions. If a runner responds
+  while the body is still uploading, the upload fails. Use separate requests, or
+  WebSocket for two-way traffic.
+- Only HTTP and protocols that start with an HTTP `Upgrade` pass through. RTMP, SRT
+  and other protocols need another route to the runner.
+- Each open request holds a [streaming slot](orchestrator.md#resource-limits).
+- Public HTTPS depends on a [reverse proxy that streams](orchestrator.md#public-urls-and-tls).
+
+### Runner callbacks and O2R events
+
+Callback routes under `/runner/` require the session's token in
+`Livepeer-Session-Token`. A runner reads the token from proxied request headers or
+a `reserved` event.
+
+Dynamic runners receive `o2r`, a Trickle channel, in the heartbeat response. Each
+segment is one JSON message:
+
+```json
+{"event": "reserved", "app_id": "a1", "session": "session_example", "session_token": "token", "timestamp": "2026-11-05T12:00:00Z"}
+```
+
+| `event` | Meaning |
+| --- | --- |
+| `reserved` | The session is ready. Paid sessions emit this after payment. |
+| `released` | The session ended and its proxied requests were cancelled. Has no `session_token`. |
+
+The orchestrator also sends `{"keep":"alive"}` every 10 seconds, and closes the
+channel when the runner expires or unregisters. A runner that only serves proxied
+requests can ignore O2R, because release cancels those requests. Subscribe to clean
+up session state early, or to end connections that bypass the orchestrator.
+
+### Orchestrator response codes
+
+Errors use the body `{"error": "message"}`, which follows the
+[orchestrator error schema](orchestrator-error.schema.json).
+
+| Orchestrator status | Client action |
+| --- | --- |
+| 400 | Correct the request, such as using the wrong route for the runner's mode. |
+| 401 | Correct the runner callback's `Livepeer-Session-Token`. |
+| 402 | Pay using the challenge. An `error` body means `Livepeer-Payer-Address` is missing, segment credentials are invalid, or the balance is too low. |
+| 403 | Generate a new payment; the orchestrator rejected this one. |
+| 404 | The runner, session, or challenge no longer exists. |
+| 409 | Request a new challenge because the price or registration changed. Fixed-price sessions also return this for follow-up payments. |
+| 502 | Retry or choose another runner; the runner or chain was unavailable. |
+| 503 | Retry or choose another runner; capacity, price data, or request slots are unavailable. |
 
 ## Discovery HTTP
 
@@ -119,7 +241,8 @@ Grants restrict outbound connections, not returned URLs. See
 | `maxPrice` | Optional positive wei ceiling: `price`, `currency: "wei"`, and `unit: "seconds"` for `live` or `"fixed"` for `fixed`. |
 
 Success returns `payment`, `segCreds`, and `state`. Send the first two as the
-orchestrator's `Livepeer-Payment` and `Livepeer-Segment` headers. State is bound
+orchestrator's `Livepeer-Payment` and `Livepeer-Segment` headers. Requests and
+responses follow the [signer payment schema](signer-payment.schema.json). State is bound
 to the ticket recipient, application, payment type, and manifest ID.
 Earlier state can be replayed; HTTP retries can generate separate tickets.
 Parameter refresh preserves the state sequence and resets the ticket nonce for
@@ -218,6 +341,10 @@ Quote an entire entry using CSV syntax when its value contains commas, for
 example `"X-List: a,b",Authorization: Bearer credential`.
 
 ### Response codes
+
+Errors use the body `{"error": {"message": "text"}}`, which differs from the
+orchestrator's and follows the `error` definition in the
+[signer payment schema](signer-payment.schema.json).
 
 | Signer status | Client action |
 | --- | --- |
