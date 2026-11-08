@@ -89,6 +89,10 @@ func (s *Server) reservePaid(w http.ResponseWriter, r *http.Request) bool {
 		return false
 	}
 	if r.Header.Get("Livepeer-Payment") == "" || r.Header.Get("Livepeer-Segment") == "" {
+		if status, err := s.registry.reservationCapacity(appID); err != nil {
+			failReservation(w, r, status, err)
+			return true
+		}
 		s.challenge(w, r, appID, price)
 		return true
 	}
@@ -140,6 +144,10 @@ func (s *Server) proxyPaidSingleShot(w http.ResponseWriter, r *http.Request) boo
 		return false
 	}
 	if r.Header.Get("Livepeer-Payment") == "" || r.Header.Get("Livepeer-Segment") == "" {
+		if status, err := s.registry.reservationCapacity(appID); err != nil {
+			failReservation(w, r, status, err)
+			return true
+		}
 		s.challenge(w, r, appID, price)
 		return true
 	}
