@@ -75,26 +75,29 @@ type appRequest struct {
 }
 
 type appResponse struct {
-	ID         string   `json:"id"`
-	Status     string   `json:"status"`
-	SessionIDs []string `json:"session_ids"`
+	// Scoped capabilities are returned only to this authenticated registration owner.
+	SessionTokens *map[string]string `json:"session_tokens,omitempty"`
+	ID            string             `json:"id"`
+	Status        string             `json:"status"`
+	SessionIDs    []string           `json:"session_ids"`
 }
 
 type heartbeatRequest struct {
-	Seq        *uint64      `json:"seq,omitempty"`
-	Apps       []appRequest `json:"apps,omitzero"`
-	RunnerID   string       `json:"runner_id"`
-	RunnerURL  string       `json:"runner_url"`
-	Version    string       `json:"version"`
-	Metadata   string       `json:"metadata"`
-	GPU        *runnerGPU   `json:"gpu,omitempty"`
-	Status     string       `json:"status"`
-	Mode       string       `json:"mode"`
-	Proxy      bool         `json:"proxy"`
-	App        string       `json:"app"`
-	Capacity   int          `json:"capacity"`
-	PriceInfo  priceInfo    `json:"price_info"`
-	SessionIDs []string     `json:"session_ids"`
+	IncludeSessionTokens bool         `json:"include_session_tokens,omitempty"`
+	Seq                  *uint64      `json:"seq,omitempty"`
+	Apps                 []appRequest `json:"apps,omitzero"`
+	RunnerID             string       `json:"runner_id"`
+	RunnerURL            string       `json:"runner_url"`
+	Version              string       `json:"version"`
+	Metadata             string       `json:"metadata"`
+	GPU                  *runnerGPU   `json:"gpu,omitempty"`
+	Status               string       `json:"status"`
+	Mode                 string       `json:"mode"`
+	Proxy                bool         `json:"proxy"`
+	App                  string       `json:"app"`
+	Capacity             int          `json:"capacity"`
+	PriceInfo            priceInfo    `json:"price_info"`
+	SessionIDs           []string     `json:"session_ids"`
 }
 
 type heartbeatResponse struct {
@@ -238,8 +241,8 @@ type Registry struct {
 
 const (
 	maxRunners       = 256
-	maxAppsPerRunner = 128
-	maxApps          = 512
+	maxAppsPerRunner = 512
+	maxApps          = 1024
 	maxDrainTimeout  = 12 * time.Hour
 )
 
@@ -520,14 +523,14 @@ func (r *Registry) Heartbeat(req heartbeatRequest, auth string) (heartbeatRespon
 		}
 		item.appRequest, item.USDQuote, item.PriceError, item.Removing = entry, quotes[i], false, false
 		item.drainDeadline = time.Time{}
-		resp.Apps = append(resp.Apps, item.response())
+		resp.Apps = append(resp.Apps, item.response(req.IncludeSessionTokens))
 	}
 	for _, id := range slices.Sorted(maps.Keys(current.Apps)) {
 		if !seen[id] {
 			item := current.Apps[id]
 			r.drainApp(item, now)
 			if current.Apps[id] != nil {
-				resp.Apps = append(resp.Apps, item.response())
+				resp.Apps = append(resp.Apps, item.response(req.IncludeSessionTokens))
 			}
 		}
 	}
@@ -552,12 +555,22 @@ func (r *Registry) drainApp(item *app, now time.Time) {
 	}
 }
 
-func (item *app) response() appResponse {
+func (item *app) response(includeTokens bool) appResponse {
 	status := item.Status
 	if item.Removing {
 		status = "draining"
 	}
-	return appResponse{ID: item.ID, Status: status, SessionIDs: append([]string{}, slices.Sorted(maps.Keys(item.Sessions))...)}
+	var tokens *map[string]string
+	if includeTokens {
+		activated := make(map[string]string)
+		for sid, session := range item.Sessions {
+			if !session.pending {
+				activated[sid] = session.Token
+			}
+		}
+		tokens = &activated
+	}
+	return appResponse{ID: item.ID, Status: status, SessionIDs: append([]string{}, slices.Sorted(maps.Keys(item.Sessions))...), SessionTokens: tokens}
 }
 
 // removeApp requires r.mu and an app with no remaining sessions.
