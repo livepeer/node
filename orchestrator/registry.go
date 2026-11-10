@@ -75,29 +75,26 @@ type appRequest struct {
 }
 
 type appResponse struct {
-	// Scoped capabilities are returned only to this authenticated registration owner.
-	SessionTokens *map[string]string `json:"session_tokens,omitempty"`
-	ID            string             `json:"id"`
-	Status        string             `json:"status"`
-	SessionIDs    []string           `json:"session_ids"`
+	ID         string   `json:"id"`
+	Status     string   `json:"status"`
+	SessionIDs []string `json:"session_ids"`
 }
 
 type heartbeatRequest struct {
-	IncludeSessionTokens bool         `json:"include_session_tokens,omitempty"`
-	Seq                  *uint64      `json:"seq,omitempty"`
-	Apps                 []appRequest `json:"apps,omitzero"`
-	RunnerID             string       `json:"runner_id"`
-	RunnerURL            string       `json:"runner_url"`
-	Version              string       `json:"version"`
-	Metadata             string       `json:"metadata"`
-	GPU                  *runnerGPU   `json:"gpu,omitempty"`
-	Status               string       `json:"status"`
-	Mode                 string       `json:"mode"`
-	Proxy                bool         `json:"proxy"`
-	App                  string       `json:"app"`
-	Capacity             int          `json:"capacity"`
-	PriceInfo            priceInfo    `json:"price_info"`
-	SessionIDs           []string     `json:"session_ids"`
+	Seq        *uint64      `json:"seq,omitempty"`
+	Apps       []appRequest `json:"apps,omitzero"`
+	RunnerID   string       `json:"runner_id"`
+	RunnerURL  string       `json:"runner_url"`
+	Version    string       `json:"version"`
+	Metadata   string       `json:"metadata"`
+	GPU        *runnerGPU   `json:"gpu,omitempty"`
+	Status     string       `json:"status"`
+	Mode       string       `json:"mode"`
+	Proxy      bool         `json:"proxy"`
+	App        string       `json:"app"`
+	Capacity   int          `json:"capacity"`
+	PriceInfo  priceInfo    `json:"price_info"`
+	SessionIDs []string     `json:"session_ids"`
 }
 
 type heartbeatResponse struct {
@@ -523,14 +520,14 @@ func (r *Registry) Heartbeat(req heartbeatRequest, auth string) (heartbeatRespon
 		}
 		item.appRequest, item.USDQuote, item.PriceError, item.Removing = entry, quotes[i], false, false
 		item.drainDeadline = time.Time{}
-		resp.Apps = append(resp.Apps, item.response(req.IncludeSessionTokens))
+		resp.Apps = append(resp.Apps, item.response())
 	}
 	for _, id := range slices.Sorted(maps.Keys(current.Apps)) {
 		if !seen[id] {
 			item := current.Apps[id]
 			r.drainApp(item, now)
 			if current.Apps[id] != nil {
-				resp.Apps = append(resp.Apps, item.response(req.IncludeSessionTokens))
+				resp.Apps = append(resp.Apps, item.response())
 			}
 		}
 	}
@@ -555,22 +552,12 @@ func (r *Registry) drainApp(item *app, now time.Time) {
 	}
 }
 
-func (item *app) response(includeTokens bool) appResponse {
+func (item *app) response() appResponse {
 	status := item.Status
 	if item.Removing {
 		status = "draining"
 	}
-	var tokens *map[string]string
-	if includeTokens {
-		activated := make(map[string]string)
-		for sid, session := range item.Sessions {
-			if !session.pending {
-				activated[sid] = session.Token
-			}
-		}
-		tokens = &activated
-	}
-	return appResponse{ID: item.ID, Status: status, SessionIDs: append([]string{}, slices.Sorted(maps.Keys(item.Sessions))...), SessionTokens: tokens}
+	return appResponse{ID: item.ID, Status: status, SessionIDs: append([]string{}, slices.Sorted(maps.Keys(item.Sessions))...)}
 }
 
 // removeApp requires r.mu and an app with no remaining sessions.

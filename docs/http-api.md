@@ -46,15 +46,6 @@ Successful full `apps` snapshot responses list all runner registrations,
 including draining apps, and Node's session IDs, including pending payment
 reservations. Absence from a fresh, complete response confirms removal;
 `"apps":[]` means no registrations remain.
-
-A full `apps` heartbeat can opt into `include_session_tokens: true`. Each returned
-app then has a `session_tokens` object mapping activated session IDs to their
-runner callback tokens; pending payment reservations are excluded. An explicit
-empty object means no activated sessions. Without the opt-in, the field is
-omitted. These tokens authorize session controls: keep them in private owner
-state, exclude them from logs and public responses, and reconcile only fresh,
-complete, successfully authenticated snapshots. Discovery never includes them.
-
 See [public URLs](orchestrator.md#public-urls-and-tls) for `RunnerServiceURL`, and
 [sessions and proxies](orchestrator.md#sessions-and-proxies) for pricing, release
 behavior, and proxy routes.
