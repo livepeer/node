@@ -651,8 +651,11 @@ func (r *Registry) reserveWithPrice(id, requestedID string, agreed *appQuote, mo
 	if (mode != "" && item.Mode != mode) || (item.Mode != "persistent" && !(item.Mode == "single-shot" && requestedID != "")) {
 		return "", "", "", http.StatusBadRequest, errors.New("only persistent runners have sessions")
 	}
-	if err := r.capacityErrorLocked(item); err != nil {
-		return "", "", "", http.StatusServiceUnavailable, err
+	if len(r.sessions) >= 10000 {
+		return "", "", "", http.StatusServiceUnavailable, errSessionCapacity
+	}
+	if len(item.Sessions) >= item.Capacity {
+		return "", "", "", http.StatusServiceUnavailable, errRunnerCapacity
 	}
 	sessionID := requestedID
 	if sessionID == "" {
@@ -681,33 +684,6 @@ func (r *Registry) reserveWithPrice(id, requestedID string, agreed *appQuote, mo
 		r.onEvent(item.owner.ID, id, "reserved", sessionID, token)
 	}
 	return sessionID, appURL, r.service + "/apps/" + url.PathEscape(id) + "/session/" + url.PathEscape(sessionID), http.StatusOK, nil
-}
-
-func (r *Registry) capacityErrorLocked(item *app) error {
-	if len(r.sessions) >= 10000 {
-		return errSessionCapacity
-	}
-	if len(item.Sessions) >= item.Capacity {
-		return errRunnerCapacity
-	}
-	return nil
-}
-
-// reservationCapacity reports whether the app could take a reservation now,
-// without holding one. A payer's signer records a payment when it signs, so a
-// full runner must refuse before it issues a challenge. Reservation still
-// decides: a slot can fill between the challenge and the paid request.
-func (r *Registry) reservationCapacity(id string) (int, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	item := r.apps[id]
-	if item == nil || !r.usable(item) {
-		return http.StatusNotFound, errors.New("runner unavailable")
-	}
-	if err := r.capacityErrorLocked(item); err != nil {
-		return http.StatusServiceUnavailable, err
-	}
-	return http.StatusOK, nil
 }
 
 // appQuote carries an agreed price and the registration that offered it.
@@ -751,6 +727,12 @@ func (r *Registry) ModeForRunner(id string) (string, int, error) {
 	item := r.apps[id]
 	if item == nil || !r.usable(item) {
 		return "", http.StatusNotFound, errors.New("runner unavailable")
+	}
+	if len(r.sessions) >= 10000 {
+		return "", http.StatusServiceUnavailable, errSessionCapacity
+	}
+	if len(item.Sessions) >= item.Capacity {
+		return "", http.StatusServiceUnavailable, errRunnerCapacity
 	}
 	return item.Mode, http.StatusOK, nil
 }

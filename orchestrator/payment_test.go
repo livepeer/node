@@ -340,6 +340,7 @@ func TestMultiAppPaidIsolationAndDrain(t *testing.T) {
 	a.RunnerURL, b.RunnerURL = upstream.URL, upstream.URL
 	a.PriceInfo = priceInfo{Price: "3600", Currency: "usd", Unit: "hour"}
 	b.Mode, b.PriceInfo = "single-shot", priceInfo{Price: "2", Currency: "usd", Unit: "fixed"}
+	a.Capacity, b.Capacity = 1, 1
 	owner := appHeartbeat(t, registry, "owner", "bootstrap", a, b)
 	payer := crypto.PubkeyToAddress(payerKey.PublicKey)
 	request := func(method, path, payment, segment string) *httptest.ResponseRecorder {
@@ -352,7 +353,12 @@ func TestMultiAppPaidIsolationAndDrain(t *testing.T) {
 		return w
 	}
 	challenge := func(method, path string) Challenge {
+		occupied, _, _, _, err := registry.ReserveWithID(strings.Split(path, "/")[2], "held")
+		require.NoError(t, err)
 		w := request(method, path, "", "")
+		require.Equal(t, 503, w.Code, w.Body.String())
+		registry.ReleaseBySession(occupied)
+		w = request(method, path, "", "")
 		require.Equal(t, 402, w.Code, w.Body.String())
 		var challenge Challenge
 		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &challenge))
@@ -492,57 +498,6 @@ func TestAppIDReuseRejectsPreviousRegistrationQuotes(t *testing.T) {
 			actual, _, err := registry.PriceForSession("reused", fresh.ManifestID)
 			require.NoError(t, err)
 			require.Equal(t, "100", actual.Price.String())
-		})
-	}
-}
-
-// A full runner must refuse before it issues a payment challenge. The payer's
-// signer records the payment when it signs, so a refusal that only arrives
-// with the signed payment leaves a fee for work that was never reserved.
-func TestFullRunnerRefusesBeforePaymentChallenge(t *testing.T) {
-	cases := []struct {
-		mode  string
-		route string
-	}{
-		{mode: "persistent", route: "/apps/runner1/session"},
-		{mode: "single-shot", route: "/apps/runner1/app"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.mode, func(t *testing.T) {
-			recipient := paymentTestKey(t)
-			payer := paymentTestKey(t)
-			store, err := OpenRedeemerDB(filepath.Join(t.TempDir(), "recipient.sqlite"))
-			require.NoError(t, err)
-			defer store.Close()
-			max := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
-			engine, err := NewPaymentEngine(store, paymentTestChain{}, recipient.Address(), big.NewInt(11), new(big.Int).Sub(max, big.NewInt(1)))
-			require.NoError(t, err)
-			registry := NewRegistry("bootstrap", "http://127.0.0.1:8935", time.Second, 30*time.Second)
-			registry.SetWeiPerUSD(big.NewRat(10, 1))
-			_, status, err := registry.Heartbeat(heartbeatRequest{RunnerID: "runner1", RunnerURL: "http://127.0.0.1:9000", App: "demo", Mode: tc.mode, Capacity: 1, PriceInfo: priceInfo{Price: "1", Currency: "usd", Unit: "fixed"}}, "bootstrap")
-			require.NoError(t, err)
-			require.Equal(t, 200, status)
-			policy, err := destination.New("runner", []string{"127.0.0.1:9000"})
-			require.NoError(t, err)
-			server := NewServer(registry, policy, policy, slog.New(slog.NewTextHandler(io.Discard, nil)))
-			server.SetPayment(engine)
-			ask := func() *httptest.ResponseRecorder {
-				request := httptest.NewRequest(http.MethodPost, tc.route, nil)
-				request.Header.Set("Livepeer-Payer-Address", payer.Address().Hex())
-				response := httptest.NewRecorder()
-				server.ServeHTTP(response, request)
-				return response
-			}
-
-			occupied, _, _, _, err := registry.ReserveWithID("runner1", "held")
-			require.NoError(t, err)
-			refused := ask()
-			require.Equal(t, http.StatusServiceUnavailable, refused.Code, refused.Body.String())
-			require.Contains(t, refused.Body.String(), errRunnerCapacity.Error())
-			require.NotContains(t, refused.Body.String(), "payment_params", "a refused caller must have nothing to sign")
-
-			registry.ReleaseBySession(occupied)
-			require.Equal(t, http.StatusPaymentRequired, ask().Code, "a free slot still gets a challenge")
 		})
 	}
 }

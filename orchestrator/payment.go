@@ -73,7 +73,7 @@ func (s *Server) reservePaid(w http.ResponseWriter, r *http.Request) bool {
 	appID := r.PathValue("app_id")
 	mode, status, err := s.registry.ModeForRunner(appID)
 	if err != nil {
-		fail(w, status, err.Error())
+		failReservation(w, r, status, err)
 		return true
 	}
 	if mode != "persistent" {
@@ -89,10 +89,6 @@ func (s *Server) reservePaid(w http.ResponseWriter, r *http.Request) bool {
 		return false
 	}
 	if r.Header.Get("Livepeer-Payment") == "" || r.Header.Get("Livepeer-Segment") == "" {
-		if status, err := s.registry.reservationCapacity(appID); err != nil {
-			failReservation(w, r, status, err)
-			return true
-		}
 		s.challenge(w, r, appID, price)
 		return true
 	}
@@ -128,7 +124,7 @@ func (s *Server) proxyPaidSingleShot(w http.ResponseWriter, r *http.Request) boo
 	appID := r.PathValue("app_id")
 	mode, status, err := s.registry.ModeForRunner(appID)
 	if err != nil {
-		fail(w, status, err.Error())
+		failReservation(w, r, status, err)
 		return true
 	}
 	if mode != "single-shot" {
@@ -144,10 +140,6 @@ func (s *Server) proxyPaidSingleShot(w http.ResponseWriter, r *http.Request) boo
 		return false
 	}
 	if r.Header.Get("Livepeer-Payment") == "" || r.Header.Get("Livepeer-Segment") == "" {
-		if status, err := s.registry.reservationCapacity(appID); err != nil {
-			failReservation(w, r, status, err)
-			return true
-		}
 		s.challenge(w, r, appID, price)
 		return true
 	}
