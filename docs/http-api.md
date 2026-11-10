@@ -36,8 +36,9 @@ Capacity defaults to one; price units and currencies are trimmed and lowercased.
 
 Runners send a strictly increasing uint64 `seq` after registration with
 each heartbeat. Successful responses echo the `seq`. Rejected `seq` values do
-not update runner state on the orchestrator. Re-registering or losing the local
-runner state starts a new `seq` sequence.
+not update runner state on the orchestrator. A fresh registration or loss of
+orchestrator state starts a new sequence. A reconnecting runner can resume from
+the `seq` returned in a 409 response.
 
 App IDs are unique per node; names may repeat. Omit `id` to generate one, then
 retain the returned ID in later snapshots. Omitted apps finish existing work
