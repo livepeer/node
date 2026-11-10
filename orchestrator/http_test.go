@@ -396,6 +396,7 @@ func TestRunnerGPUIsPreservedForPythonDiscovery(t *testing.T) {
 	registry := NewRegistry("bootstrap", "https://orchestrator.example", time.Second, 30*time.Second)
 	registered, status, err := registry.Heartbeat(request, "bootstrap")
 	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, status)
 	_, status, err = registry.Heartbeat(request, registered.HeartbeatSecret)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, status)
