@@ -33,6 +33,7 @@ type Server struct {
 	registry        *Registry
 	runnerTransport *http.Transport
 	proxyTransport  *http.Transport
+	excludedHeaders []string
 	logger          *slog.Logger
 	payment         *PaymentEngine
 	mux             *http.ServeMux
@@ -173,6 +174,26 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mux.ServeHTTP(w, r)
+}
+
+func (s *Server) setExcludedHeaders(patterns []string) {
+	s.excludedHeaders = patterns
+	disableCompression := headerExcluded("Accept-Encoding", patterns)
+	s.runnerTransport.DisableCompression = disableCompression
+	s.proxyTransport.DisableCompression = disableCompression
+}
+
+func headerExcluded(name string, patterns []string) bool {
+	for _, pattern := range patterns {
+		if prefix, ok := strings.CutSuffix(pattern, "*"); ok {
+			if strings.HasPrefix(strings.ToLower(name), strings.ToLower(prefix)) {
+				return true
+			}
+		} else if strings.EqualFold(name, pattern) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) SetPayment(engine *PaymentEngine) {
@@ -512,6 +533,11 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, transport http.Ro
 			req.Out.Header.Set("Livepeer-Session-Id", sid)
 			req.Out.Header.Set("Livepeer-Session-Token", token)
 			req.Out.Header.Set("Livepeer-Session-Control", control)
+			for name := range req.Out.Header {
+				if headerExcluded(name, s.excludedHeaders) {
+					delete(req.Out.Header, name)
+				}
+			}
 		},
 	}
 	proxy.ServeHTTP(w, r.WithContext(ctx))

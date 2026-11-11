@@ -250,6 +250,43 @@ func TestLocalOrchestratorWaitsForEconomicalRedemption(t *testing.T) {
 	require.Empty(t, f.Sent, "equality must withhold the transaction")
 }
 
+func TestExcludedHeadersEnvironmentAndFlag(t *testing.T) {
+	t.Setenv("LIVEPEER_ORCHESTRATOR_EXCLUDED_HEADERS", "CF-Access-*,Cookie")
+	for _, args := range [][]string{nil, {"--excluded-headers", "X-Ingress-Token"}} {
+		output, err := execute(t, append([]string{"--config", "", "--print-config"}, args...)...)
+		require.NoError(t, err)
+		var printed Params
+		require.NoError(t, toml.Unmarshal([]byte(output), &printed))
+		want := []string{"CF-Access-*", "Cookie"}
+		if len(args) > 0 {
+			want = []string{"X-Ingress-Token"}
+		}
+		require.Equal(t, want, printed.ExcludedHeaders)
+	}
+}
+
+func TestExcludedHeadersValidation(t *testing.T) {
+	require.NoError(t, validateExcludedHeaders(nil))
+	require.NoError(t, validateExcludedHeaders([]string{"CF-Access-*", "Cookie", "X-Exact", "X_Valid!#$%&'+-.^`|~"}))
+	t.Setenv("LIVEPEER_ORCHESTRATOR_BOOTSTRAP_SECRET", "test")
+	for _, pattern := range []string{
+		"", "*", "CF-*-Access", "CF-Access-**", "Bad Header", "Header: value", "Header\r\n", "Héader",
+		"livepeer-runner-route", "LIVEPEER-SESSION-ID", "Livepeer-Session-Token", "Livepeer-Session-Control",
+		"livepeer-*", "Livepeer-Session-*", "L*",
+	} {
+		t.Run(fmt.Sprintf("%q", pattern), func(t *testing.T) {
+			require.ErrorContains(t, validateExcludedHeaders([]string{pattern}), "--excluded-headers")
+			// CLI list parsing treats empty input as clearing the list and trims whitespace.
+			if pattern == "" || strings.TrimSpace(pattern) != pattern {
+				return
+			}
+			_, err := execute(t, "--config", "", "--excluded-headers", pattern)
+			require.ErrorContains(t, err, "--excluded-headers")
+			require.True(t, boa.IsUserInputError(err))
+		})
+	}
+}
+
 func TestConfigPrecedenceAndRedaction(t *testing.T) {
 	for _, ext := range []string{".toml", ".json"} {
 		t.Run(ext, func(t *testing.T) {
@@ -264,6 +301,7 @@ OrchestratorAddress = '0x0000000000000000000000000000000000000011'
 WeiPerUSD = '1/2'
 KeystoreFile = '/missing/account.json'
 RunnerGrants = ['10.0.0.0/8', 'fc00::/7']
+ExcludedHeaders = ['CF-Access-*', 'Cookie']
 `)
 			test.WriteConfig(t, path, string(config))
 			for key, value := range map[string]string{
@@ -294,6 +332,7 @@ RunnerGrants = ['10.0.0.0/8', 'fc00::/7']
 			require.Equal(t, "0x0000000000000000000000000000000000000011", printed["OrchestratorAddress"])
 			require.Equal(t, "2/3", printed["WeiPerUSD"])
 			require.Equal(t, "5s", printed["HeartbeatInterval"])
+			require.Equal(t, []any{"CF-Access-*", "Cookie"}, printed["ExcludedHeaders"])
 			for _, key := range []string{"ServiceURL", "RPCURL", "BootstrapSecret", "KeystoreFile", "KeystorePassword", "KeystorePasswordFile", "RunnerConfig", "TicketFaceValue"} {
 				require.NotContains(t, printed, key)
 			}

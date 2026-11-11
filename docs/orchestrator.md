@@ -103,6 +103,9 @@ DNS, TLS, and forwarding to this listener for those URLs. Hostname routing uses
 the actual Host header. Single-shot domain proxies require an app registration ID
 that is a lowercase DNS label of at most 63 characters.
 
+To remove headers from app requests, set `ExcludedHeaders`, for example:
+`["CF-Access-*", "Cookie"]`. Matching is case-insensitive.
+
 ## Enable payments
 
 For paid operation, select an on-chain `Network` and supply:
