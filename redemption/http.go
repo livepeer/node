@@ -1,7 +1,6 @@
 // QueueTicket admission and ticket conversion adapt Nico Vergauwen's and
 // Yondon Fu's go-livepeer/server/redeemer.go at afaaa36e743d39e6f460e7993d516d52b3a81341.
 // HTTP transport, deployment binding and validation are implemented for Node.
-// MIT notice: LICENSE. No max-float RPCs are included.
 package redemption
 
 import (
@@ -90,10 +89,8 @@ func Handler(s *RedeemerDB) http.Handler {
 	return HandlerWithAuthorization(s, nil)
 }
 
-// HandlerWithAuthorization checks each admitted POST /tickets after decoding
-// its bounded body, before validation or storage. A decode failure passes a nil
-// ticket. authorize must write a failure response when returning false.
-// Accepted tickets need no further authorization during background redemption.
+// HandlerWithAuthorization calls authorize before validating or storing a ticket.
+// The ticket is nil if decoding fails. authorize must write any failure response.
 func HandlerWithAuthorization(s *RedeemerDB, authorize func(http.ResponseWriter, *http.Request, *TicketJSON) bool) http.Handler {
 	mux := http.NewServeMux()
 	slots := make(chan struct{}, 32)

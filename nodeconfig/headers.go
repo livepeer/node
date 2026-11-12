@@ -11,9 +11,8 @@ import (
 	"strings"
 )
 
-// Headers is a text scalar for configuration and secret files. It accepts
-// comma-separated Header: value entries, with CSV quoting for values containing
-// commas. Header names are case-insensitive and repeated names retain all values.
+// Headers parses comma-separated Header: value entries, with CSV quoting for
+// commas. Names are case-insensitive; repeated names retain all values.
 type Headers http.Header
 
 func validHeader(name, value string) bool {
@@ -60,8 +59,7 @@ func (h *Headers) UnmarshalText(text []byte) error {
 	return nil
 }
 
-// MarshalText sorts names for deterministic secret-file comparisons and auth
-// policy fingerprints, and quotes entries containing commas or quotation marks.
+// MarshalText returns CSV entries sorted by header name.
 func (h Headers) MarshalText() ([]byte, error) {
 	var entries []string
 	for _, name := range slices.Sorted(maps.Keys(h)) {

@@ -19,20 +19,17 @@ redeemer; see [configuration](configuration.md) and [recovery](payment-recovery.
 
 ## Authorization webhook
 
-To authorize ticket submissions through a policy service, configure:
+To authorize ticket submissions:
 
 ```toml
 AuthWebhookFile = "/run/secrets/livepeer-redeemer-auth-url"
 # AuthWebhookHeadersFile = "/run/secrets/livepeer-redeemer-auth-headers"
 ```
 
-Both files must be owner-only regular files. The URL must be absolute HTTP or
-HTTPS without a username, password, or fragment. The optional headers file uses
-comma-separated `Header: value` entries to authenticate the redeemer to the
-webhook. If the policy relies on caller identity headers, configure the proxy to
-authenticate callers and replace untrusted identity headers. See the
-[HTTP contract](http-api.md#redeemer-authorization-webhook) and
-[metrics](metrics.md).
+The URL must be absolute HTTP or HTTPS without a username, password, or fragment.
+The optional headers file contains comma-separated `Header: value` entries. See
+[credential files](configuration.md#credential-files) and the
+[HTTP contract](http-api.md#redeemer-authorization-webhook).
 
 ## Connect an orchestrator
 

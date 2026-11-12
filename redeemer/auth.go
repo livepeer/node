@@ -24,7 +24,6 @@ type authWebhook struct {
 	metrics  *observability.Metrics
 }
 
-// Configuration is validated by Params before constructing the immutable client.
 func newAuthWebhook(endpoint *url.URL, headers nodeconfig.Headers, logger *slog.Logger, metrics *observability.Metrics) *authWebhook {
 	return &authWebhook{
 		endpoint: endpoint.String(),
@@ -71,8 +70,7 @@ func (a *authWebhook) authorize(w http.ResponseWriter, r *http.Request, ticket *
 	if err != nil {
 		return fail("redeemer auth request construction failed", observability.ErrorKind(err))
 	}
-	// A received authorization request must not be replayed after a connection
-	// failure, even when configured service headers include an idempotency key.
+	// Prevent transport retries, including with a configured idempotency key.
 	request.GetBody = nil
 	request.Header = a.headers.Clone()
 	if request.Header == nil {

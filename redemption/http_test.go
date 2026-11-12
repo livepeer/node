@@ -1,6 +1,7 @@
 package redemption
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/ecdsa"
@@ -9,6 +10,7 @@ import (
 	"errors"
 	"io"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -17,6 +19,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/ethereum/go-ethereum/accounts"
@@ -108,75 +111,85 @@ func TestHTTPAdmissionIdentityCapacityAndScope(t *testing.T) {
 }
 
 func TestHTTPAuthorizationConcurrency(t *testing.T) {
-	ctx, cancel := context.WithCancel(t.Context())
-	entered := make(chan struct{}, 32)
-	var requests sync.WaitGroup
-	t.Cleanup(func() { cancel(); requests.Wait() })
-	var calls atomic.Int32
-	handler := HandlerWithAuthorization(nil, func(w http.ResponseWriter, r *http.Request, ticket *TicketJSON) bool {
-		calls.Add(1)
-		entered <- struct{}{}
-		<-ctx.Done()
-		http.Error(w, "denied", 403)
-		return false
-	})
-	for range 32 {
-		requests.Go(func() {
-			handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("POST", "/tickets", strings.NewReader("invalid")))
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		var requests sync.WaitGroup
+		defer func() { cancel(); requests.Wait() }()
+		var calls atomic.Int32
+		handler := HandlerWithAuthorization(nil, func(w http.ResponseWriter, r *http.Request, ticket *TicketJSON) bool {
+			calls.Add(1)
+			<-ctx.Done()
+			http.Error(w, "denied", 403)
+			return false
 		})
-	}
-	for range 32 {
-		select {
-		case <-entered:
-		case <-time.After(5 * time.Second):
-			t.Fatal("authorization did not fill admission slots")
+		for range 32 {
+			requests.Go(func() {
+				handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("POST", "/tickets", strings.NewReader("invalid")))
+			})
 		}
-	}
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, httptest.NewRequest("POST", "/tickets", nil))
-	require.Equal(t, 503, w.Code)
-	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/tickets", nil))
-	require.EqualValues(t, 32, calls.Load(), "overloaded requests and other methods do not authorize")
+		synctest.Wait()
+		require.EqualValues(t, 32, calls.Load())
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, httptest.NewRequest("POST", "/tickets", nil))
+		require.Equal(t, 503, w.Code)
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/tickets", nil))
+		require.EqualValues(t, 32, calls.Load(), "overloaded requests and other methods do not authorize")
+	})
 }
 
 func TestHTTPDestinationAuthorizationAndAdmissionBudgets(t *testing.T) {
-	s, b := boundStore(t, "redeemer", "chain", DefaultLimits)
-	s.db.SetMaxOpenConns(1)
-	conn, err := s.db.Conn(t.Context())
-	require.NoError(t, err)
-	defer conn.Close()
-	authorized := make(chan struct{})
-	handler := HandlerWithAuthorization(s, func(http.ResponseWriter, *http.Request, *TicketJSON) bool {
-		time.Sleep(50 * time.Millisecond)
-		close(authorized)
-		return true
+	synctest.Test(t, func(t *testing.T) {
+		s, b := boundStore(t, "redeemer", "chain", DefaultLimits)
+		s.db.SetMaxOpenConns(1)
+		conn, err := s.db.Conn(t.Context())
+		require.NoError(t, err)
+		defer conn.Close()
+		authorized := make(chan struct{})
+		handler := HandlerWithAuthorization(s, func(http.ResponseWriter, *http.Request, *TicketJSON) bool {
+			time.Sleep(4 * time.Second)
+			close(authorized)
+			return true
+		})
+		serverConn, clientConn := net.Pipe()
+		defer serverConn.Close()
+		defer clientConn.Close()
+		go func() {
+			defer serverConn.Close()
+			request, err := http.ReadRequest(bufio.NewReader(serverConn))
+			require.NoError(t, err)
+			defer request.Body.Close()
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			require.NoError(t, response.Result().Write(serverConn))
+		}()
+		policy, err := destination.New("redeemer", []string{"127.0.0.1"})
+		require.NoError(t, err)
+		u, err := url.Parse("http://127.0.0.1")
+		require.NoError(t, err)
+		remote, err := NewHTTPDestination(u, policy, b)
+		require.NoError(t, err)
+		defer remote.Close()
+		require.Equal(t, 20*time.Second, remote.client.Timeout)
+		transport := remote.client.Transport.(*http.Transport)
+		require.Equal(t, 15*time.Second, transport.ResponseHeaderTimeout)
+		transport.Proxy = nil
+		transport.DialContext = func(context.Context, string, string) (net.Conn, error) { return clientConn, nil }
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			select {
+			case <-authorized:
+				time.Sleep(4 * time.Second) // Hold storage after approval.
+				_ = conn.Close()
+			case <-t.Context().Done():
+			}
+		}()
+		ticket, _ := winningTicket(t, 1)
+		started := time.Now()
+		require.NoError(t, remote.Submit(t.Context(), ticket))
+		<-done
+		require.Equal(t, 8*time.Second, time.Since(started))
 	})
-	server := httptest.NewServer(handler)
-	defer server.Close()
-	policy, err := destination.New("redeemer", []string{"127.0.0.1"})
-	require.NoError(t, err)
-	u, err := url.Parse(server.URL)
-	require.NoError(t, err)
-	remote, err := NewHTTPDestination(u, policy, b)
-	require.NoError(t, err)
-	defer remote.Close()
-	require.Equal(t, 20*time.Second, remote.client.Timeout)
-	require.Equal(t, 15*time.Second, remote.client.Transport.(*http.Transport).ResponseHeaderTimeout)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		select {
-		case <-authorized:
-			time.Sleep(50 * time.Millisecond) // Admission waits for storage after approval.
-			_ = conn.Close()
-		case <-t.Context().Done():
-		}
-	}()
-	ticket, _ := winningTicket(t, 1)
-	started := time.Now()
-	require.NoError(t, remote.Submit(t.Context(), ticket))
-	<-done
-	require.GreaterOrEqual(t, time.Since(started), 100*time.Millisecond)
 }
 
 func signAlternativeTicket(t *testing.T, ticket *pm.SignedTicket, key *ecdsa.PrivateKey) {

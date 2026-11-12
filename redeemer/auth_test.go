@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/ethereum/go-ethereum/accounts"
@@ -31,6 +32,10 @@ import (
 	"github.com/livepeer/node/redemption"
 	"github.com/stretchr/testify/require"
 )
+
+type authTransport func(*http.Request) (*http.Response, error)
+
+func (f authTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func testAuthWebhook(t *testing.T, endpoint string, headers nodeconfig.Headers, logs io.Writer) *authWebhook {
 	t.Helper()
@@ -175,30 +180,32 @@ func TestAuthWebhookDecisions(t *testing.T) {
 func TestAuthWebhookUnavailableTimeoutAndCancellation(t *testing.T) {
 	for _, kind := range []string{"unavailable", "timeout", "cancelled"} {
 		t.Run(kind, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				_, _ = io.Copy(io.Discard, r.Body)
-				<-r.Context().Done()
-			}))
-			defer server.Close()
-			if kind == "unavailable" {
-				server.Close()
-			}
-			var logs bytes.Buffer
-			auth := testAuthWebhook(t, server.URL+"?private-detail", nil, &logs)
-			if kind == "timeout" {
-				auth.client.Timeout = 20 * time.Millisecond
-			}
-			ctx, cancel := context.WithCancel(t.Context())
-			defer cancel()
-			if kind == "cancelled" {
-				cancel()
-			}
-			r := httptest.NewRequest("POST", "/tickets", nil).WithContext(ctx)
-			w := httptest.NewRecorder()
-			require.False(t, auth.authorize(w, r, nil))
-			require.Equal(t, 502, w.Code)
-			require.NotContains(t, logs.String(), "private-detail")
-			require.EqualValues(t, 1, test.MetricSum(t, auth.metrics.Registry, "redeemer_auth_webhook_requests_total", map[string]string{"status": "0", "outcome": "error"}))
+			synctest.Test(t, func(t *testing.T) {
+				var logs bytes.Buffer
+				auth := testAuthWebhook(t, "http://webhook.example?private-detail", nil, &logs)
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				auth.client.Transport = authTransport(func(r *http.Request) (*http.Response, error) {
+					if kind == "unavailable" {
+						return nil, errors.New("private-detail")
+					}
+					if kind == "cancelled" {
+						cancel()
+					}
+					<-r.Context().Done()
+					return nil, r.Context().Err()
+				})
+				r := httptest.NewRequest("POST", "/tickets", nil).WithContext(ctx)
+				w := httptest.NewRecorder()
+				started := time.Now()
+				require.False(t, auth.authorize(w, r, nil))
+				if kind == "timeout" {
+					require.Equal(t, 5*time.Second, time.Since(started))
+				}
+				require.Equal(t, 502, w.Code)
+				require.NotContains(t, logs.String(), "private-detail")
+				require.EqualValues(t, 1, test.MetricSum(t, auth.metrics.Registry, "redeemer_auth_webhook_requests_total", map[string]string{"status": "0", "outcome": "error"}))
+			})
 		})
 	}
 }
@@ -227,7 +234,11 @@ func TestAuthWebhookDoesNotReplayReceivedPOST(t *testing.T) {
 func TestAuthorizationForwardingAndQueuedRedemption(t *testing.T) {
 	f := test.NewRedemptionRPC(t)
 	p := serviceParams(t, f)
-	rpc, err := eth.NewRPC(p.RPCURL, nil)
+	rpc, err := eth.NewRPC(p.RPCURL, authTransport(func(r *http.Request) (*http.Response, error) {
+		w := httptest.NewRecorder()
+		f.Serve(w, r)
+		return w.Result(), nil
+	}))
 	require.NoError(t, err)
 	defer rpc.Close()
 	contracts, err := eth.NewContracts(rpc, *p.Controller)
@@ -311,16 +322,23 @@ func TestAuthorizationForwardingAndQueuedRedemption(t *testing.T) {
 	require.EqualValues(t, 5, calls.Load())
 	webhook.Close()
 	require.Error(t, remote.Submit(t.Context(), ticket), "outage withholds duplicate acknowledgment")
-	key, err := eth.OpenKeystoreFile(p.KeystoreFile, p.KeystorePasswordFile)
-	require.NoError(t, err)
-	chainDest, err := redemption.NewChainDestination(t.Context(), serverStore, chain, key, big.NewInt(1), redemption.RedemptionOptions{Timeout: 30 * time.Millisecond, MaxReplacements: 1})
-	require.NoError(t, err)
-	worker, err := redemption.NewWorker(serverStore, chain, chainDest)
-	require.NoError(t, err)
-	require.Empty(t, worker.Process(t.Context()))
-	require.Eventually(t, func() bool { return len(f.Transactions()) == 2 }, 3*time.Second, 5*time.Millisecond)
-	sent := f.Transactions()
-	require.Equal(t, sent[0].Nonce(), sent[1].Nonce())
-	require.Equal(t, sent[0].Data(), sent[1].Data(), "transaction replacement proceeds during authorization outage")
-	require.EqualValues(t, 5, calls.Load(), "background redemption never authorizes again")
+	synctest.Test(t, func(t *testing.T) {
+		defer serverStore.Close()
+		key, err := eth.OpenKeystoreFile(p.KeystoreFile, p.KeystorePasswordFile)
+		require.NoError(t, err)
+		chainDest, err := redemption.NewChainDestination(t.Context(), serverStore, chain, key, big.NewInt(1), redemption.RedemptionOptions{Timeout: 5 * time.Second, MaxReplacements: 1})
+		require.NoError(t, err)
+		worker, err := redemption.NewWorker(serverStore, chain, chainDest)
+		require.NoError(t, err)
+		require.Empty(t, worker.Process(t.Context()))
+		synctest.Wait()
+		require.Len(t, f.Transactions(), 1)
+		time.Sleep(5 * time.Second)
+		synctest.Wait()
+		require.Len(t, f.Transactions(), 2)
+		sent := f.Transactions()
+		require.Equal(t, sent[0].Nonce(), sent[1].Nonce())
+		require.Equal(t, sent[0].Data(), sent[1].Data(), "transaction replacement proceeds during authorization outage")
+		require.EqualValues(t, 5, calls.Load(), "background redemption never authorizes again")
+	})
 }

@@ -276,24 +276,33 @@ TLS and endpoint authentication in your deployment; see [redeemer setup](redeeme
 
 ### Redeemer authorization webhook
 
-When [configured](redeemer.md#authorization-webhook), the redeemer authorizes
-each admitted `POST /tickets`, including duplicates, without caching decisions.
-It sends a JSON POST with `headers` (incoming headers as arrays of values) and
-`ticket` (the submitted ticket fields above, including `sig` and
-`recipient_rand_hash`, but omitting `recipient_rand`). The ticket is null if the
-submission cannot be decoded or exceeds the size limit; otherwise it may still
-be invalid, as validation follows authorization. Configured webhook credentials
-are sent as HTTP headers, with `Content-Type: application/json`.
+When [configured](redeemer.md#authorization-webhook), the redeemer checks each submitted ticket.
+It sends the webhook a JSON POST, for example:
 
-The webhook must return HTTP 200 with a JSON integer `status`: 200 approves and
-400–599 denies with that status. A decision of 409 returns 403, preserving 409
-for ticket conflicts. An optional `reason` string or null is ignored and never
-exposed. Redirects, timeouts, non-200 responses, and invalid decisions return 502;
-the webhook timeout is five seconds.
+```json
+{
+  "headers": {"Authorization": ["Bearer caller-credential"]},
+  "ticket": {"sig": "0x...", "recipient_rand_hash": "0x..."}
+}
+```
 
-Overloaded requests return 503 before authorization. Accepted tickets continue
-through redemption, recovery, and transaction retries independently of later
-webhook decisions or outages.
+The example shows selected [ticket fields](#redeemer-http). The webhook receives
+all those fields except `recipient_rand`.
+
+The webhook must return HTTP 200 with a JSON decision, for example:
+
+```json
+{"status": 200}
+```
+
+| Decision `status` | Result | Client response |
+| --- | --- | --- |
+| 200 | Approve the ticket. | 202 Accepted if validation and storage succeed. |
+| 409 | Deny the ticket. | 403 Forbidden |
+| Other 400–599 | Deny the ticket. | Same status |
+
+A redirect, timeout, non-200 response, or invalid decision returns 502. The
+timeout is five seconds.
 
 ## Accounting events
 
