@@ -20,8 +20,9 @@ var ErrConflict = errors.New("ticket scheduling metadata conflicts with stored t
 
 type Limits struct{ Pending, PerRecipient int }
 
-// HandoffDrained reports whether the external redeemer has durably accepted
-// every outstanding winner. It does not consult the chain or wait for finality.
+var DefaultLimits = Limits{Pending: 100000, PerRecipient: 10000}
+
+// HandoffDrained reports whether all unsettled tickets have been handed off or delivery is local.
 func (s *RedeemerDB) HandoffDrained(ctx context.Context) (bool, error) {
 	if s.binding != nil && s.binding.Destination == "chain" {
 		return true, nil
@@ -30,8 +31,6 @@ func (s *RedeemerDB) HandoffDrained(ctx context.Context) (bool, error) {
 	err := s.db.QueryRowContext(ctx, `SELECT NOT EXISTS(SELECT 1 FROM ticket_state WHERE settled=0 AND delivery!='acknowledged')`).Scan(&drained)
 	return drained, err
 }
-
-var DefaultLimits = Limits{Pending: 100000, PerRecipient: 10000}
 
 type Binding struct {
 	ChainID           string

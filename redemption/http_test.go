@@ -403,3 +403,29 @@ func TestDestinationSubmissionHeadersAndRedirectIsolation(t *testing.T) {
 	require.Error(t, d2.Submit(t.Context(), ticket))
 	require.False(t, redirected)
 }
+
+func TestHandoffDrainRequiresDurableAcknowledgementNotSettlement(t *testing.T) {
+	s, binding := boundStore(t, "orchestrator", "https://redeemer.example", DefaultLimits)
+	ticket, _ := winningTicket(t, 1)
+	require.NoError(t, s.Admit(t.Context(), ticket))
+	binding.Destination = "https://replacement.example"
+	for _, phase := range []string{"queued", "sending", "retryable", "rejected"} {
+		require.NoError(t, s.delivery(t.Context(), ticket, phase, 0))
+		require.ErrorContains(t, s.Bind(t.Context(), binding, DefaultLimits, nil), "drain")
+	}
+	require.NoError(t, s.delivery(t.Context(), ticket, "acknowledged", 0))
+	require.NoError(t, s.Bind(t.Context(), binding, DefaultLimits, nil), "destination changes need handoff, not onchain confirmation")
+	path := s.path
+	require.NoError(t, s.Close())
+	reopened, err := OpenRedeemerDB(path)
+	require.NoError(t, err)
+	defer reopened.Close()
+	binding.Destination = "https://third.example"
+	require.NoError(t, reopened.Bind(t.Context(), binding, DefaultLimits, nil), "handoff acknowledgement survives restart")
+	binding.Destination = "chain"
+	require.NoError(t, reopened.Bind(t.Context(), binding, DefaultLimits, nil))
+	require.NoError(t, reopened.Close())
+	drained, err := reopened.HandoffDrained(t.Context())
+	require.NoError(t, err)
+	require.True(t, drained, "local redemption bypasses handoff even with unavailable storage")
+}

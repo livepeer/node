@@ -91,10 +91,6 @@ Set it in TOML or with `LIVEPEER_ORCHESTRATOR_DRAIN_TIMEOUT`. Unregistering a ru
 or letting its heartbeat expire ends its sessions. An orchestrator restart ends
 all sessions. See the [heartbeat contract](http-api.md#live-runner-http) for removal confirmation.
 
-With an external redeemer, unregister acknowledges completion only after every
-outstanding winner has a durable handoff acknowledgement. Retry a 503 response,
-including after a Node restart. Transaction confirmation continues at the redeemer.
-
 Enabling an app's proxy creates an automatic proxy belonging to that app; use its
 returned proxy ID and URL. Without a URL template, generated URLs use
 `ServiceURL/run/{proxy}`. The earlier

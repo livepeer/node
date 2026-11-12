@@ -571,17 +571,24 @@ func (r *Registry) removeApp(item *app) {
 
 func (r *Registry) Unregister(id, auth string) (int, error) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	current := r.runners[id]
 	if current != nil && (current.Static || !equalSecret(current.Credential, auth)) {
+		r.mu.Unlock()
 		return http.StatusUnauthorized, errors.New("invalid runner credential")
 	}
 	if current != nil {
 		r.removeRunner(current, nil, "runner_unregistered", "unregistered")
 	}
+	r.mu.Unlock()
 	if r.server != nil && r.server.payment != nil {
-		if err := r.server.payment.handoffDrained(); err != nil {
-			return http.StatusServiceUnavailable, err
+		payment := r.server.payment
+		payment.mu.Lock()
+		//lint:ignore SA2001 Wait for receipts that passed the registration fence to commit.
+		payment.mu.Unlock()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if drained, err := payment.store.HandoffDrained(ctx); err != nil || !drained {
+			return http.StatusServiceUnavailable, errors.New("ticket handoff pending or unavailable")
 		}
 	}
 	if current == nil {

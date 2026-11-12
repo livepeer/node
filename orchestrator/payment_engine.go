@@ -349,23 +349,6 @@ func (e *PaymentEngine) Receive(ctx context.Context, appID, manifest, paymentHea
 	return payer, new(big.Rat).Set(balance), nil
 }
 
-// Unregister fences new receipts before taking this lock, so any receipt
-// already committing is included in the durable handoff check.
-func (e *PaymentEngine) handoffDrained() error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	drained, err := e.store.HandoffDrained(ctx)
-	if err != nil {
-		return errors.New("ticket handoff status unavailable")
-	}
-	if !drained {
-		return errors.New("ticket handoff pending")
-	}
-	return nil
-}
-
 func (e *PaymentEngine) Charge(ctx context.Context, manifest string, now time.Time) (result error) {
 	labels := e.paymentLabels("", manifest)
 	observe := true
