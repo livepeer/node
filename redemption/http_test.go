@@ -118,7 +118,7 @@ func TestHTTPAuthorizationConcurrency(t *testing.T) {
 			require.Nil(t, ticket)
 			calls.Add(1)
 			<-release
-			http.Error(w, "denied", 403)
+			http.Error(w, "denied", http.StatusForbidden)
 			return false
 		})
 		for i := range 32 {
