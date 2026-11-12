@@ -42,6 +42,7 @@ type Params struct {
 	ServiceURL                boa.Text[*url.URL] `optional:"true" descr:"Public orchestrator base URL; defaults to http://listen"`
 	RunnerServiceURL          boa.Text[*url.URL] `optional:"true" descr:"Runner-facing base URL for callbacks and trickle; defaults to service-url"`
 	ProxyURLTemplate          string             `optional:"true" descr:"Generated proxy URL with {proxy} in a hostname label or final path segment"`
+	ExcludedHeaders           []string           `optional:"true" descr:"Headers to remove from app requests; a trailing * matches a prefix"`
 	BootstrapSecret           string             `secret:"true" optional:"true" descr:"Dynamic runner bootstrap credential"`
 	BootstrapSecretFile       string             `basepath:"source" secretfor:"BootstrapSecret" descr:"File containing runner bootstrap credential"`
 	RunnerConfig              string             `basepath:"source" optional:"true" file:"true" descr:"Static runner TOML path"`
@@ -133,6 +134,9 @@ func (p Params) Validate() error {
 	if err := validateProxyTemplate(p.ProxyURLTemplate); err != nil {
 		return fmt.Errorf("invalid --proxy-url-template: %w", err)
 	}
+	if err := validateExcludedHeaders(p.ExcludedHeaders); err != nil {
+		return err
+	}
 	if !p.Listen.IsValid() || !p.MetricsListen.IsValid() {
 		return errors.New("--listen and --metrics-listen require IP:port addresses")
 	}
@@ -159,6 +163,26 @@ func (p Params) Validate() error {
 	}{{"--runner-grants", p.RunnerGrants}, {"--session-proxy-grants", p.SessionProxyGrants}, {"--health-grants", p.HealthGrants}} {
 		if _, err := destination.New(item.purpose, item.grants); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+func validateExcludedHeaders(patterns []string) error {
+	for _, pattern := range patterns {
+		name := strings.TrimSuffix(pattern, "*")
+		if name == "" || strings.Contains(name, "*") {
+			return fmt.Errorf("invalid --excluded-headers entry %q: expected a header name with an optional trailing *", pattern)
+		}
+		for _, c := range name {
+			if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || strings.ContainsRune("!#$%&'+-.^_`|~", c)) {
+				return fmt.Errorf("invalid --excluded-headers entry %q: invalid header name", pattern)
+			}
+		}
+	}
+	for _, name := range []string{"Livepeer-Runner-Route", "Livepeer-Session-Id", "Livepeer-Session-Token", "Livepeer-Session-Control"} {
+		if headerExcluded(name, patterns) {
+			return fmt.Errorf("--excluded-headers must not remove required header %s", name)
 		}
 	}
 	return nil
@@ -222,7 +246,8 @@ func printConfig(ctx *boa.HookContext, p *Params, out io.Writer) error {
 	values := map[string]any{
 		"Network": &p.Network, "Account": &p.Account, "OrchestratorAddress": &p.OrchestratorAddress,
 		"Listen": &p.Listen, "MetricsListen": &p.MetricsListen,
-		"RunnerGrants": &p.RunnerGrants, "SessionProxyGrants": &p.SessionProxyGrants, "HealthGrants": &p.HealthGrants,
+		"ExcludedHeaders": &p.ExcludedHeaders,
+		"RunnerGrants":    &p.RunnerGrants, "SessionProxyGrants": &p.SessionProxyGrants, "HealthGrants": &p.HealthGrants,
 		"HeartbeatInterval": &p.HeartbeatInterval, "HeartbeatTTL": &p.HeartbeatTTL,
 		"DrainTimeout":      &p.DrainTimeout,
 		"RedeemerTxTimeout": &p.RedeemerTxTimeout, "RedeemerMaxTxReplacements": &p.RedeemerMaxTxReplacements,
@@ -365,6 +390,7 @@ func Serve(parent context.Context, p Params, logOut io.Writer) (result error) {
 		return fmt.Errorf("load static runners from %q (--runner-config or LIVEPEER_ORCHESTRATOR_RUNNER_CONFIG): %w", p.RunnerConfig, err)
 	}
 	app := NewServer(registry, runnerPolicy, proxyPolicy, logger)
+	app.setExcludedHeaders(p.ExcludedHeaders)
 	logger = app.logger
 	if engine != nil {
 		registry.metrics.PaymentObserver(observedChain.Observer, logger)
