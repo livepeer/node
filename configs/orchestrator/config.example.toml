@@ -3,7 +3,7 @@
 Listen = "127.0.0.1:8935"
 MetricsListen = "127.0.0.1:8936"
 ServiceURL = "http://127.0.0.1:8935"
-# APIOriginURL = "http://orchestrator.internal:8935" # API request Host sent by the reverse proxy; defaults to ServiceURL.
+# APIOriginURL = "http://orchestrator.internal:8935" # Client API Host sent by the reverse proxy; defaults to ServiceURL.
 # RunnerServiceURL = "http://127.0.0.1:8935" # Runner-facing callbacks and trickle; defaults to ServiceURL.
 BootstrapSecretFile = "/run/secrets/livepeer-runner-bootstrap"
 RunnerConfig = "/etc/livepeer/runners.toml"

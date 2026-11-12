@@ -29,13 +29,12 @@ func TestRunnerFacingAddressKeepsPublicAndInternalURLsSeparate(t *testing.T) {
 	defer upstream.Close()
 	policy, err := destination.New("runner", []string{strings.TrimPrefix(upstream.URL, "http://")})
 	require.NoError(t, err)
-	registry := NewRegistry("bootstrap", "https://public.example/external", time.Second, time.Minute)
+	registry := NewRegistry("bootstrap", "https://public.example/internal/runners", time.Second, time.Minute)
 	registry.runnerService = "http://runner.internal/internal"
 	s := NewServer(registry, policy, policy, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	defer s.Close()
 
 	heartbeat := httptest.NewRequest(http.MethodPost, "http://runner.internal/internal/runners/heartbeat", strings.NewReader(`{"runner_id":"r","runner_url":"`+upstream.URL+`","app":"test","capacity":1}`))
-	heartbeat.Host = s.apiOrigin.Host
 	heartbeat.Header.Set("Authorization", "bootstrap")
 	w := httptest.NewRecorder()
 	s.ServeHTTP(w, heartbeat)
@@ -45,22 +44,28 @@ func TestRunnerFacingAddressKeepsPublicAndInternalURLsSeparate(t *testing.T) {
 	require.Equal(t, "http://runner.internal/internal", registration.Orchestrator)
 	require.Equal(t, "http://runner.internal/internal/ai/trickle/"+registration.O2R.ChannelName, registration.O2R.URL)
 	require.Empty(t, registration.O2R.InternalURL)
+	registry.proxyTemplate = "https://{proxy}.internal"
 	heartbeat = httptest.NewRequest(http.MethodPost, registration.Orchestrator+"/runners/heartbeat", strings.NewReader(`{"runner_id":"r","runner_url":"`+upstream.URL+`","app":"test","capacity":1}`))
-	heartbeat.Host = s.apiOrigin.Host
 	heartbeat.Header.Set("Authorization", registration.HeartbeatSecret)
 	w = httptest.NewRecorder()
 	s.ServeHTTP(w, heartbeat)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 
+	for _, path := range []string{"/internal/discovery", "/external/runners/heartbeat"} {
+		w = httptest.NewRecorder()
+		s.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "http://runner.internal"+path, nil))
+		require.Equal(t, http.StatusNotFound, w.Code, path)
+	}
+
 	w = httptest.NewRecorder()
-	s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "https://public.example/external/discovery", nil))
+	s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "https://public.example/internal/runners/discovery", nil))
 	require.Equal(t, http.StatusOK, w.Code)
 	var discovered []discoveryEntry
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &discovered))
-	require.Equal(t, "https://public.example/external", discovered[0].Address)
+	require.Equal(t, "https://public.example/internal/runners", discovered[0].Address)
 
 	w = httptest.NewRecorder()
-	s.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "https://public.example/external/apps/r/session", nil))
+	s.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "https://public.example/internal/runners/apps/r/session", nil))
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 	var reservation struct {
 		SessionID  string `json:"session_id"`
@@ -68,8 +73,8 @@ func TestRunnerFacingAddressKeepsPublicAndInternalURLsSeparate(t *testing.T) {
 		ControlURL string `json:"control_url"`
 	}
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &reservation))
-	require.Equal(t, "https://public.example/external/apps/r/session/"+reservation.SessionID+"/app", reservation.AppURL)
-	require.Equal(t, "https://public.example/external/apps/r/session/"+reservation.SessionID, reservation.ControlURL)
+	require.Equal(t, "https://public.example/internal/runners/apps/r/session/"+reservation.SessionID+"/app", reservation.AppURL)
+	require.Equal(t, "https://public.example/internal/runners/apps/r/session/"+reservation.SessionID, reservation.ControlURL)
 
 	w = httptest.NewRecorder()
 	s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, reservation.AppURL+"/hello", nil))
@@ -79,7 +84,6 @@ func TestRunnerFacingAddressKeepsPublicAndInternalURLsSeparate(t *testing.T) {
 	_, token, _, err := registry.sessionTarget("r", reservation.SessionID)
 	require.NoError(t, err)
 	create := httptest.NewRequest(http.MethodPost, controlHeader+"/channels", strings.NewReader(`{"channels":[{"name":"events"}]}`))
-	create.Host = s.apiOrigin.Host
 	create.Header.Set("Livepeer-Session-Token", token)
 	w = httptest.NewRecorder()
 	s.ServeHTTP(w, create)
@@ -90,13 +94,11 @@ func TestRunnerFacingAddressKeepsPublicAndInternalURLsSeparate(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &created))
 	require.Len(t, created.Channels, 1)
 	channel := created.Channels[0]
-	require.Equal(t, "https://public.example/external/ai/trickle/"+channel.ChannelName, channel.URL)
+	require.Equal(t, "https://public.example/internal/runners/ai/trickle/"+channel.ChannelName, channel.URL)
 	require.Equal(t, "http://runner.internal/internal/ai/trickle/"+channel.ChannelName, channel.InternalURL)
 
 	w = httptest.NewRecorder()
-	create = httptest.NewRequest(http.MethodPost, channel.InternalURL+"/0", bytes.NewBufferString("message"))
-	create.Host = s.apiOrigin.Host
-	s.ServeHTTP(w, create)
+	s.ServeHTTP(w, httptest.NewRequest(http.MethodPost, channel.InternalURL+"/0", bytes.NewBufferString("message")))
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 	w = httptest.NewRecorder()
 	s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, channel.URL+"/0", nil))
