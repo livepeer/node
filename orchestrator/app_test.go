@@ -54,6 +54,48 @@ func freeTCPPort(t *testing.T) int {
 	return port
 }
 
+func TestAPIOriginURLRouting(t *testing.T) {
+	address := fmt.Sprintf("127.0.0.1:%d", freeTCPPort(t))
+	metrics := fmt.Sprintf("127.0.0.1:%d", freeTCPPort(t))
+	const origin = "orchestrator.internal"
+	t.Setenv("LIVEPEER_ORCHESTRATOR_BOOTSTRAP_SECRET", "bootstrap")
+	t.Setenv("LIVEPEER_ORCHESTRATOR_API_ORIGIN_URL", "http://wrong.internal:8935")
+	cmd := Root(io.Discard, io.Discard)
+	cmd.SetArgs([]string{"--config", "", "--listen", address, "--metrics-listen", metrics,
+		"--service-url", "https://public.example",
+		"--api-origin-url", "http://" + origin + ":80", "--runner-service-url", "http://" + origin,
+		"--proxy-url-template", "https://{proxy}.internal"})
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- cmd.ExecuteContext(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case err := <-done:
+			require.NoError(t, err)
+		case <-time.After(5 * time.Second):
+			t.Fatal("orchestrator did not stop")
+		}
+	})
+	client := &http.Client{Timeout: time.Second, Transport: &http.Transport{DisableKeepAlives: true}}
+	request := func(host string) int {
+		req, err := http.NewRequest(http.MethodGet, "http://"+address+"/discovery", nil)
+		require.NoError(t, err)
+		req.Host = host
+		response, err := client.Do(req)
+		if err != nil {
+			return 0
+		}
+		defer response.Body.Close()
+		return response.StatusCode
+	}
+	require.Eventually(t, func() bool { return request(origin) == http.StatusOK }, 5*time.Second, 10*time.Millisecond)
+	require.Equal(t, http.StatusOK, request(origin+":80"))
+	for _, host := range []string{origin + ":443", "public.example", "wrong.internal:8935", "other.example"} {
+		require.Equal(t, http.StatusNotFound, request(host), host)
+	}
+}
+
 func TestPaidHTTPStartup(t *testing.T) {
 	for _, mode := range []string{"wallet", "separate", "remote"} {
 		t.Run(mode, func(t *testing.T) {
@@ -471,6 +513,11 @@ func TestSecretFilesPreserveBytesAndRedactErrors(t *testing.T) {
 
 func TestValidationBeforeStartup(t *testing.T) {
 	t.Setenv("LIVEPEER_ORCHESTRATOR_BOOTSTRAP_SECRET", "test")
+	for _, value := range []string{"/relative", "ftp://api.example", "http://user:pass@api.example", "http://api.example/path", "http://api.example?", "http://api.example?x=1", "http://api.example#fragment"} {
+		_, err := execute(t, "--config", "", "--api-origin-url", value)
+		require.ErrorContains(t, err, "api-origin-url", value)
+		require.True(t, boa.IsUserInputError(err))
+	}
 	for _, flag := range []string{"--runner-grants", "--session-proxy-grants", "--health-grants"} {
 		_, err := execute(t, "--config", "", flag, "10.0.0.0/33")
 		require.ErrorContains(t, err, flag+" destination grant")

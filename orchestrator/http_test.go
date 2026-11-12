@@ -509,6 +509,7 @@ func heartbeatHTTP(t *testing.T, server *Server, body any, credential string) *h
 	data, err := json.Marshal(body)
 	require.NoError(t, err)
 	req := httptest.NewRequest(http.MethodPost, "/runners/heartbeat", bytes.NewReader(data))
+	req.Host = server.apiOrigin.Host
 	req.Header.Set("Authorization", credential)
 	response := httptest.NewRecorder()
 	server.ServeHTTP(response, req)
@@ -583,6 +584,7 @@ func TestMultiAppHeartbeatRoutingAndVersions(t *testing.T) {
 	require.Equal(t, sid, event["session"])
 	// Callback authorization and generated channels use app IDs, not owner IDs.
 	req := httptest.NewRequest(http.MethodPost, "/runner/persistent/session/"+sid+"/channels", strings.NewReader(`{"channels":[{"name":"data"}]}`))
+	req.Host = server.apiOrigin.Host
 	req.Header.Set("Livepeer-Session-Token", event["session_token"])
 	w = httptest.NewRecorder()
 	server.ServeHTTP(w, req)

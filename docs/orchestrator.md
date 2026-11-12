@@ -103,6 +103,12 @@ DNS, TLS, and forwarding to this listener for those URLs. Hostname routing uses
 the actual Host header. Single-shot domain proxies require an app registration ID
 that is a lowercase DNS label of at most 63 characters.
 
+With `ProxyURLTemplate`, API requests must use the Host from `APIOriginURL`,
+which defaults to `ServiceURL`. If a reverse proxy changes that Host, set
+`APIOriginURL` to an HTTP(S) URL with the Host it sends, without a path. Runner
+requests must use the same Host; configure `RunnerServiceURL` or the reverse proxy
+accordingly. `APIOriginURL` does not change advertised URLs.
+
 To remove headers from app requests, set `ExcludedHeaders`, for example:
 `["CF-Access-*", "Cookie"]`. Matching is case-insensitive.
 

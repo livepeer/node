@@ -40,6 +40,7 @@ type Params struct {
 	Listen                    boa.HTTPBind       `default:"127.0.0.1:8935" descr:"Public HTTP listener"`
 	MetricsListen             boa.HTTPBind       `default:"127.0.0.1:8936" descr:"Metrics listener"`
 	ServiceURL                boa.Text[*url.URL] `optional:"true" descr:"Public orchestrator base URL; defaults to http://listen"`
+	APIOriginURL              boa.Text[*url.URL] `optional:"true" descr:"API request Host as a URL when proxy-url-template is set; defaults to service-url"`
 	RunnerServiceURL          boa.Text[*url.URL] `optional:"true" descr:"Runner-facing base URL for callbacks and trickle; defaults to service-url"`
 	ProxyURLTemplate          string             `optional:"true" descr:"Generated proxy URL with {proxy} in a hostname label or final path segment"`
 	ExcludedHeaders           []string           `optional:"true" descr:"Headers to remove from app requests; a trailing * matches a prefix"`
@@ -149,6 +150,11 @@ func (p Params) Validate() error {
 		}
 		if u := endpoint.url; destination.ValidateURL(u) != nil || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
 			return fmt.Errorf("--%s must be an absolute HTTP or HTTPS URL without credentials, query or fragment", endpoint.name)
+		}
+	}
+	if u := p.APIOriginURL.Value; u != nil {
+		if destination.ValidateURL(u) != nil || u.User != nil || u.Path != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+			return errors.New("--api-origin-url must be an absolute HTTP or HTTPS URL without credentials, path, query or fragment")
 		}
 	}
 	if p.HeartbeatInterval <= 0 || p.HeartbeatTTL <= p.HeartbeatInterval {
@@ -390,6 +396,9 @@ func Serve(parent context.Context, p Params, logOut io.Writer) (result error) {
 		return fmt.Errorf("load static runners from %q (--runner-config or LIVEPEER_ORCHESTRATOR_RUNNER_CONFIG): %w", p.RunnerConfig, err)
 	}
 	app := NewServer(registry, runnerPolicy, proxyPolicy, logger)
+	if p.APIOriginURL.Value != nil {
+		app.apiOrigin = p.APIOriginURL.Value
+	}
 	app.setExcludedHeaders(p.ExcludedHeaders)
 	logger = app.logger
 	if engine != nil {

@@ -124,3 +124,106 @@ func TestDomainProxyRunnerIDs(t *testing.T) {
 		require.Error(t, reg.AddStatic(StaticRunner{ID: id, RunnerURL: req.RunnerURL, App: req.App, Mode: req.Mode, Proxy: true}))
 	}
 }
+
+func TestOriginDefaultPorts(t *testing.T) {
+	for _, tc := range []struct {
+		origin, first, second, wrong string
+	}{
+		{"http://api.example", "api.example", "API.EXAMPLE:80", "api.example:443"},
+		{"http://api.example:80", "api.example", "api.example:80", "api.example:443"},
+		{"https://api.example", "api.example", "api.example:443", "api.example:80"},
+		{"https://api.example:443", "api.example", "api.example:443", "api.example:80"},
+		{"http://[::1]:80", "[::1]", "[::1]:80", "[::1]:443"},
+		{"https://[::1]:443", "[::1]", "[::1]:443", "[::1]:80"},
+		{"http://api.example:8935", "api.example:8935", "API.EXAMPLE:8935", "api.example"},
+		{"https://api.example:8935", "api.example:8935", "API.EXAMPLE:8935", "api.example"},
+		{"https://[::1]:8935", "[::1]:8935", "[::1]:8935", "[::1]"},
+	} {
+		t.Run(tc.origin, func(t *testing.T) {
+			policy, err := destination.New("runner", nil)
+			require.NoError(t, err)
+			registry := NewRegistry("bootstrap", tc.origin, time.Second, time.Minute)
+			registry.proxyTemplate = "https://{proxy}.example"
+			server := NewServer(registry, policy, policy, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			defer server.Close()
+			for _, request := range []struct {
+				host   string
+				status int
+			}{
+				{tc.first, http.StatusOK},
+				{tc.second, http.StatusOK},
+				{tc.wrong, http.StatusNotFound},
+				{tc.second + ":80", http.StatusNotFound},
+				{tc.second + ":443", http.StatusNotFound},
+			} {
+				req := httptest.NewRequest(http.MethodGet, "/discovery", nil)
+				req.Host = request.host
+				w := httptest.NewRecorder()
+				server.ServeHTTP(w, req)
+				require.Equal(t, request.status, w.Code, request.host+": "+w.Body.String())
+			}
+		})
+	}
+}
+
+func TestProxyHostCannotReachAPI(t *testing.T) {
+	for _, apiOrigin := range []string{"", "api-private.machine.example", "runner.internal:8935"} {
+		t.Run("apiOrigin="+apiOrigin, func(t *testing.T) {
+			for _, template := range []string{"", "https://{proxy}.machine.example", "https://api-aaaaaaa.machine.example/custom/{proxy}"} {
+				t.Run(template, func(t *testing.T) {
+					upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+						_, _ = io.WriteString(w, "application response")
+					}))
+					defer upstream.Close()
+					policy, err := destination.New("runner", []string{strings.TrimPrefix(upstream.URL, "http://")})
+					require.NoError(t, err)
+					registry := NewRegistry("bootstrap", "https://api-aaaaaaa.machine.example", time.Second, time.Minute)
+					registry.runnerService = "http://runner.internal:8935"
+					registry.proxyTemplate = template
+					require.NoError(t, registry.AddStatic(StaticRunner{ID: "app-fixture", RunnerURL: upstream.URL, App: "fixture", Mode: "persistent", Capacity: 4}))
+					require.NoError(t, registry.AddStatic(StaticRunner{ID: "app-echo", RunnerURL: upstream.URL, App: "echo", Mode: "single-shot", Proxy: true, Capacity: 4}))
+					server := NewServer(registry, policy, policy, slog.New(slog.NewTextHandler(io.Discard, nil)))
+					defer server.Close()
+					if apiOrigin != "" {
+						server.apiOrigin = mustURL(t, "http://"+apiOrigin)
+					}
+
+					request := func(method, target string) *httptest.ResponseRecorder {
+						t.Helper()
+						req := httptest.NewRequest(method, target, nil)
+						req.Header.Set("X-Forwarded-Host", "api-aaaaaaa.machine.example")
+						w := httptest.NewRecorder()
+						server.ServeHTTP(w, req)
+						return w
+					}
+					if template != "" {
+						for _, host := range []string{
+							"app-echo.machine.example:8443",
+							"app-echo.machine.example:443",
+							"app-echo.machine.example.",
+							"nested.app-echo.machine.example",
+							"other.example",
+						} {
+							w := request(http.MethodPost, "http://"+host+"/apps/app-fixture/session")
+							require.Equal(t, http.StatusNotFound, w.Code, host+": "+w.Body.String())
+						}
+					}
+					for _, origin := range []string{registry.service, registry.runnerService, "http://api-private.machine.example"} {
+						status := http.StatusNotFound
+						u, err := url.Parse(origin)
+						require.NoError(t, err)
+						if template == "" || u.Host == server.apiOrigin.Host {
+							status = http.StatusOK
+						}
+						w := request(http.MethodPost, origin+"/apps/app-fixture/session")
+						require.Equal(t, status, w.Code, w.Body.String())
+						require.Equal(t, status, request(http.MethodGet, origin+"/discovery").Code)
+					}
+					w := request(http.MethodGet, registry.proxyURL("app-echo")+"/probe")
+					require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+					require.Equal(t, "application response", w.Body.String())
+				})
+			}
+		})
+	}
+}
