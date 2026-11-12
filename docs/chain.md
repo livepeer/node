@@ -96,15 +96,19 @@ rewards for the orchestrator; `unset` clears that authorization.
 
 ```text
 ticketbroker get
-ticketbroker fund --amount DEPOSIT --reserve RESERVE
+ticketbroker fund [--deposit ETH] [--reserve ETH] [--recipient ADDRESS]
 ticketbroker unlock
 ticketbroker cancel-unlock
 ticketbroker withdraw
 ```
 
-Funding sends the sum of deposit and reserve, which must be positive. Unlock
-starts the withdrawal period; cancel-unlock cancels it. Check `ticketbroker get`
-for balances and the withdrawal round, then withdraw once that round is reached.
+Set `--deposit`, `--reserve`, or both to fund them in one transaction. Omitted
+amounts default to zero; at least one must be positive. The configured wallet
+pays; use `--recipient ADDRESS` to fund another account.
+
+Unlock starts the withdrawal period; cancel-unlock cancels it. Check
+`ticketbroker get` for balances and the withdrawal round, then withdraw once that
+round is reached.
 
 Orchestrators act as redeemers, submitting winning tickets against the payer's funds. See
 [payment recovery](payment-recovery.md#orchestrator-transaction-recovery) for

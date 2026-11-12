@@ -15,7 +15,7 @@ RPCURLFile = "/run/secrets/livepeer-chain-rpc-url"
 
 # Action inputs and output controls must be provided on the command line.
 # Example dry run:
-# livepeer chain --config /path/to/chain.toml --output json ticketbroker fund --amount 1 --reserve 0
+# livepeer chain --config /path/to/chain.toml --output json ticketbroker fund --deposit 1
 # Add --submit to broadcast and wait for inclusion, or --quiet to suppress output.
 # --no-wait broadcasts a single transaction without waiting.
 # Amounts use human ETH/LPT units; --base-units selects integer wei/token units.

@@ -13,6 +13,7 @@ import (
 	"github.com/livepeer/node/eth"
 	"github.com/livepeer/node/nodeconfig"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
 type transactionParams interface {
@@ -70,6 +71,20 @@ func transactionCommand[T transactionParams](root *RootParams, command string, b
 		}
 		return executeActions(cmd.Context(), root.OperatorParams, root.DisplayOptions, tx, out, command, actions)
 	}})
+}
+
+func fundCommand(root *RootParams) boa.Cmd[FundParams] {
+	command := transactionCommand(root, "ticketbroker fund", FundParams.actions)
+	command.PostCreateFuncCtx = func(_ *boa.HookContext, _ *FundParams, cmd *cobra.Command) error {
+		cmd.Flags().SetNormalizeFunc(func(_ *pflag.FlagSet, name string) pflag.NormalizedName {
+			if name == "amount" {
+				name = "deposit"
+			}
+			return pflag.NormalizedName(name)
+		})
+		return nil
+	}
+	return command
 }
 
 func signingCommand[T any](root *RootParams, use, short string, path func(T) string, typed bool) boa.Cmd[T] {
@@ -195,7 +210,7 @@ func Root(out, errOut io.Writer) *cobra.Command {
 			)}),
 			groupCommand(params, boa.Cmd[boa.NoParams]{Use: "ticketbroker", Short: "Manage ticket broker funds", SubCmds: boa.SubCmds(
 				readCommand(params, "get", "Read TicketBroker funding and withdrawal status", ticketBrokerGet),
-				transactionCommand(params, "ticketbroker fund", FundParams.actions),
+				fundCommand(params),
 				staticTransaction(params, "ticketbroker unlock", "ticketBroker", "unlock"),
 				staticTransaction(params, "ticketbroker cancel-unlock", "ticketBroker", "cancelUnlock"),
 				staticTransaction(params, "ticketbroker withdraw", "ticketBroker", "withdraw"),

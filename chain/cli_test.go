@@ -34,7 +34,7 @@ func TestLeafHelpAndCompletion(t *testing.T) {
 		{"account create", []string{"--keystore-file", "--keystore-password-file", "--output"}, []string{"--submit", "--amount"}},
 		{"account get", []string{"--account", "--output"}, []string{"--submit", "--amount"}},
 		{"stake bond", []string{"--amount", "--submit", "--wait", "--quiet"}, []string{"--delegate", "--reserve", "--lock-id"}},
-		{"ticketbroker fund", []string{"--amount", "--reserve", "--quiet"}, []string{"--lock-id", "--fee-cut"}},
+		{"ticketbroker fund", []string{"--deposit", "--reserve", "--base-units", "--recipient", "--quiet"}, []string{"--amount", "--lock-id", "--fee-cut"}},
 		{"orchestrator register", []string{"--amount", "--redelegate", "--lock-id", "--reward-cut", "--fee-cut", "--service-uri"}, []string{"--fee-share", "--recipient"}},
 		{"stake locks", []string{"--from-id", "--limit", "--withdrawable", "--locked"}, []string{"--submit", "--amount"}},
 		{"governance proposal vote", []string{"--reason", "--gas-limit", "--max-priority-fee-per-gas", "--max-transaction-replacements"}, []string{"--amount", "--lock-id"}},
@@ -93,7 +93,7 @@ func TestActionValidationBeforeRPC(t *testing.T) {
 		{[]string{"orchestrator", "reward"}, "unknown command"},
 		{[]string{"ticketbroker", "unlock", "--transaction-timeout", "0s"}, "must be positive"},
 		{[]string{"ticketbroker", "unlock", "--gas-limit", "0"}, "below min"},
-		{[]string{"ticketbroker", "fund", "--amount", "all", "--reserve", "0"}, "not supported"},
+		{[]string{"ticketbroker", "fund", "--deposit", "all"}, "not supported"},
 		{[]string{"governance", "poll", "vote", testAccount, "maybe"}, "allowed values"},
 		{[]string{"stake", "locks", "--limit", "1001"}, "exceeds max"},
 		{[]string{"stake", "locks", "--withdrawable", "--locked"}, "mutually exclusive"},
@@ -113,9 +113,14 @@ func TestActionValidationBeforeRPC(t *testing.T) {
 		{[]string{"orchestrator", "set-config", "--service-uri", "ftp://example.com"}, "absolute HTTP"},
 		{[]string{"orchestrator", "set-config", "--service-uri", "https://example.com?key=secret"}, "absolute HTTP"},
 		{[]string{"orchestrator", "set-config", "--service-uri", "https://example.com#fragment"}, "absolute HTTP"},
-		{[]string{"ticketbroker", "fund", "--amount", "1"}, "reserve"},
-		{[]string{"ticketbroker", "fund", "--amount", "0", "--reserve", "0"}, "cannot both be zero"},
-		{[]string{"ticketbroker", "fund", "--amount", "115792089237316195423570985008687907853269984665640564039457584007913129639935", "--reserve", "1", "--base-units"}, "total exceeds uint256"},
+		{[]string{"ticketbroker", "fund"}, "cannot both be zero"},
+		{[]string{"ticketbroker", "fund", "--deposit", "0"}, "cannot both be zero"},
+		{[]string{"ticketbroker", "fund", "--reserve", "0"}, "cannot both be zero"},
+		{[]string{"ticketbroker", "fund", "--deposit", "0", "--reserve", "0"}, "cannot both be zero"},
+		{[]string{"ticketbroker", "fund", "--amount", "0"}, "cannot both be zero"},
+		{[]string{"ticketbroker", "fund", "--deposit", "1", "--recipient", "not-an-address"}, "invalid"},
+		{[]string{"ticketbroker", "fund", "--deposit", "1", "--recipient", "0x0000000000000000000000000000000000000000"}, "recipient must be nonempty"},
+		{[]string{"ticketbroker", "fund", "--deposit", "115792089237316195423570985008687907853269984665640564039457584007913129639935", "--reserve", "1", "--base-units"}, "total exceeds uint256"},
 		{[]string{"ticketbroker", "unlock", "--no-wait", "--max-transaction-replacements", "1"}, "no-wait"},
 		{[]string{"ticketbroker", "unlock", "--submit"}, "keystore-password"},
 		{[]string{"ticketbroker", "unlock", "--submit", "--keystore-file", path}, "keystore-password-file"},
@@ -163,7 +168,7 @@ func TestConfigRejectsInvocationInputs(t *testing.T) {
 		load    func([]byte) error
 		entries []string
 	}{
-		{"ticketbroker fund", loadInvocationConfig[FundParams], []string{`Amount = "1"`, `Reserve = "1"`, `BaseUnits = true`}},
+		{"ticketbroker fund", loadInvocationConfig[FundParams], []string{`Deposit = "1"`, `Reserve = "1"`, `BaseUnits = true`, `Recipient = "` + testAccount + `"`}},
 		{"stake bond", loadInvocationConfig[BondParams], []string{`Orchestrator = "` + testAccount + `"`, `Redelegate = true`}},
 		{"stake cancel-unbond", loadInvocationConfig[CancelUnbondParams], []string{`Delegate = "` + testAccount + `"`, `LockID = "0"`}},
 		{"earnings withdraw-fees", loadInvocationConfig[WithdrawFeesParams], []string{`Recipient = "` + testAccount + `"`}},
@@ -227,7 +232,7 @@ func TestDataDirectoryAndConfigDiscovery(t *testing.T) {
 }
 
 func TestActionEnvironmentCannotSupplyInputs(t *testing.T) {
-	for _, name := range []string{"AMOUNT", "RESERVE", "DELEGATE", "ORCHESTRATOR", "RECIPIENT", "LOCK_ID", "END_ROUND", "REWARD_CUT", "FEE_CUT", "MAX_PRIORITY_FEE_PER_GAS", "TRANSACTION_TIMEOUT", "MAX_TRANSACTION_REPLACEMENTS", "GAS_LIMIT", "SERVICE_URI", "OUTPUT"} {
+	for _, name := range []string{"AMOUNT", "DEPOSIT", "RESERVE", "DELEGATE", "ORCHESTRATOR", "RECIPIENT", "LOCK_ID", "END_ROUND", "REWARD_CUT", "FEE_CUT", "MAX_PRIORITY_FEE_PER_GAS", "TRANSACTION_TIMEOUT", "MAX_TRANSACTION_REPLACEMENTS", "GAS_LIMIT", "SERVICE_URI", "OUTPUT"} {
 		t.Setenv("LIVEPEER_CHAIN_"+name, "invalid")
 	}
 	for _, name := range []string{"SUBMIT", "WAIT", "QUIET", "PRINT_CONFIG"} {
@@ -238,6 +243,12 @@ func TestActionEnvironmentCannotSupplyInputs(t *testing.T) {
 	root := Root(&output, &output)
 	root.SetArgs([]string{"stake", "unbond"})
 	require.ErrorContains(t, root.Execute(), "missing required param 'amount'")
+	require.Empty(t, output.String())
+	t.Setenv("LIVEPEER_CHAIN_DEPOSIT", "1")
+	t.Setenv("LIVEPEER_CHAIN_RESERVE", "1")
+	root = Root(&output, &output)
+	root.SetArgs([]string{"ticketbroker", "fund"})
+	require.ErrorContains(t, root.Execute(), "cannot both be zero")
 	require.Empty(t, output.String())
 	root = Root(&output, &output)
 	root.SetArgs([]string{"orchestrator", "set-config", "--print-config"})
