@@ -29,7 +29,7 @@ const (
 
 type Server struct {
 	basePath        string
-	runnerBasePath  string
+	runnerOrigin    *url.URL
 	apiOrigin       *url.URL
 	registry        *Registry
 	runnerTransport *http.Transport
@@ -53,8 +53,8 @@ func NewServer(registry *Registry, runnerPolicy, proxyPolicy destination.Policy,
 	serviceURL, _ := url.Parse(registry.service)
 	s.basePath = strings.TrimRight(serviceURL.Path, "/")
 	s.apiOrigin = serviceURL
-	runnerURL, _ := url.Parse(registry.runnerServiceURL())
-	s.runnerBasePath = strings.TrimRight(runnerURL.Path, "/")
+	s.runnerOrigin, _ = url.Parse(registry.runnerServiceURL())
+	s.runnerOrigin.Path = strings.TrimRight(s.runnerOrigin.Path, "/")
 	s.runnerTransport = runnerPolicy.Transport(time.Minute)
 	s.proxyTransport = proxyPolicy.Transport(time.Minute)
 	// A stalled stream must not take the slot needed to stop or fund it.
@@ -98,20 +98,15 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "invalid path")
 		return
 	}
-	proxyID, appPath := s.registry.matchProxy(r, s.apiOrigin)
+	proxyID, appPath := s.registry.matchProxy(r, s.apiOrigin, s.runnerOrigin)
 	if proxyID == "" {
-		// Unknown proxy Hosts must never fall through to the API router.
-		if s.registry.proxyTemplate != "" && !matchesOrigin(r.Host, s.apiOrigin) {
-			fail(w, http.StatusNotFound, "route not found")
-			return
-		}
 		basePath := ""
-		for _, candidate := range []string{s.basePath, s.runnerBasePath} {
-			if len(candidate) > len(basePath) && strings.HasPrefix(r.URL.Path, candidate+"/") {
+		for _, candidate := range []string{s.basePath, s.runnerOrigin.Path} {
+			if len(candidate) > len(basePath) && strings.HasPrefix(r.URL.Path, candidate+"/") && (candidate == s.runnerOrigin.Path || matchesOrigin(r.Host, s.apiOrigin)) {
 				basePath = candidate
 			}
 		}
-		if basePath == "" && s.basePath != "" && s.runnerBasePath != "" {
+		if basePath == "" && s.basePath != "" && s.runnerOrigin.Path != "" {
 			fail(w, 404, "route not found")
 			return
 		}
@@ -119,6 +114,11 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			r = r.Clone(r.Context())
 			r.URL.Path = strings.TrimPrefix(r.URL.Path, basePath)
 			r.URL.RawPath = ""
+		}
+		runnerRoute := strings.HasPrefix(r.URL.Path, "/runners/") || strings.HasPrefix(r.URL.Path, "/runner/") || strings.HasPrefix(r.URL.Path, "/ai/trickle/")
+		if !matchesOrigin(r.Host, s.apiOrigin) && !(runnerRoute && basePath == s.runnerOrigin.Path && s.registry.runnerService != "" && matchesOrigin(r.Host, s.runnerOrigin)) {
+			fail(w, http.StatusNotFound, "route not found")
+			return
 		}
 	}
 	stream := proxyID != "" || strings.HasPrefix(r.URL.Path, "/ai/trickle/") || strings.HasPrefix(r.URL.Path, "/proxy/") || strings.HasPrefix(r.URL.Path, "/run/") || strings.HasSuffix(r.URL.Path, "/app") || strings.Contains(r.URL.Path, "/app/")

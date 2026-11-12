@@ -63,8 +63,7 @@ func TestAPIOriginURLRouting(t *testing.T) {
 	cmd := Root(io.Discard, io.Discard)
 	cmd.SetArgs([]string{"--config", "", "--listen", address, "--metrics-listen", metrics,
 		"--service-url", "https://public.example",
-		"--api-origin-url", "http://" + origin + ":80", "--runner-service-url", "http://" + origin,
-		"--proxy-url-template", "https://{proxy}.internal"})
+		"--api-origin-url", "http://" + origin + ":80"})
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() { done <- cmd.ExecuteContext(ctx) }()
@@ -146,6 +145,7 @@ func TestPaidHTTPStartup(t *testing.T) {
 			require.NoError(t, p.MetricsListen.UnmarshalText(fmt.Appendf(nil, "unsafe@0.0.0.0:%d", metricsPort)))
 			metricsURL := fmt.Sprintf("http://127.0.0.1:%d", metricsPort)
 			p.ServiceURL = boa.Text[*url.URL]{Value: mustURL(t, "https://public.example/external")}
+			p.APIOriginURL = boa.Text[*url.URL]{Value: mustURL(t, address)}
 			p.RunnerConfig = filepath.Join(t.TempDir(), "runners.toml")
 			require.NoError(t, os.WriteFile(p.RunnerConfig, []byte("[[Runners]]\nID = 'r'\nRunnerURL = 'https://runner.example'\nApp = 'test'\n[Runners.PriceInfo]\nPrice = 1\n"), 0600))
 			ctx, cancel := context.WithCancel(t.Context())

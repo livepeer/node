@@ -37,7 +37,9 @@ func TestDynamicRunnerSessionProxyAndCapacity(t *testing.T) {
 	policy, err := destination.New("runner", []string{"127.0.0.0/8"})
 	require.NoError(t, err)
 	registry := NewRegistry("bootstrap", "http://orchestrator.example", 10*time.Millisecond, 50*time.Millisecond)
-	srv := httptest.NewServer(NewServer(registry, policy, policy, slog.New(slog.NewTextHandler(io.Discard, nil))))
+	app := NewServer(registry, policy, policy, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	srv := httptest.NewServer(app)
+	app.apiOrigin = mustURL(t, srv.URL)
 	defer srv.Close()
 
 	body := `{"runner_url":"` + upstream.URL + `/api","app":"test","mode":"persistent","capacity":1,"price_info":{"price":0,"currency":"usd","unit":"hour"}}`
@@ -278,6 +280,7 @@ func TestSessionProxyStreamsSSEAndWebSocket(t *testing.T) {
 	app.setExcludedHeaders([]string{"CF-Access-*", "Cookie"})
 	defer app.Close()
 	server := httptest.NewServer(app)
+	app.apiOrigin = mustURL(t, server.URL)
 	defer server.Close()
 	sid, _, _, _, err := registry.Reserve(registered.RunnerID)
 	require.NoError(t, err)
@@ -320,7 +323,9 @@ func TestRunnerDestinationDeniedWithoutGrant(t *testing.T) {
 	policy, err := destination.New("runner", nil)
 	require.NoError(t, err)
 	registry := NewRegistry("bootstrap", "http://orchestrator.example", time.Second, time.Minute)
-	server := httptest.NewServer(NewServer(registry, policy, policy, slog.New(slog.NewTextHandler(io.Discard, nil))))
+	app := NewServer(registry, policy, policy, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	server := httptest.NewServer(app)
+	app.apiOrigin = mustURL(t, server.URL)
 	defer server.Close()
 	body := `{"runner_url":"` + upstream.URL + `","app":"test","mode":"single-shot","capacity":1,"price_info":{"price":0}}`
 	request, err := http.NewRequest(http.MethodPost, server.URL+"/runners/heartbeat", bytes.NewBufferString(body))
@@ -347,7 +352,7 @@ func TestGeneratedProxyHasSeparateDestinationGrant(t *testing.T) {
 	require.NoError(t, err)
 	proxyPolicy, err := destination.New("session-proxy", nil)
 	require.NoError(t, err)
-	registry := NewRegistry("bootstrap", "http://orchestrator.example", time.Second, time.Minute)
+	registry := NewRegistry("bootstrap", "http://example.com", time.Second, time.Minute)
 	registration := heartbeatRequest{RunnerURL: upstream.URL, App: "test", Mode: "persistent", Capacity: 1}
 	registered, status, err := registry.Heartbeat(registration, "bootstrap")
 	require.NoError(t, err)
@@ -379,7 +384,7 @@ func TestGeneratedProxyHasSeparateDestinationGrant(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(record.Body.Bytes(), &created))
 	require.NotEmpty(t, created.ProxyID)
-	require.Equal(t, "http://orchestrator.example/run/"+created.ProxyID, created.URL)
+	require.Equal(t, "http://example.com/run/"+created.ProxyID, created.URL)
 	record = httptest.NewRecorder()
 	srv.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/run/"+created.ProxyID, nil))
 	require.Equal(t, http.StatusBadGateway, record.Code)
@@ -421,7 +426,7 @@ func TestRunnerExpires(t *testing.T) {
 func TestTrickleChannelsScopedToSession(t *testing.T) {
 	policy, err := destination.New("runner", nil)
 	require.NoError(t, err)
-	registry := NewRegistry("bootstrap", "http://orchestrator.example", time.Second, time.Minute)
+	registry := NewRegistry("bootstrap", "http://example.com", time.Second, time.Minute)
 	registration := heartbeatRequest{RunnerURL: "https://runner.example", App: "test", Mode: "persistent", Capacity: 2}
 	registered, _, err := registry.Heartbeat(registration, "bootstrap")
 	require.NoError(t, err)
