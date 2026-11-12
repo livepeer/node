@@ -30,6 +30,7 @@ const (
 type Server struct {
 	basePath        string
 	runnerBasePath  string
+	apiOrigin       *url.URL
 	registry        *Registry
 	runnerTransport *http.Transport
 	proxyTransport  *http.Transport
@@ -51,6 +52,7 @@ func NewServer(registry *Registry, runnerPolicy, proxyPolicy destination.Policy,
 	s := &Server{registry: registry, logger: logger, mux: http.NewServeMux(), channels: map[string]*channel{}, o2r: map[string]string{}}
 	serviceURL, _ := url.Parse(registry.service)
 	s.basePath = strings.TrimRight(serviceURL.Path, "/")
+	s.apiOrigin = serviceURL
 	runnerURL, _ := url.Parse(registry.runnerServiceURL())
 	s.runnerBasePath = strings.TrimRight(runnerURL.Path, "/")
 	s.runnerTransport = runnerPolicy.Transport(time.Minute)
@@ -96,8 +98,13 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "invalid path")
 		return
 	}
-	proxyID, appPath := s.registry.matchProxy(r)
+	proxyID, appPath := s.registry.matchProxy(r, s.apiOrigin)
 	if proxyID == "" {
+		// Unknown proxy Hosts must never fall through to the API router.
+		if s.registry.proxyTemplate != "" && !matchesOrigin(r.Host, s.apiOrigin) {
+			fail(w, http.StatusNotFound, "route not found")
+			return
+		}
 		basePath := ""
 		for _, candidate := range []string{s.basePath, s.runnerBasePath} {
 			if len(candidate) > len(basePath) && strings.HasPrefix(r.URL.Path, candidate+"/") {
