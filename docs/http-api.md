@@ -274,6 +274,36 @@ parameters. This field is not covered by the payer's signature; submitters must
 preserve the value issued by the orchestrator. Protect ticket submissions with
 TLS and endpoint authentication in your deployment; see [redeemer setup](redeemer.md).
 
+### Redeemer authorization webhook
+
+When [configured](redeemer.md#authorization-webhook), the redeemer checks each submitted ticket.
+It sends the webhook a JSON POST, for example:
+
+```json
+{
+  "headers": {"Authorization": ["Bearer caller-credential"]},
+  "ticket": {"sig": "0x...", "recipient_rand_hash": "0x..."}
+}
+```
+
+The example shows selected [ticket fields](#redeemer-http). The webhook receives
+all those fields except `recipient_rand`.
+
+The webhook must return HTTP 200 with a JSON decision, for example:
+
+```json
+{"status": 200}
+```
+
+| Decision `status` | Result | Client response |
+| --- | --- | --- |
+| 200 | Approve the ticket. | 202 Accepted if validation and storage succeed. |
+| 409 | Deny the ticket. | 403 Forbidden |
+| Other 400–599 | Deny the ticket. | Same status |
+
+A redirect, timeout, non-200 response, or invalid decision returns 502. The
+timeout is five seconds.
+
 ## Accounting events
 
 Optional Kafka accounting emits `create_signed_ticket` JSON events with

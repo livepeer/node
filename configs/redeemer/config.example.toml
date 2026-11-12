@@ -8,6 +8,9 @@ RedeemerDB = "tickets.sqlite"
 KeystoreFile = "/run/secrets/livepeer-redeemer-keystore.json"
 KeystorePasswordFile = "/run/secrets/livepeer-redeemer-password"
 RPCURLFile = "/run/secrets/livepeer-rpc-url"
+# Optional per-request authorization; sends request headers and the ticket.
+# AuthWebhookFile = "/run/secrets/livepeer-redeemer-auth-url"
+# AuthWebhookHeadersFile = "/run/secrets/livepeer-redeemer-auth-headers"
 # Files containing credentials must be owner-only. Password bytes are exact.
 # ChainID = 42161
 # Controller = "0xD8E8328501E9645d16Cf49539efC04f734606ee4"

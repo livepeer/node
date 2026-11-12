@@ -1,7 +1,6 @@
 // QueueTicket admission and ticket conversion adapt Nico Vergauwen's and
 // Yondon Fu's go-livepeer/server/redeemer.go at afaaa36e743d39e6f460e7993d516d52b3a81341.
 // HTTP transport, deployment binding and validation are implemented for Node.
-// MIT notice: LICENSE. No max-float RPCs are included.
 package redemption
 
 import (
@@ -87,6 +86,12 @@ func decodeJSON(r io.Reader, value any) error {
 }
 
 func Handler(s *RedeemerDB) http.Handler {
+	return HandlerWithAuthorization(s, nil)
+}
+
+// HandlerWithAuthorization calls authorize before validating or storing a ticket.
+// The ticket is nil if decoding fails. authorize must write any failure response.
+func HandlerWithAuthorization(s *RedeemerDB, authorize func(http.ResponseWriter, *http.Request, *TicketJSON) bool) http.Handler {
 	mux := http.NewServeMux()
 	slots := make(chan struct{}, 32)
 	mux.HandleFunc("POST /tickets", func(w http.ResponseWriter, r *http.Request) {
@@ -98,7 +103,15 @@ func Handler(s *RedeemerDB) http.Handler {
 			return
 		}
 		var req TicketRequest
-		if err := decodeJSON(http.MaxBytesReader(w, r.Body, MaxTicketBody), &req); err != nil {
+		decodeErr := decodeJSON(http.MaxBytesReader(w, r.Body, MaxTicketBody), &req)
+		var ticket *TicketJSON
+		if decodeErr == nil {
+			ticket = &req.Ticket
+		}
+		if authorize != nil && !authorize(w, r, ticket) {
+			return
+		}
+		if decodeErr != nil {
 			http.Error(w, "invalid ticket request", 400)
 			return
 		}
@@ -168,7 +181,7 @@ func NewHTTPDestination(u *url.URL, policy destination.Policy, b Binding) (*HTTP
 	if err != nil {
 		return nil, err
 	}
-	client := &http.Client{Transport: policy.Transport(10 * time.Second), Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	client := &http.Client{Transport: policy.Transport(15 * time.Second), Timeout: 20 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	return &HTTPDestination{endpoint, client, b}, nil
 }
 

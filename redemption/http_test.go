@@ -1,19 +1,24 @@
 package redemption
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"io"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/ethereum/go-ethereum/accounts"
@@ -54,7 +59,8 @@ func boundStore(t *testing.T, role, target string, limits Limits) (*RedeemerDB, 
 
 func TestHTTPAdmissionIdentityCapacityAndScope(t *testing.T) {
 	s, b := boundStore(t, "redeemer", "chain", Limits{Pending: 2, PerRecipient: 1})
-	handler := Handler(s)
+	calls := 0
+	handler := HandlerWithAuthorization(s, func(http.ResponseWriter, *http.Request, *TicketJSON) bool { calls++; return true })
 	submit := func(req TicketRequest) *httptest.ResponseRecorder {
 		raw, err := json.Marshal(req)
 		require.NoError(t, err)
@@ -92,7 +98,7 @@ func TestHTTPAdmissionIdentityCapacityAndScope(t *testing.T) {
 	third, _ := winningTicket(t, 3)
 	require.ErrorIs(t, s.Admit(t.Context(), third), ErrCapacity)
 	bad := httptest.NewRecorder()
-	handler.ServeHTTP(bad, httptest.NewRequest("POST", "/tickets", bytes.NewReader(make([]byte, MaxTicketBody+1))))
+	handler.ServeHTTP(bad, httptest.NewRequest("POST", "/tickets", strings.NewReader(strings.Repeat(" ", MaxTicketBody+1))))
 	require.Equal(t, 400, bad.Code)
 	changed := b
 	changed.Controller = common.HexToAddress("0x999")
@@ -100,6 +106,83 @@ func TestHTTPAdmissionIdentityCapacityAndScope(t *testing.T) {
 	changed = b
 	changed.Destination = "http://elsewhere.example"
 	require.ErrorContains(t, s.Bind(t.Context(), changed, DefaultLimits, nil), "drain")
+	require.Equal(t, 7, calls, "every submission, including duplicates and invalid tickets, is authorized")
+}
+
+func TestHTTPAuthorizationConcurrency(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		release := make(chan struct{})
+		defer close(release)
+		var calls atomic.Int32
+		handler := HandlerWithAuthorization(nil, func(w http.ResponseWriter, r *http.Request, ticket *TicketJSON) bool {
+			require.Nil(t, ticket)
+			calls.Add(1)
+			<-release
+			http.Error(w, "denied", http.StatusForbidden)
+			return false
+		})
+		for i := range 32 {
+			go func() {
+				body := "invalid"
+				if i == 0 {
+					body = strings.Repeat(" ", MaxTicketBody+1)
+				}
+				w := httptest.NewRecorder()
+				handler.ServeHTTP(w, httptest.NewRequest("POST", "/tickets", strings.NewReader(body)))
+				require.Equal(t, 403, w.Code)
+			}()
+		}
+		synctest.Wait()
+		require.EqualValues(t, 32, calls.Load())
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, httptest.NewRequest("POST", "/tickets", nil))
+		require.Equal(t, 503, w.Code)
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/tickets", nil))
+		require.EqualValues(t, 32, calls.Load(), "overloaded requests and other methods do not authorize")
+	})
+}
+
+func TestHTTPDestinationAuthorizationAndAdmissionBudgets(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s, b := boundStore(t, "redeemer", "chain", DefaultLimits)
+		s.db.SetMaxOpenConns(1)
+		conn, err := s.db.Conn(t.Context())
+		require.NoError(t, err)
+		defer conn.Close()
+		handler := HandlerWithAuthorization(s, func(http.ResponseWriter, *http.Request, *TicketJSON) bool {
+			time.Sleep(4 * time.Second)
+			time.AfterFunc(4*time.Second, func() { _ = conn.Close() })
+			return true
+		})
+		serverConn, clientConn := net.Pipe()
+		defer serverConn.Close()
+		defer clientConn.Close()
+		go func() {
+			defer serverConn.Close()
+			request, err := http.ReadRequest(bufio.NewReader(serverConn))
+			require.NoError(t, err)
+			defer request.Body.Close()
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			require.NoError(t, response.Result().Write(serverConn))
+		}()
+		policy, err := destination.New("redeemer", []string{"127.0.0.1"})
+		require.NoError(t, err)
+		u, err := url.Parse("http://127.0.0.1")
+		require.NoError(t, err)
+		remote, err := NewHTTPDestination(u, policy, b)
+		require.NoError(t, err)
+		defer remote.Close()
+		require.Equal(t, 20*time.Second, remote.client.Timeout)
+		transport := remote.client.Transport.(*http.Transport)
+		require.Equal(t, 15*time.Second, transport.ResponseHeaderTimeout)
+		transport.Proxy = nil
+		transport.DialContext = func(context.Context, string, string) (net.Conn, error) { return clientConn, nil }
+		ticket, _ := winningTicket(t, 1)
+		started := time.Now()
+		require.NoError(t, remote.Submit(t.Context(), ticket))
+		require.Equal(t, 8*time.Second, time.Since(started))
+	})
 }
 
 func signAlternativeTicket(t *testing.T, ticket *pm.SignedTicket, key *ecdsa.PrivateKey) {

@@ -92,6 +92,7 @@ openssl rand -hex 32 | tr -d '\n' > runner-bootstrap.secret
 Set `BootstrapSecretFile` to its absolute path and use the same credential for
 initial runner registration. Secret-manager mounts must preserve exact bytes;
 URL files require a valid URL without a trailing newline.
+Redeemer webhook URL and headers files must be owner-only regular files.
 
 ## Ethereum keystores
 
