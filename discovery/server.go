@@ -3,12 +3,14 @@ package discovery
 import (
 	"context"
 	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -196,10 +198,64 @@ type discoveryRunner struct {
 	data       json.RawMessage
 }
 
+// Validate known fields without changing forwarded records or extensions.
+func validRunnerFields(data []byte, prefix string) bool {
+	var fields map[string]json.RawMessage
+	if jsonv2.Unmarshal(data, &fields) != nil || fields == nil {
+		return false
+	}
+	for name, value := range fields {
+		key := strings.ToLower(name)
+		switch {
+		case prefix == "" && key == "observed_at":
+			var stamp time.Time
+			if value[0] != '"' || jsonv2.Unmarshal(value, &stamp) != nil {
+				return false
+			}
+		case prefix == "" && (key == "url" || key == "app" || key == "version" || key == "metadata" || key == "mode") ||
+			prefix == "gpu" && (key == "id" || key == "name") ||
+			prefix == "price_info" && (key == "currency" || key == "unit"):
+			if value[0] != '"' {
+				return false
+			}
+		case prefix == "" && (key == "capacity" || key == "capacity_used" || key == "capacity_available") || prefix == "gpu" && key == "vram_mb":
+			if value[0] != '-' && (value[0] < '0' || value[0] > '9') {
+				return false
+			}
+			mantissa, power, _ := strings.Cut(strings.ToLower(string(value)), "e")
+			// An absent exponent defaults to zero; Atoi saturates on overflow.
+			exponent, _ := strconv.Atoi(power)
+			whole, fraction, _ := strings.Cut(mantissa, ".")
+			digits := whole + fraction
+			zeros := len(digits) - len(strings.TrimRight(digits, "0"))
+			if strings.Trim(digits, "-0") != "" && exponent < len(fraction)-zeros {
+				return false
+			}
+		case prefix == "price_info" && (key == "price" || key == "price_usd"):
+			if value[0] != '-' && (value[0] < '0' || value[0] > '9') {
+				return false
+			}
+		case prefix == "" && (key == "gpu" || key == "price_info"):
+			if !validRunnerFields(value, key) {
+				return false
+			}
+		default:
+			continue
+		}
+		if name != key {
+			return false
+		}
+	}
+	return true
+}
+
 func (r *discoveryRunner) UnmarshalJSON(data []byte) error {
+	if !validRunnerFields(data, "") {
+		return errors.New("invalid discovery runner fields")
+	}
 	type identity discoveryRunner
 	var value identity
-	if err := json.Unmarshal(data, &value); err != nil {
+	if err := jsonv2.Unmarshal(data, &value); err != nil {
 		return err
 	}
 	*r = discoveryRunner(value)

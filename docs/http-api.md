@@ -76,6 +76,8 @@ with no `address`:
 
 Runner records represent ready apps and carry mode, capacity, prices, and optional
 metadata/GPU fields.
+Known fields must use the documented casing and types. Discovery skips malformed
+records, including duplicate keys and invalid Unicode.
 Discovery preserves complete runner records. `nodes` lists successfully queried,
 non-evicted sources, and `queried_at` records each source's last successful query
 time. Empty node and runner lists are omitted. With neither to advertise, discovery
