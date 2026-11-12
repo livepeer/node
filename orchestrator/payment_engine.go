@@ -313,7 +313,7 @@ func (e *PaymentEngine) Receive(ctx context.Context, appID, manifest, paymentHea
 	defer e.mu.Unlock()
 	// Store winning tickets before publishing in-memory replay guards and credit.
 	// The lock serializes receipt and accounting; failed batches change neither.
-	if e.sessions[manifest] != session {
+	if e.sessions[manifest] != session || (session.registration != nil && session.registration.closed.Load()) {
 		return ethcommon.Address{}, nil, ErrMissingChallenge
 	}
 	if err := snapshot.Validate(); err != nil {
@@ -347,6 +347,23 @@ func (e *PaymentEngine) Receive(ctx context.Context, appID, manifest, paymentHea
 	e.nonceCount += len(batchNonces)
 	session.balance, session.updated = balance, time.Now()
 	return payer, new(big.Rat).Set(balance), nil
+}
+
+// Unregister fences new receipts before taking this lock, so any receipt
+// already committing is included in the durable handoff check.
+func (e *PaymentEngine) handoffDrained() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	drained, err := e.store.HandoffDrained(ctx)
+	if err != nil {
+		return errors.New("ticket handoff status unavailable")
+	}
+	if !drained {
+		return errors.New("ticket handoff pending")
+	}
+	return nil
 }
 
 func (e *PaymentEngine) Charge(ctx context.Context, manifest string, now time.Time) (result error) {

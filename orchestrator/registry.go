@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/livepeer/node/destination"
@@ -163,8 +164,8 @@ type seqConflict uint64
 
 func (seqConflict) Error() string { return "seq must increase after owner opt-in" }
 
-// appLifetime distinguishes registration instances without retaining their state.
-type appLifetime struct{ _ byte }
+// appLifetime fences receipts after their app registration is removed.
+type appLifetime struct{ closed atomic.Bool }
 
 type app struct {
 	lifetime *appLifetime
@@ -562,6 +563,7 @@ func (item *app) response() appResponse {
 
 // removeApp requires r.mu and an app with no remaining sessions.
 func (r *Registry) removeApp(item *app) {
+	item.lifetime.closed.Store(true)
 	r.runnerEvent(item.ID, item, "removed")
 	delete(item.owner.Apps, item.ID)
 	delete(r.apps, item.ID)
@@ -571,19 +573,27 @@ func (r *Registry) Unregister(id, auth string) (int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	current := r.runners[id]
+	if current != nil && (current.Static || !equalSecret(current.Credential, auth)) {
+		return http.StatusUnauthorized, errors.New("invalid runner credential")
+	}
+	if current != nil {
+		r.removeRunner(current, nil, "runner_unregistered", "unregistered")
+	}
+	if r.server != nil && r.server.payment != nil {
+		if err := r.server.payment.handoffDrained(); err != nil {
+			return http.StatusServiceUnavailable, err
+		}
+	}
 	if current == nil {
 		return http.StatusNotFound, errors.New("runner not found")
 	}
-	if current.Static || !equalSecret(current.Credential, auth) {
-		return http.StatusUnauthorized, errors.New("invalid runner credential")
-	}
-	r.removeRunner(current, nil, "runner_unregistered", "unregistered")
 	return http.StatusOK, nil
 }
 
 // removeRunner requires r.mu. Session teardown precedes owner/channel removal.
 func (r *Registry) removeRunner(current *runner, cause error, reason, event string) {
 	for id, item := range current.Apps {
+		item.lifetime.closed.Store(true)
 		item.Removing = false
 		for sid := range item.Sessions {
 			r.releaseLocked(id, sid, cause, reason)
