@@ -2,6 +2,7 @@ package redemption
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/rand"
 	"encoding/json"
@@ -12,6 +13,8 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -54,7 +57,8 @@ func boundStore(t *testing.T, role, target string, limits Limits) (*RedeemerDB, 
 
 func TestHTTPAdmissionIdentityCapacityAndScope(t *testing.T) {
 	s, b := boundStore(t, "redeemer", "chain", Limits{Pending: 2, PerRecipient: 1})
-	handler := Handler(s)
+	calls := 0
+	handler := HandlerWithAuthorization(s, func(http.ResponseWriter, *http.Request, *TicketJSON) bool { calls++; return true })
 	submit := func(req TicketRequest) *httptest.ResponseRecorder {
 		raw, err := json.Marshal(req)
 		require.NoError(t, err)
@@ -100,6 +104,79 @@ func TestHTTPAdmissionIdentityCapacityAndScope(t *testing.T) {
 	changed = b
 	changed.Destination = "http://elsewhere.example"
 	require.ErrorContains(t, s.Bind(t.Context(), changed, DefaultLimits, nil), "drain")
+	require.Equal(t, 7, calls, "every submission, including duplicates and invalid tickets, is authorized")
+}
+
+func TestHTTPAuthorizationConcurrency(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	entered := make(chan struct{}, 32)
+	var requests sync.WaitGroup
+	t.Cleanup(func() { cancel(); requests.Wait() })
+	var calls atomic.Int32
+	handler := HandlerWithAuthorization(nil, func(w http.ResponseWriter, r *http.Request, ticket *TicketJSON) bool {
+		calls.Add(1)
+		entered <- struct{}{}
+		<-ctx.Done()
+		http.Error(w, "denied", 403)
+		return false
+	})
+	for range 32 {
+		requests.Go(func() {
+			handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("POST", "/tickets", strings.NewReader("invalid")))
+		})
+	}
+	for range 32 {
+		select {
+		case <-entered:
+		case <-time.After(5 * time.Second):
+			t.Fatal("authorization did not fill admission slots")
+		}
+	}
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, httptest.NewRequest("POST", "/tickets", nil))
+	require.Equal(t, 503, w.Code)
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/tickets", nil))
+	require.EqualValues(t, 32, calls.Load(), "overloaded requests and other methods do not authorize")
+}
+
+func TestHTTPDestinationAuthorizationAndAdmissionBudgets(t *testing.T) {
+	s, b := boundStore(t, "redeemer", "chain", DefaultLimits)
+	s.db.SetMaxOpenConns(1)
+	conn, err := s.db.Conn(t.Context())
+	require.NoError(t, err)
+	defer conn.Close()
+	authorized := make(chan struct{})
+	handler := HandlerWithAuthorization(s, func(http.ResponseWriter, *http.Request, *TicketJSON) bool {
+		time.Sleep(50 * time.Millisecond)
+		close(authorized)
+		return true
+	})
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	policy, err := destination.New("redeemer", []string{"127.0.0.1"})
+	require.NoError(t, err)
+	u, err := url.Parse(server.URL)
+	require.NoError(t, err)
+	remote, err := NewHTTPDestination(u, policy, b)
+	require.NoError(t, err)
+	defer remote.Close()
+	require.Equal(t, 20*time.Second, remote.client.Timeout)
+	require.Equal(t, 15*time.Second, remote.client.Transport.(*http.Transport).ResponseHeaderTimeout)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		select {
+		case <-authorized:
+			time.Sleep(50 * time.Millisecond) // Admission waits for storage after approval.
+			_ = conn.Close()
+		case <-t.Context().Done():
+		}
+	}()
+	ticket, _ := winningTicket(t, 1)
+	started := time.Now()
+	require.NoError(t, remote.Submit(t.Context(), ticket))
+	<-done
+	require.GreaterOrEqual(t, time.Since(started), 100*time.Millisecond)
 }
 
 func signAlternativeTicket(t *testing.T, ticket *pm.SignedTicket, key *ecdsa.PrivateKey) {

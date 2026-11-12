@@ -87,6 +87,14 @@ func decodeJSON(r io.Reader, value any) error {
 }
 
 func Handler(s *RedeemerDB) http.Handler {
+	return HandlerWithAuthorization(s, nil)
+}
+
+// HandlerWithAuthorization checks each admitted POST /tickets after decoding
+// its bounded body, before validation or storage. A decode failure passes a nil
+// ticket. authorize must write a failure response when returning false.
+// Accepted tickets need no further authorization during background redemption.
+func HandlerWithAuthorization(s *RedeemerDB, authorize func(http.ResponseWriter, *http.Request, *TicketJSON) bool) http.Handler {
 	mux := http.NewServeMux()
 	slots := make(chan struct{}, 32)
 	mux.HandleFunc("POST /tickets", func(w http.ResponseWriter, r *http.Request) {
@@ -98,7 +106,15 @@ func Handler(s *RedeemerDB) http.Handler {
 			return
 		}
 		var req TicketRequest
-		if err := decodeJSON(http.MaxBytesReader(w, r.Body, MaxTicketBody), &req); err != nil {
+		decodeErr := decodeJSON(http.MaxBytesReader(w, r.Body, MaxTicketBody), &req)
+		var ticket *TicketJSON
+		if decodeErr == nil {
+			ticket = &req.Ticket
+		}
+		if authorize != nil && !authorize(w, r, ticket) {
+			return
+		}
+		if decodeErr != nil {
 			http.Error(w, "invalid ticket request", 400)
 			return
 		}
@@ -168,7 +184,7 @@ func NewHTTPDestination(u *url.URL, policy destination.Policy, b Binding) (*HTTP
 	if err != nil {
 		return nil, err
 	}
-	client := &http.Client{Transport: policy.Transport(10 * time.Second), Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	client := &http.Client{Transport: policy.Transport(15 * time.Second), Timeout: 20 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	return &HTTPDestination{endpoint, client, b}, nil
 }
 

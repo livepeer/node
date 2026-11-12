@@ -1,4 +1,5 @@
-// Package nodeconfig supplies shared CLI policy, data-directory defaults, and storage paths.
+// Package nodeconfig supplies shared configuration types, CLI policy,
+// data-directory defaults, and storage paths.
 package nodeconfig
 
 import (

@@ -1,4 +1,4 @@
-package signer
+package nodeconfig
 
 import (
 	"net/http"
