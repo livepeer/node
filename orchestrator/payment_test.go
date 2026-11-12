@@ -64,7 +64,7 @@ func TestPaidFixedSessionWithRemoteSigner(t *testing.T) {
 	max := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
 	engine, err := NewPaymentEngine(store, paymentTestChain{}, recipient.Address(), big.NewInt(11), new(big.Int).Sub(max, big.NewInt(1)))
 	require.NoError(t, err)
-	registry := NewRegistry("bootstrap", "http://127.0.0.1:8935", time.Second, 30*time.Second)
+	registry := NewRegistry("bootstrap", "http://example.com", time.Second, 30*time.Second)
 	registry.SetWeiPerUSD(big.NewRat(10, 1))
 	registration := heartbeatRequest{RunnerID: "runner1", RunnerURL: "http://127.0.0.1:9000", App: "demo", Mode: "persistent", Capacity: 1, PriceInfo: priceInfo{Price: "1", Currency: "usd", Unit: "fixed"}}
 	resp, status, err := registry.Heartbeat(registration, "bootstrap")
@@ -83,7 +83,7 @@ func TestPaidFixedSessionWithRemoteSigner(t *testing.T) {
 	defer signerService.Close()
 	signerService.SetPaymentChain(paymentTestChain{})
 	reserveURL := "/apps/runner1/session"
-	first := apiRequest(server, http.MethodPost, reserveURL, nil)
+	first := httptest.NewRequest(http.MethodPost, reserveURL, nil)
 	first.Header.Set("Livepeer-Payer-Address", payer.Address().Hex())
 	w := httptest.NewRecorder()
 	server.ServeHTTP(w, first)
@@ -106,7 +106,7 @@ func TestPaidFixedSessionWithRemoteSigner(t *testing.T) {
 	// changes the advertised price before the reservation is paid.
 	_, _, err = registry.Heartbeat(heartbeatRequest{RunnerID: "runner1", RunnerURL: "http://127.0.0.1:9000", App: "demo", Mode: "persistent", Capacity: 1, PriceInfo: priceInfo{Price: "2", Currency: "usd", Unit: "fixed"}}, resp.HeartbeatSecret)
 	require.NoError(t, err)
-	paid := apiRequest(server, http.MethodPost, reserveURL, nil)
+	paid := httptest.NewRequest(http.MethodPost, reserveURL, nil)
 	paid.Header.Set("Livepeer-Payment", payment.Payment)
 	paid.Header.Set("Livepeer-Segment", payment.SegCreds)
 	occupied, _, _, _, err := registry.Reserve("runner1")
@@ -353,14 +353,14 @@ func TestMultiAppPaidIsolationAndDrain(t *testing.T) {
 	owner := appHeartbeat(t, registry, "owner", "bootstrap", a, b, busy)
 	for _, path := range []string{"/apps/live/session", "/apps/fixed/app"} {
 		w := httptest.NewRecorder()
-		server.ServeHTTP(w, apiRequest(server, http.MethodPost, path, nil))
+		server.ServeHTTP(w, httptest.NewRequest(http.MethodPost, path, nil))
 		require.Equal(t, http.StatusNotFound, w.Code, w.Body.String())
 	}
 	require.Empty(t, registry.sessions)
 	appHeartbeat(t, registry, owner.RunnerID, owner.HeartbeatSecret, a, b, busy)
 	payer := crypto.PubkeyToAddress(payerKey.PublicKey)
 	request := func(method, path, payment, segment string) *httptest.ResponseRecorder {
-		r := apiRequest(server, method, path, nil)
+		r := httptest.NewRequest(method, path, nil)
 		r.Header.Set("Livepeer-Payer-Address", payer.Hex())
 		r.Header.Set("Livepeer-Payment", payment)
 		r.Header.Set("Livepeer-Segment", segment)
@@ -382,7 +382,7 @@ func TestMultiAppPaidIsolationAndDrain(t *testing.T) {
 			sessions := len(engine.sessions)
 			operations := test.MetricSum(t, registry.metrics.Registry, "payment_operations_total", nil)
 			for _, address := range []string{payer.Hex(), ""} {
-				r := apiRequest(server, method, path, nil)
+				r := httptest.NewRequest(method, path, nil)
 				r.Header.Set("Livepeer-Payer-Address", address)
 				w := httptest.NewRecorder()
 				server.ServeHTTP(w, r)
@@ -462,7 +462,7 @@ func TestMultiAppPaidIsolationAndDrain(t *testing.T) {
 	// Follow-up payment and refresh remain available for the draining live app.
 	refreshBody := mustJSON(t, map[string]string{"sender": payer.Hex(), "manifest_id": live.ManifestID})
 	w = httptest.NewRecorder()
-	server.ServeHTTP(w, apiRequest(server, http.MethodPost, "/refresh-payment", bytes.NewReader(refreshBody)))
+	server.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/refresh-payment", bytes.NewReader(refreshBody)))
 	require.Equal(t, 200, w.Code, w.Body.String())
 	next, segment := signed(live, 4, 5, 6)
 	w = request(http.MethodPost, live.PaymentURL, next, segment)
@@ -500,7 +500,7 @@ func TestAppIDReuseRejectsPreviousRegistrationQuotes(t *testing.T) {
 			owner := appHeartbeat(t, registry, "old-owner", "bootstrap", a)
 			appHeartbeat(t, registry, owner.RunnerID, owner.HeartbeatSecret, a)
 			request := func(payment, segment string) *httptest.ResponseRecorder {
-				req := apiRequest(server, http.MethodPost, "/apps/reused/session", nil)
+				req := httptest.NewRequest(http.MethodPost, "/apps/reused/session", nil)
 				req.Header.Set("Livepeer-Payer-Address", crypto.PubkeyToAddress(key.PublicKey).Hex())
 				req.Header.Set("Livepeer-Payment", payment)
 				req.Header.Set("Livepeer-Segment", segment)

@@ -25,20 +25,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func apiRequest(server *Server, method, target string, body io.Reader) *http.Request {
-	req := httptest.NewRequest(method, target, body)
-	req.Host = server.apiOrigin.Host
-	return req
-}
-
-func newTestHTTPServer(t *testing.T, app *Server) *httptest.Server {
-	t.Helper()
-	server := httptest.NewUnstartedServer(app)
-	app.apiOrigin = mustURL(t, "http://"+server.Listener.Addr().String())
-	server.Start()
-	return server
-}
-
 func TestDynamicRunnerSessionProxyAndCapacity(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, "/api/hello", r.URL.Path)
@@ -51,7 +37,9 @@ func TestDynamicRunnerSessionProxyAndCapacity(t *testing.T) {
 	policy, err := destination.New("runner", []string{"127.0.0.0/8"})
 	require.NoError(t, err)
 	registry := NewRegistry("bootstrap", "http://orchestrator.example", 10*time.Millisecond, 50*time.Millisecond)
-	srv := newTestHTTPServer(t, NewServer(registry, policy, policy, slog.New(slog.NewTextHandler(io.Discard, nil))))
+	app := NewServer(registry, policy, policy, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	srv := httptest.NewServer(app)
+	app.apiOrigin = mustURL(t, srv.URL)
 	defer srv.Close()
 
 	body := `{"runner_url":"` + upstream.URL + `/api","app":"test","mode":"persistent","capacity":1,"price_info":{"price":0,"currency":"usd","unit":"hour"}}`
@@ -135,7 +123,7 @@ func TestSessionCallbackCredentials(t *testing.T) {
 	} {
 		for name, credential := range map[string]string{"missing": "", "wrong": "wrong", "cross-session": otherToken} {
 			t.Run(operation.method+" "+operation.path+"/"+name, func(t *testing.T) {
-				req := apiRequest(server, operation.method, "/runner/r/session/"+sid+"/"+operation.path, strings.NewReader(`{}`))
+				req := httptest.NewRequest(operation.method, "/runner/r/session/"+sid+"/"+operation.path, strings.NewReader(`{}`))
 				if credential != "" {
 					req.Header.Set("Livepeer-Session-Token", credential)
 				}
@@ -149,7 +137,7 @@ func TestSessionCallbackCredentials(t *testing.T) {
 		_, err := registry.addProxy("r", sid, token, target)
 		require.NoError(t, err)
 	}
-	req := apiRequest(server, http.MethodPost, "/runner/r/session/"+sid+"/proxy", strings.NewReader(`{}`))
+	req := httptest.NewRequest(http.MethodPost, "/runner/r/session/"+sid+"/proxy", strings.NewReader(`{}`))
 	req.Header.Set("Livepeer-Session-Token", token)
 	w := httptest.NewRecorder()
 	server.ServeHTTP(w, req)
@@ -291,7 +279,8 @@ func TestSessionProxyStreamsSSEAndWebSocket(t *testing.T) {
 	app := NewServer(registry, policy, policy, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	app.setExcludedHeaders([]string{"CF-Access-*", "Cookie"})
 	defer app.Close()
-	server := newTestHTTPServer(t, app)
+	server := httptest.NewServer(app)
+	app.apiOrigin = mustURL(t, server.URL)
 	defer server.Close()
 	sid, _, _, _, err := registry.Reserve(registered.RunnerID)
 	require.NoError(t, err)
@@ -334,7 +323,9 @@ func TestRunnerDestinationDeniedWithoutGrant(t *testing.T) {
 	policy, err := destination.New("runner", nil)
 	require.NoError(t, err)
 	registry := NewRegistry("bootstrap", "http://orchestrator.example", time.Second, time.Minute)
-	server := newTestHTTPServer(t, NewServer(registry, policy, policy, slog.New(slog.NewTextHandler(io.Discard, nil))))
+	app := NewServer(registry, policy, policy, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	server := httptest.NewServer(app)
+	app.apiOrigin = mustURL(t, server.URL)
 	defer server.Close()
 	body := `{"runner_url":"` + upstream.URL + `","app":"test","mode":"single-shot","capacity":1,"price_info":{"price":0}}`
 	request, err := http.NewRequest(http.MethodPost, server.URL+"/runners/heartbeat", bytes.NewBufferString(body))
@@ -361,7 +352,7 @@ func TestGeneratedProxyHasSeparateDestinationGrant(t *testing.T) {
 	require.NoError(t, err)
 	proxyPolicy, err := destination.New("session-proxy", nil)
 	require.NoError(t, err)
-	registry := NewRegistry("bootstrap", "http://orchestrator.example", time.Second, time.Minute)
+	registry := NewRegistry("bootstrap", "http://example.com", time.Second, time.Minute)
 	registration := heartbeatRequest{RunnerURL: upstream.URL, App: "test", Mode: "persistent", Capacity: 1}
 	registered, status, err := registry.Heartbeat(registration, "bootstrap")
 	require.NoError(t, err)
@@ -377,12 +368,12 @@ func TestGeneratedProxyHasSeparateDestinationGrant(t *testing.T) {
 	require.Equal(t, http.StatusOK, status)
 	srv := NewServer(registry, runnerPolicy, proxyPolicy, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	path := "/runner/" + registered.RunnerID + "/session/" + sid + "/proxy"
-	create := apiRequest(srv, http.MethodPost, path, bytes.NewBufferString(`{"target_url":"`+upstream.URL+`"}`))
+	create := httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(`{"target_url":"`+upstream.URL+`"}`))
 	create.Header.Set("Livepeer-Session-Token", "bad")
 	record := httptest.NewRecorder()
 	srv.ServeHTTP(record, create)
 	require.Equal(t, http.StatusUnauthorized, record.Code)
-	create = apiRequest(srv, http.MethodPost, path, bytes.NewBufferString(`{"target_url":"`+upstream.URL+`"}`))
+	create = httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(`{"target_url":"`+upstream.URL+`"}`))
 	create.Header.Set("Livepeer-Session-Token", token)
 	record = httptest.NewRecorder()
 	srv.ServeHTTP(record, create)
@@ -393,20 +384,20 @@ func TestGeneratedProxyHasSeparateDestinationGrant(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(record.Body.Bytes(), &created))
 	require.NotEmpty(t, created.ProxyID)
-	require.Equal(t, "http://orchestrator.example/run/"+created.ProxyID, created.URL)
+	require.Equal(t, "http://example.com/run/"+created.ProxyID, created.URL)
 	record = httptest.NewRecorder()
-	srv.ServeHTTP(record, apiRequest(srv, http.MethodGet, "/run/"+created.ProxyID, nil))
+	srv.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/run/"+created.ProxyID, nil))
 	require.Equal(t, http.StatusBadGateway, record.Code)
 	granted, err := destination.New("session-proxy", []string{grant})
 	require.NoError(t, err)
 	srv = NewServer(registry, runnerPolicy, granted, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	record = httptest.NewRecorder()
-	srv.ServeHTTP(record, apiRequest(srv, http.MethodGet, "/run/"+created.ProxyID, nil))
+	srv.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/run/"+created.ProxyID, nil))
 	require.Equal(t, http.StatusOK, record.Code)
 	record = httptest.NewRecorder()
-	srv.ServeHTTP(record, apiRequest(srv, http.MethodGet, "/proxy/"+created.ProxyID, nil))
+	srv.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/proxy/"+created.ProxyID, nil))
 	require.Equal(t, http.StatusOK, record.Code)
-	create = apiRequest(srv, "POST", "/runner/"+registered.RunnerID+"/session/"+sid+"/channels", strings.NewReader(`{"channels":[{"name":"events"}]}`))
+	create = httptest.NewRequest("POST", "/runner/"+registered.RunnerID+"/session/"+sid+"/channels", strings.NewReader(`{"channels":[{"name":"events"}]}`))
 	create.Header.Set("Livepeer-Session-Token", token)
 	record = httptest.NewRecorder()
 	srv.ServeHTTP(record, create)
@@ -435,7 +426,7 @@ func TestRunnerExpires(t *testing.T) {
 func TestTrickleChannelsScopedToSession(t *testing.T) {
 	policy, err := destination.New("runner", nil)
 	require.NoError(t, err)
-	registry := NewRegistry("bootstrap", "http://orchestrator.example", time.Second, time.Minute)
+	registry := NewRegistry("bootstrap", "http://example.com", time.Second, time.Minute)
 	registration := heartbeatRequest{RunnerURL: "https://runner.example", App: "test", Mode: "persistent", Capacity: 2}
 	registered, _, err := registry.Heartbeat(registration, "bootstrap")
 	require.NoError(t, err)
@@ -452,7 +443,7 @@ func TestTrickleChannelsScopedToSession(t *testing.T) {
 	_, token2, _, err := registry.sessionTarget(registered.RunnerID, sid2)
 	require.NoError(t, err)
 	path1 := "/runner/" + registered.RunnerID + "/session/" + sid1 + "/channels"
-	create := apiRequest(srv, http.MethodPost, path1, bytes.NewBufferString(`{"channels":[{"name":"events","mime_type":"application/json"}]}`))
+	create := httptest.NewRequest(http.MethodPost, path1, bytes.NewBufferString(`{"channels":[{"name":"events","mime_type":"application/json"}]}`))
 	create.Header.Set("Livepeer-Session-Token", token1)
 	record := httptest.NewRecorder()
 	srv.ServeHTTP(record, create)
@@ -466,7 +457,7 @@ func TestTrickleChannelsScopedToSession(t *testing.T) {
 	require.Len(t, created.Channels, 1)
 	channelID := created.Channels[0].ChannelName
 	path2 := "/runner/" + registered.RunnerID + "/session/" + sid2 + "/channels"
-	deletion := apiRequest(srv, http.MethodDelete, path2, bytes.NewBufferString(`{"channels":["`+channelID+`"]}`))
+	deletion := httptest.NewRequest(http.MethodDelete, path2, bytes.NewBufferString(`{"channels":["`+channelID+`"]}`))
 	deletion.Header.Set("Livepeer-Session-Token", token2)
 	record = httptest.NewRecorder()
 	srv.ServeHTTP(record, deletion)
@@ -474,19 +465,19 @@ func TestTrickleChannelsScopedToSession(t *testing.T) {
 	require.JSONEq(t, `{"deleted":[]}`, record.Body.String())
 	segment := "/ai/trickle/" + channelID + "/0"
 	record = httptest.NewRecorder()
-	srv.ServeHTTP(record, apiRequest(srv, http.MethodPost, segment, bytes.NewBufferString(`{"x":1}`)))
+	srv.ServeHTTP(record, httptest.NewRequest(http.MethodPost, segment, bytes.NewBufferString(`{"x":1}`)))
 	require.Equal(t, http.StatusOK, record.Code)
 	record = httptest.NewRecorder()
-	srv.ServeHTTP(record, apiRequest(srv, http.MethodGet, segment, nil))
+	srv.ServeHTTP(record, httptest.NewRequest(http.MethodGet, segment, nil))
 	require.Equal(t, http.StatusOK, record.Code)
 	require.JSONEq(t, `{"x":1}`, record.Body.String())
-	deletion = apiRequest(srv, http.MethodDelete, path1, bytes.NewBufferString(`{"channels":["`+channelID+`"]}`))
+	deletion = httptest.NewRequest(http.MethodDelete, path1, bytes.NewBufferString(`{"channels":["`+channelID+`"]}`))
 	deletion.Header.Set("Livepeer-Session-Token", token1)
 	record = httptest.NewRecorder()
 	srv.ServeHTTP(record, deletion)
 	require.Equal(t, http.StatusOK, record.Code)
 	record = httptest.NewRecorder()
-	srv.ServeHTTP(record, apiRequest(srv, http.MethodGet, segment, nil))
+	srv.ServeHTTP(record, httptest.NewRequest(http.MethodGet, segment, nil))
 	require.Equal(t, http.StatusNotFound, record.Code)
 }
 

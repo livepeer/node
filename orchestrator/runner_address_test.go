@@ -34,7 +34,8 @@ func TestRunnerFacingAddressKeepsPublicAndInternalURLsSeparate(t *testing.T) {
 	s := NewServer(registry, policy, policy, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	defer s.Close()
 
-	heartbeat := apiRequest(s, http.MethodPost, "http://runner.internal/internal/runners/heartbeat", strings.NewReader(`{"runner_id":"r","runner_url":"`+upstream.URL+`","app":"test","capacity":1}`))
+	heartbeat := httptest.NewRequest(http.MethodPost, "http://runner.internal/internal/runners/heartbeat", strings.NewReader(`{"runner_id":"r","runner_url":"`+upstream.URL+`","app":"test","capacity":1}`))
+	heartbeat.Host = s.apiOrigin.Host
 	heartbeat.Header.Set("Authorization", "bootstrap")
 	w := httptest.NewRecorder()
 	s.ServeHTTP(w, heartbeat)
@@ -44,7 +45,8 @@ func TestRunnerFacingAddressKeepsPublicAndInternalURLsSeparate(t *testing.T) {
 	require.Equal(t, "http://runner.internal/internal", registration.Orchestrator)
 	require.Equal(t, "http://runner.internal/internal/ai/trickle/"+registration.O2R.ChannelName, registration.O2R.URL)
 	require.Empty(t, registration.O2R.InternalURL)
-	heartbeat = apiRequest(s, http.MethodPost, registration.Orchestrator+"/runners/heartbeat", strings.NewReader(`{"runner_id":"r","runner_url":"`+upstream.URL+`","app":"test","capacity":1}`))
+	heartbeat = httptest.NewRequest(http.MethodPost, registration.Orchestrator+"/runners/heartbeat", strings.NewReader(`{"runner_id":"r","runner_url":"`+upstream.URL+`","app":"test","capacity":1}`))
+	heartbeat.Host = s.apiOrigin.Host
 	heartbeat.Header.Set("Authorization", registration.HeartbeatSecret)
 	w = httptest.NewRecorder()
 	s.ServeHTTP(w, heartbeat)
@@ -76,7 +78,8 @@ func TestRunnerFacingAddressKeepsPublicAndInternalURLsSeparate(t *testing.T) {
 	require.Equal(t, "http://runner.internal/internal/runner/r/session/"+reservation.SessionID, controlHeader)
 	_, token, _, err := registry.sessionTarget("r", reservation.SessionID)
 	require.NoError(t, err)
-	create := apiRequest(s, http.MethodPost, controlHeader+"/channels", strings.NewReader(`{"channels":[{"name":"events"}]}`))
+	create := httptest.NewRequest(http.MethodPost, controlHeader+"/channels", strings.NewReader(`{"channels":[{"name":"events"}]}`))
+	create.Host = s.apiOrigin.Host
 	create.Header.Set("Livepeer-Session-Token", token)
 	w = httptest.NewRecorder()
 	s.ServeHTTP(w, create)
@@ -91,7 +94,9 @@ func TestRunnerFacingAddressKeepsPublicAndInternalURLsSeparate(t *testing.T) {
 	require.Equal(t, "http://runner.internal/internal/ai/trickle/"+channel.ChannelName, channel.InternalURL)
 
 	w = httptest.NewRecorder()
-	s.ServeHTTP(w, apiRequest(s, http.MethodPost, channel.InternalURL+"/0", bytes.NewBufferString("message")))
+	create = httptest.NewRequest(http.MethodPost, channel.InternalURL+"/0", bytes.NewBufferString("message"))
+	create.Host = s.apiOrigin.Host
+	s.ServeHTTP(w, create)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 	w = httptest.NewRecorder()
 	s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, channel.URL+"/0", nil))
@@ -102,18 +107,19 @@ func TestRunnerFacingAddressKeepsPublicAndInternalURLsSeparate(t *testing.T) {
 func TestO2RKeepaliveRepeatsUntilShutdown(t *testing.T) {
 	policy, err := destination.New("runner", nil)
 	require.NoError(t, err)
-	registry := NewRegistry("bootstrap", "http://orchestrator.example", time.Second, time.Minute)
+	registry := NewRegistry("bootstrap", "http://example.com", time.Second, time.Minute)
 	s := NewServer(registry, policy, policy, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	defer s.Close()
 	w := httptest.NewRecorder()
-	heartbeat := apiRequest(s, http.MethodPost, "/runners/heartbeat", strings.NewReader(`{"runner_id":"r","runner_url":"https://runner.example","app":"test"}`))
+	heartbeat := httptest.NewRequest(http.MethodPost, "/runners/heartbeat", strings.NewReader(`{"runner_id":"r","runner_url":"https://runner.example","app":"test"}`))
 	heartbeat.Header.Set("Authorization", "bootstrap")
 	s.ServeHTTP(w, heartbeat)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 	var registration heartbeatResponse
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &registration))
 
-	server := newTestHTTPServer(t, s)
+	server := httptest.NewServer(s)
+	s.apiOrigin = mustURL(t, server.URL)
 	defer server.Close()
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})

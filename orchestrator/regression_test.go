@@ -74,7 +74,7 @@ func reviewServer(t *testing.T, upstream string) (*Registry, *Server) {
 	t.Helper()
 	p, err := destination.New("runner", []string{strings.TrimPrefix(upstream, "http://")})
 	require.NoError(t, err)
-	reg := NewRegistry("bootstrap", "https://orch.example", time.Second, time.Minute)
+	reg := NewRegistry("bootstrap", "https://example.com", time.Second, time.Minute)
 	return reg, NewServer(reg, p, p, slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
@@ -87,7 +87,8 @@ func TestRegressionProxySendsContinueBeforeBody(t *testing.T) {
 	registry, server := reviewServer(t, upstream.URL)
 	defer server.Close()
 	require.NoError(t, registry.AddStatic(StaticRunner{ID: "one", RunnerURL: upstream.URL, App: "one", Mode: "single-shot", Capacity: 1}))
-	orch := newTestHTTPServer(t, server)
+	orch := httptest.NewServer(server)
+	server.apiOrigin = mustURL(t, orch.URL)
 	defer orch.Close()
 	address := orch.Listener.Addr().String()
 	conn, err := net.DialTimeout("tcp", address, time.Second)
@@ -111,7 +112,7 @@ func TestRegressionOffchainSingleShotCapacityAndHeaders(t *testing.T) {
 	defer close(release)
 	reg, s := reviewServer(t, upstream.URL)
 	require.NoError(t, reg.AddStatic(StaticRunner{ID: "one", RunnerURL: upstream.URL, App: "one", Mode: "single-shot", Capacity: 1}))
-	go s.ServeHTTP(httptest.NewRecorder(), apiRequest(s, "GET", "/apps/one/app", nil))
+	go s.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/apps/one/app", nil))
 	header := <-seen
 	t.Run("session_headers", func(t *testing.T) {
 		require.NotEmpty(t, header.Get("Livepeer-Session-Id"), "off-chain single-shot lost its session control headers")
@@ -119,7 +120,7 @@ func TestRegressionOffchainSingleShotCapacityAndHeaders(t *testing.T) {
 	done := make(chan int, 1)
 	go func() {
 		w := httptest.NewRecorder()
-		s.ServeHTTP(w, apiRequest(s, "GET", "/apps/one/app", nil))
+		s.ServeHTTP(w, httptest.NewRequest("GET", "/apps/one/app", nil))
 		done <- w.Code
 	}()
 	select {
@@ -195,12 +196,12 @@ func TestRegressionTrickleNextDeliversNextPublishedPart(t *testing.T) {
 		done := make(chan struct{})
 		w := httptest.NewRecorder()
 		go func() {
-			s.ServeHTTP(w, apiRequest(s, "GET", "/ai/trickle/test/-1", nil).WithContext(ctx))
+			s.ServeHTTP(w, httptest.NewRequest("GET", "/ai/trickle/test/-1", nil).WithContext(ctx))
 			close(done)
 		}()
 		synctest.Wait()
 		pub := httptest.NewRecorder()
-		s.ServeHTTP(pub, apiRequest(s, "POST", "/ai/trickle/test/0", strings.NewReader("first")))
+		s.ServeHTTP(pub, httptest.NewRequest("POST", "/ai/trickle/test/0", strings.NewReader("first")))
 		require.Equal(t, 200, pub.Code)
 		synctest.Wait()
 		select {
@@ -238,8 +239,8 @@ func TestRegressionTrickleStreamsBeforePublisherEOF(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		defer cancel()
 		out := &reviewStreamingWriter{header: http.Header{}, wrote: make(chan struct{}, 1)}
-		go s.ServeHTTP(httptest.NewRecorder(), apiRequest(s, "POST", "/ai/trickle/test/0", input))
-		go s.ServeHTTP(out, apiRequest(s, "GET", "/ai/trickle/test/0", nil).WithContext(ctx))
+		go s.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("POST", "/ai/trickle/test/0", input))
+		go s.ServeHTTP(out, httptest.NewRequest("GET", "/ai/trickle/test/0", nil).WithContext(ctx))
 		_, err := writer.Write([]byte("streaming chunk"))
 		require.NoError(t, err)
 		synctest.Wait()

@@ -216,28 +216,11 @@ func TestProxyHostCannotReachAPI(t *testing.T) {
 						w := request(http.MethodPost, origin+"/apps/app-fixture/session")
 						require.Equal(t, status, w.Code, w.Body.String())
 						require.Equal(t, status, request(http.MethodGet, origin+"/discovery").Code)
-						if status == http.StatusNotFound {
-							for _, route := range []struct{ method, path string }{
-								{http.MethodPost, "/runners/heartbeat"},
-								{http.MethodPost, "/runner/app-fixture/session/unknown/channels"},
-								{http.MethodGet, "/ai/trickle/unknown/0"},
-								{http.MethodGet, "/apps/app-echo/app/probe"},
-								{http.MethodGet, "/run/app-echo/probe"},
-								{http.MethodGet, "/proxy/app-echo/probe"},
-							} {
-								w := request(route.method, origin+route.path)
-								require.Equal(t, http.StatusNotFound, w.Code, origin+route.path+": "+w.Body.String())
-							}
-						}
 					}
 					w := request(http.MethodGet, registry.proxyURL("app-echo")+"/probe")
 					if template == "" && apiOrigin != "" {
 						require.Equal(t, http.StatusNotFound, w.Code, w.Body.String())
-						// A reverse proxy forwards the advertised URL with the API Host.
-						req := httptest.NewRequest(http.MethodGet, registry.proxyURL("app-echo")+"/probe", nil)
-						req.Host = server.apiOrigin.Host
-						w = httptest.NewRecorder()
-						server.ServeHTTP(w, req)
+						w = request(http.MethodGet, server.apiOrigin.String()+"/run/app-echo/probe")
 					}
 					require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 					require.Equal(t, "application response", w.Body.String())

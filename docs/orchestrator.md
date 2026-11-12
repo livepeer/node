@@ -103,11 +103,9 @@ DNS, TLS, and forwarding to this listener for those URLs. Hostname routing uses
 the actual Host header. Single-shot domain proxies require an app registration ID
 that is a lowercase DNS label of at most 63 characters.
 
-API requests require the `APIOriginURL` Host (default: `ServiceURL`), even
-without `ProxyURLTemplate`. Set it to the HTTP(S) origin a reverse proxy
-forwards, without a path. Runner, trickle, app, and fallback proxy routes share
-this Host; configure `RunnerServiceURL` or the proxy accordingly. Template-matched
-proxies use their template Host. Advertised URLs are unchanged.
+API requests must use the Host from `APIOriginURL`, which defaults to
+`ServiceURL`. If a reverse proxy rewrites Host, set `APIOriginURL` to an
+HTTP(S) URL with the Host it sends, without a path.
 
 To remove headers from app requests, set `ExcludedHeaders`, for example:
 `["CF-Access-*", "Cookie"]`. Matching is case-insensitive.
