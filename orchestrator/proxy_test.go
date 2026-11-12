@@ -143,6 +143,7 @@ func TestOriginDefaultPorts(t *testing.T) {
 			policy, err := destination.New("runner", nil)
 			require.NoError(t, err)
 			registry := NewRegistry("bootstrap", tc.origin, time.Second, time.Minute)
+			registry.proxyTemplate = "https://{proxy}.example"
 			server := NewServer(registry, policy, policy, slog.New(slog.NewTextHandler(io.Discard, nil)))
 			defer server.Close()
 			for _, request := range []struct {

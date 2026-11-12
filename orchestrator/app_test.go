@@ -63,7 +63,7 @@ func TestAPIOriginURLRouting(t *testing.T) {
 	cmd := Root(io.Discard, io.Discard)
 	cmd.SetArgs([]string{"--config", "", "--listen", address, "--metrics-listen", metrics,
 		"--service-url", "https://public.example",
-		"--api-origin-url", "http://" + origin + ":80", "--runner-service-url", "http://" + origin})
+		"--api-origin-url", "http://" + origin + ":80"})
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() { done <- cmd.ExecuteContext(ctx) }()

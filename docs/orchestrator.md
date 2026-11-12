@@ -60,11 +60,10 @@ require grants.
 ## Public URLs and TLS
 
 `ServiceURL` is the public base URL advertised to clients, defaulting to
-`http://<Listen>`. Set `RunnerServiceURL` if runners reach the listener through
-a different URL such as Docker. That URL is used for heartbeat responses,
+`http://<Listen>`. `RunnerServiceURL` overrides it for heartbeat responses,
 session callbacks, Trickle `internal_url`, and the orchestrator-to-runner (O2R)
-control channel. Client discovery, session, proxy, and channel URLs continue
-to use `ServiceURL`.
+control channel. Runner requests must use the Host from `APIOriginURL`.
+Client discovery, session, proxy, and channel URLs use `ServiceURL`.
 
 The application listener serves HTTP and defaults to loopback. Use explicit
 IP:port addresses for `Listen` and `MetricsListen`, including IPv6 addresses
