@@ -146,6 +146,9 @@ func TestRunnerCapacityOutcomes(t *testing.T) {
 			}
 			for _, route := range []string{"/apps/runner/app", "/run/runner", "/proxy/runner", "https://runner.apps.example/"} {
 				request := httptest.NewRequest("GET", route, nil)
+				if route[0] == '/' {
+					request.Host = app.apiOrigin.Host
+				}
 				if paid {
 					request.Header.Set("Livepeer-Payment", "pending")
 					request.Header.Set("Livepeer-Segment", base64.StdEncoding.EncodeToString(wire.EncodeSegData(wire.SegData{ManifestID: []byte("new"), Auth: wire.AuthToken{SessionID: "new"}})))

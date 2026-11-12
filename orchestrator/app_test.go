@@ -54,6 +54,48 @@ func freeTCPPort(t *testing.T) int {
 	return port
 }
 
+func TestAPIOriginURLRouting(t *testing.T) {
+	address := fmt.Sprintf("127.0.0.1:%d", freeTCPPort(t))
+	metrics := fmt.Sprintf("127.0.0.1:%d", freeTCPPort(t))
+	const origin = "orchestrator.internal"
+	t.Setenv("LIVEPEER_ORCHESTRATOR_BOOTSTRAP_SECRET", "bootstrap")
+	t.Setenv("LIVEPEER_ORCHESTRATOR_API_ORIGIN_URL", "http://wrong.internal:8935")
+	cmd := Root(io.Discard, io.Discard)
+	cmd.SetArgs([]string{"--config", "", "--listen", address, "--metrics-listen", metrics,
+		"--service-url", "https://public.example",
+		"--api-origin-url", "http://" + origin + ":80", "--runner-service-url", "http://" + origin,
+		"--proxy-url-template", "https://{proxy}.internal"})
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- cmd.ExecuteContext(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case err := <-done:
+			require.NoError(t, err)
+		case <-time.After(5 * time.Second):
+			t.Fatal("orchestrator did not stop")
+		}
+	})
+	client := &http.Client{Timeout: time.Second, Transport: &http.Transport{DisableKeepAlives: true}}
+	request := func(host string) int {
+		req, err := http.NewRequest(http.MethodGet, "http://"+address+"/discovery", nil)
+		require.NoError(t, err)
+		req.Host = host
+		response, err := client.Do(req)
+		if err != nil {
+			return 0
+		}
+		defer response.Body.Close()
+		return response.StatusCode
+	}
+	require.Eventually(t, func() bool { return request(origin) == http.StatusOK }, 5*time.Second, 10*time.Millisecond)
+	require.Equal(t, http.StatusOK, request(origin+":80"))
+	for _, host := range []string{origin + ":443", "public.example", "wrong.internal:8935", "other.example"} {
+		require.Equal(t, http.StatusNotFound, request(host), host)
+	}
+}
+
 func TestPaidHTTPStartup(t *testing.T) {
 	for _, mode := range []string{"wallet", "separate", "remote"} {
 		t.Run(mode, func(t *testing.T) {
@@ -250,6 +292,43 @@ func TestLocalOrchestratorWaitsForEconomicalRedemption(t *testing.T) {
 	require.Empty(t, f.Sent, "equality must withhold the transaction")
 }
 
+func TestExcludedHeadersEnvironmentAndFlag(t *testing.T) {
+	t.Setenv("LIVEPEER_ORCHESTRATOR_EXCLUDED_HEADERS", "CF-Access-*,Cookie")
+	for _, args := range [][]string{nil, {"--excluded-headers", "X-Ingress-Token"}} {
+		output, err := execute(t, append([]string{"--config", "", "--print-config"}, args...)...)
+		require.NoError(t, err)
+		var printed Params
+		require.NoError(t, toml.Unmarshal([]byte(output), &printed))
+		want := []string{"CF-Access-*", "Cookie"}
+		if len(args) > 0 {
+			want = []string{"X-Ingress-Token"}
+		}
+		require.Equal(t, want, printed.ExcludedHeaders)
+	}
+}
+
+func TestExcludedHeadersValidation(t *testing.T) {
+	require.NoError(t, validateExcludedHeaders(nil))
+	require.NoError(t, validateExcludedHeaders([]string{"CF-Access-*", "Cookie", "X-Exact", "X_Valid!#$%&'+-.^`|~"}))
+	t.Setenv("LIVEPEER_ORCHESTRATOR_BOOTSTRAP_SECRET", "test")
+	for _, pattern := range []string{
+		"", "*", "CF-*-Access", "CF-Access-**", "Bad Header", "Header: value", "Header\r\n", "Héader",
+		"livepeer-runner-route", "LIVEPEER-SESSION-ID", "Livepeer-Session-Token", "Livepeer-Session-Control",
+		"livepeer-*", "Livepeer-Session-*", "L*",
+	} {
+		t.Run(fmt.Sprintf("%q", pattern), func(t *testing.T) {
+			require.ErrorContains(t, validateExcludedHeaders([]string{pattern}), "--excluded-headers")
+			// CLI list parsing treats empty input as clearing the list and trims whitespace.
+			if pattern == "" || strings.TrimSpace(pattern) != pattern {
+				return
+			}
+			_, err := execute(t, "--config", "", "--excluded-headers", pattern)
+			require.ErrorContains(t, err, "--excluded-headers")
+			require.True(t, boa.IsUserInputError(err))
+		})
+	}
+}
+
 func TestConfigPrecedenceAndRedaction(t *testing.T) {
 	for _, ext := range []string{".toml", ".json"} {
 		t.Run(ext, func(t *testing.T) {
@@ -264,6 +343,7 @@ OrchestratorAddress = '0x0000000000000000000000000000000000000011'
 WeiPerUSD = '1/2'
 KeystoreFile = '/missing/account.json'
 RunnerGrants = ['10.0.0.0/8', 'fc00::/7']
+ExcludedHeaders = ['CF-Access-*', 'Cookie']
 `)
 			test.WriteConfig(t, path, string(config))
 			for key, value := range map[string]string{
@@ -294,6 +374,7 @@ RunnerGrants = ['10.0.0.0/8', 'fc00::/7']
 			require.Equal(t, "0x0000000000000000000000000000000000000011", printed["OrchestratorAddress"])
 			require.Equal(t, "2/3", printed["WeiPerUSD"])
 			require.Equal(t, "5s", printed["HeartbeatInterval"])
+			require.Equal(t, []any{"CF-Access-*", "Cookie"}, printed["ExcludedHeaders"])
 			for _, key := range []string{"ServiceURL", "RPCURL", "BootstrapSecret", "KeystoreFile", "KeystorePassword", "KeystorePasswordFile", "RunnerConfig", "TicketFaceValue"} {
 				require.NotContains(t, printed, key)
 			}
@@ -432,6 +513,11 @@ func TestSecretFilesPreserveBytesAndRedactErrors(t *testing.T) {
 
 func TestValidationBeforeStartup(t *testing.T) {
 	t.Setenv("LIVEPEER_ORCHESTRATOR_BOOTSTRAP_SECRET", "test")
+	for _, value := range []string{"/relative", "ftp://api.example", "http://user:pass@api.example", "http://api.example/path", "http://api.example?", "http://api.example?x=1", "http://api.example#fragment"} {
+		_, err := execute(t, "--config", "", "--api-origin-url", value)
+		require.ErrorContains(t, err, "api-origin-url", value)
+		require.True(t, boa.IsUserInputError(err))
+	}
 	for _, flag := range []string{"--runner-grants", "--session-proxy-grants", "--health-grants"} {
 		_, err := execute(t, "--config", "", flag, "10.0.0.0/33")
 		require.ErrorContains(t, err, flag+" destination grant")

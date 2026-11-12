@@ -38,12 +38,16 @@ func (r *Registry) proxyURL(id string) string {
 
 // The template is fixed before serving. Match the actual Host, never a
 // forwarded header supplied by a caller, and retain every application path.
-func (r *Registry) matchProxy(req *http.Request) (string, string) {
+func (r *Registry) matchProxy(req *http.Request, apiOrigin *url.URL) (string, string) {
 	if r.proxyTemplate == "" {
 		return "", ""
 	}
 	u, _ := url.Parse(strings.Replace(r.proxyTemplate, "{proxy}", proxyMarker, 1))
 	if before, after, ok := strings.Cut(strings.ToLower(u.Host), proxyMarker); ok {
+		// The API Host takes precedence over wildcard proxy Hosts.
+		if matchesOrigin(req.Host, apiOrigin) {
+			return "", ""
+		}
 		host := strings.ToLower(req.Host)
 		if strings.HasPrefix(host, before) && strings.HasSuffix(host, after) && len(host) > len(before)+len(after) {
 			id := host[len(before) : len(host)-len(after)]
@@ -61,6 +65,18 @@ func (r *Registry) matchProxy(req *http.Request) (string, string) {
 		}
 	}
 	return "", ""
+}
+
+// Clients may omit the URL's scheme-default port from Host.
+func matchesOrigin(host string, origin *url.URL) bool {
+	suffix := ":80"
+	if origin.Scheme == "https" {
+		suffix = ":443"
+	}
+	if port := origin.Port(); port != "" && port != suffix[1:] {
+		return strings.EqualFold(host, origin.Host)
+	}
+	return strings.EqualFold(strings.TrimSuffix(host, suffix), strings.TrimSuffix(origin.Host, suffix))
 }
 
 func (r *Registry) discoveryURL(id string, item *app) string {
