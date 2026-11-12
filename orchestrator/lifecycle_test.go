@@ -67,7 +67,7 @@ func TestRunnerStopDrainsProxy(t *testing.T) {
 				if scenario.name == "client stop" {
 					prefix = "/apps/"
 				}
-				stop := httptest.NewRequest(http.MethodPost, prefix+"r/session/"+sid+"/stop", nil)
+				stop := apiRequest(server, http.MethodPost, prefix+"r/session/"+sid+"/stop", nil)
 				stop.Header.Set("Livepeer-Session-Token", token)
 				stopped := httptest.NewRecorder()
 				released := time.Now()
@@ -131,7 +131,7 @@ func TestReleaseCancelsActiveProxy(t *testing.T) {
 						require.NoError(t, registry.AddStatic(StaticRunner{ID: "runner", RunnerURL: upstream.URL, App: "test", Mode: mode, Capacity: 1}))
 					}
 					app := NewServer(registry, policy, policy, slog.New(slog.NewTextHandler(io.Discard, nil)))
-					server := httptest.NewServer(app)
+					server := newTestHTTPServer(t, app)
 					defer server.Close()
 					defer app.Close()
 					path := "/apps/runner/app"
@@ -362,7 +362,7 @@ func TestMultiAppRemovalKeepsStreams(t *testing.T) {
 				}))
 				defer upstream.Close()
 				registry, appServer := reviewServer(t, upstream.URL)
-				server := httptest.NewServer(appServer)
+				server := newTestHTTPServer(t, appServer)
 				defer server.Close()
 				defer appServer.Close()
 				a, b := registeredApp("a"), registeredApp("b")

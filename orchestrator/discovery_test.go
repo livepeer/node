@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"math/big"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -38,7 +37,7 @@ func TestDiscoveryLocalInventory(t *testing.T) {
 			require.NoError(t, err)
 			s := NewServer(registry, policy, policy, slog.New(slog.NewTextHandler(io.Discard, nil)))
 			t.Cleanup(s.Close)
-			server := httptest.NewServer(s)
+			server := newTestHTTPServer(t, s)
 			t.Cleanup(server.Close)
 			response, err := server.Client().Get(server.URL + "/deployment/discovery")
 			require.NoError(t, err)

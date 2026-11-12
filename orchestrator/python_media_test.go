@@ -48,6 +48,7 @@ func TestPinnedPythonMultiTrackTrickle(t *testing.T) {
 	orch := httptest.NewUnstartedServer(server)
 	defer orch.Close()
 	registry.service = "http://" + orch.Listener.Addr().String()
+	server.apiOrigin = mustURL(t, registry.service)
 	orch.Start()
 	manifest, _, _, status, err := registry.Reserve("media-runner")
 	require.NoError(t, err)

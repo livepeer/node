@@ -24,7 +24,7 @@ func TestDirectTrickleDeleteAllowsNamedChannelRecreation(t *testing.T) {
 	require.NoError(t, err)
 	create := func() string {
 		t.Helper()
-		req := httptest.NewRequest(http.MethodPost, "/runner/r/session/"+sid+"/channels", strings.NewReader(`{"channels":[{"name":"events"}]}`))
+		req := apiRequest(s, http.MethodPost, "/runner/r/session/"+sid+"/channels", strings.NewReader(`{"channels":[{"name":"events"}]}`))
 		req.Header.Set("Livepeer-Session-Token", token)
 		w := httptest.NewRecorder()
 		s.ServeHTTP(w, req)
@@ -40,7 +40,7 @@ func TestDirectTrickleDeleteAllowsNamedChannelRecreation(t *testing.T) {
 	}
 	first := create()
 	w := httptest.NewRecorder()
-	s.ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "/ai/trickle/"+first, nil))
+	s.ServeHTTP(w, apiRequest(s, http.MethodDelete, "/ai/trickle/"+first, nil))
 	require.Equal(t, http.StatusOK, w.Code)
 	require.NotContains(t, s.channels, first)
 	second := create()
@@ -72,14 +72,14 @@ func TestTrickleActiveStreamAndCancellation(t *testing.T) {
 				defer writer.Close()
 				pubDone, subDone := make(chan struct{}), make(chan struct{})
 				go func() {
-					s.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("POST", "/ai/trickle/test/0", input))
+					s.ServeHTTP(httptest.NewRecorder(), apiRequest(s, "POST", "/ai/trickle/test/0", input))
 					close(pubDone)
 				}()
 				ctx, cancel := context.WithCancel(t.Context())
 				defer cancel()
 				out := &reviewStreamingWriter{header: http.Header{}, wrote: make(chan struct{}, 1)}
 				go func() {
-					s.ServeHTTP(out, httptest.NewRequest("GET", "/ai/trickle/test/0", nil).WithContext(ctx))
+					s.ServeHTTP(out, apiRequest(s, "GET", "/ai/trickle/test/0", nil).WithContext(ctx))
 					close(subDone)
 				}()
 				_, err = writer.Write([]byte("first"))
@@ -97,9 +97,9 @@ func TestTrickleActiveStreamAndCancellation(t *testing.T) {
 				}
 				switch action {
 				case "delete":
-					s.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("DELETE", "/ai/trickle/test/0", nil))
+					s.ServeHTTP(httptest.NewRecorder(), apiRequest(s, "DELETE", "/ai/trickle/test/0", nil))
 				case "reset":
-					req := httptest.NewRequest("POST", "/ai/trickle/test/1", strings.NewReader("next"))
+					req := apiRequest(s, "POST", "/ai/trickle/test/1", strings.NewReader("next"))
 					req.Header.Set("Lp-Trickle-Reset", "true")
 					s.ServeHTTP(httptest.NewRecorder(), req)
 				case "release":
@@ -178,7 +178,7 @@ func TestNamedChannelsAreIdempotentAndReleased(t *testing.T) {
 	require.NoError(t, err)
 	var previous string
 	for range 2 {
-		req := httptest.NewRequest("POST", "/runner/r/session/"+sid+"/channels", strings.NewReader(`{"channels":[{"name":"events"}]}`))
+		req := apiRequest(s, "POST", "/runner/r/session/"+sid+"/channels", strings.NewReader(`{"channels":[{"name":"events"}]}`))
 		req.Header.Set("Livepeer-Session-Token", token)
 		w := httptest.NewRecorder()
 		s.ServeHTTP(w, req)
@@ -202,8 +202,8 @@ func TestTrickleLargeSegmentDelivered(t *testing.T) {
 		defer writer.Close()
 		pub, sub := httptest.NewRecorder(), httptest.NewRecorder()
 		pubDone, subDone := make(chan struct{}), make(chan struct{})
-		go func() { s.ServeHTTP(pub, httptest.NewRequest("POST", "/ai/trickle/large/0", input)); close(pubDone) }()
-		go func() { s.ServeHTTP(sub, httptest.NewRequest("GET", "/ai/trickle/large/0", nil)); close(subDone) }()
+		go func() { s.ServeHTTP(pub, apiRequest(s, "POST", "/ai/trickle/large/0", input)); close(pubDone) }()
+		go func() { s.ServeHTTP(sub, apiRequest(s, "GET", "/ai/trickle/large/0", nil)); close(subDone) }()
 		chunk := strings.Repeat("x", 32<<10)
 		for range (3 << 20) / len(chunk) {
 			_, err := io.WriteString(writer, chunk)
@@ -216,7 +216,7 @@ func TestTrickleLargeSegmentDelivered(t *testing.T) {
 		require.Equal(t, http.StatusOK, pub.Code)
 		require.Equal(t, 3<<20, sub.Body.Len())
 		late := httptest.NewRecorder()
-		s.ServeHTTP(late, httptest.NewRequest("GET", "/ai/trickle/large/0", nil))
+		s.ServeHTTP(late, apiRequest(s, "GET", "/ai/trickle/large/0", nil))
 		require.Equal(t, http.StatusOK, late.Code)
 		require.Equal(t, 3<<20, late.Body.Len())
 	})

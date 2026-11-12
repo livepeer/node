@@ -41,7 +41,7 @@ type Params struct {
 	Listen                    boa.HTTPBind       `default:"127.0.0.1:8935" descr:"Public HTTP listener"`
 	MetricsListen             boa.HTTPBind       `default:"127.0.0.1:8936" descr:"Metrics listener"`
 	ServiceURL                boa.Text[*url.URL] `optional:"true" descr:"Public orchestrator base URL; defaults to http://listen"`
-	APIOriginURL              boa.Text[*url.URL] `optional:"true" descr:"API request Host as a URL when proxy-url-template is set; defaults to service-url"`
+	APIOriginURL              boa.Text[*url.URL] `optional:"true" descr:"Required API request Host as a URL; defaults to service-url"`
 	RunnerServiceURL          boa.Text[*url.URL] `optional:"true" descr:"Runner-facing base URL for callbacks and trickle; defaults to service-url"`
 	ProxyURLTemplate          string             `optional:"true" descr:"Generated proxy URL with {proxy} in a hostname label or final path segment"`
 	ExcludedHeaders           []string           `optional:"true" descr:"Headers to remove from app requests; a trailing * matches a prefix"`

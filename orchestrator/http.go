@@ -100,8 +100,8 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	proxyID, appPath := s.registry.matchProxy(r, s.apiOrigin)
 	if proxyID == "" {
-		// Unknown proxy Hosts must never fall through to the API router.
-		if s.registry.proxyTemplate != "" && !matchesOrigin(r.Host, s.apiOrigin) {
+		// Only the API Host may reach the API router.
+		if !matchesOrigin(r.Host, s.apiOrigin) {
 			fail(w, http.StatusNotFound, "route not found")
 			return
 		}

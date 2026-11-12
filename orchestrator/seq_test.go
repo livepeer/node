@@ -41,7 +41,7 @@ func TestOwnerSeqOrdering(t *testing.T) {
 	}
 	lastLegacy := registry.runners["owner"].Last
 	for _, seq := range []string{`-1`, `1.5`, `"1"`, `18446744073709551616`, `true`, `[]`} {
-		req := httptest.NewRequest(http.MethodPost, "/runners/heartbeat", strings.NewReader(`{"runner_id":"owner","seq":`+seq+`,"apps":[]}`))
+		req := apiRequest(server, http.MethodPost, "/runners/heartbeat", strings.NewReader(`{"runner_id":"owner","seq":`+seq+`,"apps":[]}`))
 		req.Header.Set("Authorization", owner.HeartbeatSecret)
 		w := httptest.NewRecorder()
 		server.ServeHTTP(w, req)

@@ -471,7 +471,7 @@ func TestPaidFailureOutcomes(t *testing.T) {
 			if cause == "capacity" || cause == "queue capacity" {
 				status = 503
 			}
-			request := httptest.NewRequest("POST", "/apps/runner/app", nil)
+			request := apiRequest(server, "POST", "/apps/runner/app", nil)
 			if operation == "receive" {
 				payment, segment := recipientPayment(t, key, info, nonces...)
 				if cause == "unhashed segment" {

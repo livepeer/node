@@ -198,7 +198,7 @@ func TestUpgradePreservesHalfClose(t *testing.T) {
 			registry, app := reviewServer(t, upstream.URL)
 			defer app.Close()
 			require.NoError(t, registry.AddStatic(StaticRunner{ID: "runner", App: "model", Mode: "single-shot", RunnerURL: upstream.URL, Capacity: 1}))
-			server := httptest.NewServer(app)
+			server := newTestHTTPServer(t, app)
 			defer server.Close()
 			u, err := url.Parse(server.URL)
 			require.NoError(t, err)
@@ -253,7 +253,7 @@ func TestApplicationMetricsAndInventory(t *testing.T) {
 	}
 	for _, path := range []string{"/apps/runner/app", "/run/runner", "/proxy/runner"} {
 		response := httptest.NewRecorder()
-		app.ServeHTTP(response, httptest.NewRequest("POST", path, nil))
+		app.ServeHTTP(response, apiRequest(app, "POST", path, nil))
 		require.Equal(t, 503, response.Code)
 	}
 	require.EqualValues(t, 3, test.MetricSum(t, registry.metrics.Registry, "app_calls_total", map[string]string{"app": "model", "outcome": "error"}))
@@ -263,7 +263,7 @@ func TestApplicationMetricsAndInventory(t *testing.T) {
 	for range cap(app.streamSlots) {
 		app.streamSlots <- struct{}{}
 	}
-	app.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("POST", "/run/runner", nil))
+	app.ServeHTTP(httptest.NewRecorder(), apiRequest(app, "POST", "/run/runner", nil))
 	for range cap(app.streamSlots) {
 		<-app.streamSlots
 	}
@@ -366,7 +366,7 @@ func TestUpstreamFailureAfterHeaders(t *testing.T) {
 	defer app.Close()
 	require.NoError(t, registry.AddStatic(StaticRunner{ID: "runner", App: "model", Mode: "single-shot", RunnerURL: upstream.URL, Capacity: 1}))
 	response := httptest.NewRecorder()
-	app.ServeHTTP(response, httptest.NewRequest("GET", "/apps/runner/app", nil))
+	app.ServeHTTP(response, apiRequest(app, "GET", "/apps/runner/app", nil))
 	require.Equal(t, 200, response.Code, "the upstream status was already forwarded")
 	require.EqualValues(t, 1, test.MetricSum(t, registry.metrics.Registry, "app_calls_total", map[string]string{"outcome": "stream_error"}))
 	require.EqualValues(t, 1, test.MetricSum(t, registry.metrics.Registry, "stream_errors_total", nil))

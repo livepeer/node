@@ -48,6 +48,7 @@ func TestPinnedPythonRequestSessionControls(t *testing.T) {
 	defer orch.Close()
 	defer server.Close()
 	registry.service = "http://" + orch.Listener.Addr().String()
+	server.apiOrigin = mustURL(t, registry.service)
 	orch.Start()
 	fixture := filepath.Join(root, "cmd", "livepeer", "testdata", "python_runner_session_controls.py")
 	cmd := exec.Command(python, fixture, orch.URL, "bootstrap", "unused", "request-controls", "persistent", "1", "metadata")
