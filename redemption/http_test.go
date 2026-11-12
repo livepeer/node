@@ -390,7 +390,9 @@ func TestDestinationSubmissionHeadersAndRedirectIsolation(t *testing.T) {
 	redirected := false
 	sink := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { redirected = true }))
 	defer sink.Close()
-	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, sink.URL, http.StatusTemporaryRedirect) }))
+	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, sink.URL, http.StatusTemporaryRedirect)
+	}))
 	defer redirect.Close()
 	u, _ = url.Parse(redirect.URL)
 	policy, err = destination.New("redeemer", []string{u.Host})
