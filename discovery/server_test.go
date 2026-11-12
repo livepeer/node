@@ -222,6 +222,7 @@ func TestDiscoveryPreservesWholeRecords(t *testing.T) {
 		case "/tie/discovery":
 			runner = strings.ReplaceAll(runner, `"app":"test"`, `"app":"tie"`)
 		}
+		runner += `,{"url":"https://invalid.example/app","app":"test","observed_at":"2000-01-01T00:00:00Z","price_info":{"price":"1"}}`
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `[{"address":"`+owner+`","runners":[`+runner+`]}]`)
 	}))
