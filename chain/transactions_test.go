@@ -26,6 +26,7 @@ func TestTransactionCommands(t *testing.T) {
 		name          string
 		keySource     int
 		flags         []string
+		recipient     string
 		broadcastErr  bool
 		receiptErr    bool
 		receiptRevert bool
@@ -39,6 +40,7 @@ func TestTransactionCommands(t *testing.T) {
 		{name: "simulate with unavailable password file", flags: []string{"--keystore-password-file", "/missing/password"}, wantErr: "secret file"},
 		{name: "env password submission", keySource: 3, flags: []string{"--submit"}, wantSent: 1, wantReceipt: true},
 		{name: "explicit submission", flags: []string{"--submit"}, wantSent: 1, wantReceipt: true},
+		{name: "fund another account", flags: []string{"--submit"}, recipient: testAccount, wantSent: 1, wantReceipt: true},
 		{name: "keystore environment overrides config", keySource: 1, flags: []string{"--submit"}, wantSent: 1, wantReceipt: true},
 		{name: "keystore CLI overrides environment", keySource: 2, flags: []string{"--submit"}, wantSent: 1, wantReceipt: true},
 		{name: "receipt failure", flags: []string{"--submit", "--wait"}, receiptErr: true, wantReceipt: true, wantErr: "receipt", wantSent: 1},
@@ -61,6 +63,12 @@ func TestTransactionCommands(t *testing.T) {
 			value := new(big.Int).Add(deposit, reserve)
 			data := append(crypto.Keccak256([]byte("fundDepositAndReserve(uint256,uint256)"))[:4], ethcommon.LeftPadBytes(deposit.Bytes(), 32)...)
 			data = append(data, ethcommon.LeftPadBytes(reserve.Bytes(), 32)...)
+			if tc.recipient != "" {
+				data = append(crypto.Keccak256([]byte("fundDepositAndReserveFor(address,uint256,uint256)"))[:4], ethcommon.LeftPadBytes(ethcommon.HexToAddress(tc.recipient).Bytes(), 32)...)
+				data = append(data, ethcommon.LeftPadBytes(deposit.Bytes(), 32)...)
+				data = append(data, ethcommon.LeftPadBytes(reserve.Bytes(), 32)...)
+				tc.flags = append(tc.flags, "--recipient", tc.recipient)
+			}
 			f.simulationHook = func(from, to ethcommon.Address, input []byte, amount string) {
 				require.Equal(t, key.Address(), from)
 				require.Equal(t, broker, to)
@@ -103,7 +111,7 @@ func TestTransactionCommands(t *testing.T) {
 			require.NoError(t, os.WriteFile(configFile, []byte(config), 0600))
 			var output bytes.Buffer
 			root := Root(&output, &output)
-			args := append([]string{"ticketbroker", "fund", "--config", configFile, "--amount", deposit.String(), "--reserve", reserve.String(), "--base-units", "--output", "json"}, tc.flags...)
+			args := append([]string{"ticketbroker", "fund", "--config", configFile, "--deposit", deposit.String(), "--reserve", reserve.String(), "--base-units", "--output", "json"}, tc.flags...)
 			root.SetArgs(args)
 			err = root.Execute()
 			if tc.wantErr == "" {

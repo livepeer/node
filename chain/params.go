@@ -143,8 +143,10 @@ type WithdrawFeesParams struct {
 }
 type FundParams struct {
 	TransactionOptions
-	AmountOptions
-	Reserve string `required:"true" boa:"noconfig,noenv" descr:"Reserve amount in human ETH units, or wei with --base-units"`
+	Deposit   string             `default:"0" boa:"noconfig,noenv" descr:"Deposit amount in human ETH units, or wei with --base-units"`
+	Reserve   string             `default:"0" boa:"noconfig,noenv" descr:"Reserve amount in human ETH units, or wei with --base-units"`
+	BaseUnits bool               `optional:"true" boa:"noconfig,noenv" descr:"Interpret deposit and reserve as integer wei"`
+	Recipient *ethcommon.Address `boa:"noconfig,noenv" descr:"Account to fund; default: configured account"`
 }
 type TransferParams struct {
 	TransactionOptions
