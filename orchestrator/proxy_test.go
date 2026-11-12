@@ -178,7 +178,7 @@ func TestProxyHostCannotReachAPI(t *testing.T) {
 					policy, err := destination.New("runner", []string{strings.TrimPrefix(upstream.URL, "http://")})
 					require.NoError(t, err)
 					registry := NewRegistry("bootstrap", "https://api-aaaaaaa.machine.example", time.Second, time.Minute)
-					registry.runnerService = "http://runner.internal:8935"
+					registry.runnerService = "http://runner.internal:8935/internal"
 					registry.proxyTemplate = template
 					require.NoError(t, registry.AddStatic(StaticRunner{ID: "app-fixture", RunnerURL: upstream.URL, App: "fixture", Mode: "persistent", Capacity: 4}))
 					require.NoError(t, registry.AddStatic(StaticRunner{ID: "app-echo", RunnerURL: upstream.URL, App: "echo", Mode: "single-shot", Proxy: true, Capacity: 4}))
@@ -196,6 +196,9 @@ func TestProxyHostCannotReachAPI(t *testing.T) {
 						w := httptest.NewRecorder()
 						server.ServeHTTP(w, req)
 						return w
+					}
+					if apiOrigin != "runner.internal:8935" {
+						require.Equal(t, http.StatusNotFound, request(http.MethodPost, "http://runner.internal:8935/runners/heartbeat").Code)
 					}
 					for _, host := range []string{
 						"app-echo.machine.example:8443",

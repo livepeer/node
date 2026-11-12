@@ -51,12 +51,6 @@ func TestRunnerFacingAddressKeepsPublicAndInternalURLsSeparate(t *testing.T) {
 	s.ServeHTTP(w, heartbeat)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 
-	for _, path := range []string{"/internal/discovery", "/external/runners/heartbeat"} {
-		w = httptest.NewRecorder()
-		s.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "http://runner.internal"+path, nil))
-		require.Equal(t, http.StatusNotFound, w.Code, path)
-	}
-
 	w = httptest.NewRecorder()
 	s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "https://public.example/internal/runners/discovery", nil))
 	require.Equal(t, http.StatusOK, w.Code)
