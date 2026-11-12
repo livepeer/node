@@ -205,20 +205,27 @@ func validRunnerFields(data []byte, prefix string) bool {
 		return false
 	}
 	for name, value := range fields {
-		key := strings.ToLower(name)
+		key := ""
+		match := func(canonical string) bool {
+			if !strings.EqualFold(name, canonical) {
+				return false
+			}
+			key = canonical
+			return true
+		}
 		switch {
-		case prefix == "" && key == "observed_at":
+		case prefix == "" && match("observed_at"):
 			var stamp time.Time
 			if value[0] != '"' || jsonv2.Unmarshal(value, &stamp) != nil {
 				return false
 			}
-		case prefix == "" && (key == "url" || key == "app" || key == "version" || key == "metadata" || key == "mode") ||
-			prefix == "gpu" && (key == "id" || key == "name") ||
-			prefix == "price_info" && (key == "currency" || key == "unit"):
+		case prefix == "" && (match("url") || match("app") || match("version") || match("metadata") || match("mode")) ||
+			prefix == "gpu" && (match("id") || match("name")) ||
+			prefix == "price_info" && (match("currency") || match("unit")):
 			if value[0] != '"' {
 				return false
 			}
-		case prefix == "" && (key == "capacity" || key == "capacity_used" || key == "capacity_available") || prefix == "gpu" && key == "vram_mb":
+		case prefix == "" && (match("capacity") || match("capacity_used") || match("capacity_available")) || prefix == "gpu" && match("vram_mb"):
 			if value[0] != '-' && (value[0] < '0' || value[0] > '9') {
 				return false
 			}
@@ -231,11 +238,11 @@ func validRunnerFields(data []byte, prefix string) bool {
 			if strings.Trim(digits, "-0") != "" && exponent < len(fraction)-zeros {
 				return false
 			}
-		case prefix == "price_info" && (key == "price" || key == "price_usd"):
+		case prefix == "price_info" && (match("price") || match("price_usd")):
 			if value[0] != '-' && (value[0] < '0' || value[0] > '9') {
 				return false
 			}
-		case prefix == "" && (key == "gpu" || key == "price_info"):
+		case prefix == "" && (match("gpu") || match("price_info")):
 			if !validRunnerFields(value, key) {
 				return false
 			}
