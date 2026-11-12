@@ -581,13 +581,13 @@ func (r *Registry) Unregister(id, auth string) (int, error) {
 	}
 	r.mu.Unlock()
 	if r.server != nil && r.server.payment != nil {
-		payment := r.server.payment
-		payment.mu.Lock()
-		//lint:ignore SA2001 Wait for receipts that passed the registration fence to commit.
-		payment.mu.Unlock()
+		if !r.server.payment.mu.TryLock() {
+			return http.StatusServiceUnavailable, errors.New("payment accounting busy")
+		}
+		r.server.payment.mu.Unlock()
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
-		if drained, err := payment.store.HandoffDrained(ctx); err != nil || !drained {
+		if drained, err := r.server.payment.store.HandoffDrained(ctx); err != nil || !drained {
 			return http.StatusServiceUnavailable, errors.New("ticket handoff pending or unavailable")
 		}
 	}

@@ -211,7 +211,11 @@ func TestRunnerRetirementWaitsForDurableHandoffEvenAfterRegistrationLoss(t *test
 	status, _ := registry.Unregister("owner", "wrong")
 	require.Equal(t, http.StatusUnauthorized, status)
 	require.False(t, lifetime.closed.Load())
+	engine.mu.Lock()
+	release := time.AfterFunc(time.Second, engine.mu.Unlock)
 	status, _ = registry.Unregister("owner", owner.HeartbeatSecret)
+	require.True(t, release.Stop(), "busy accounting must return promptly")
+	engine.mu.Unlock()
 	require.Equal(t, http.StatusServiceUnavailable, status)
 	require.True(t, lifetime.closed.Load())
 	// A retry, expiration or Node restart can leave no in-memory runner.
@@ -234,14 +238,10 @@ func TestRetiredAppRejectsPaymentReceiptStillWaitingOnRPC(t *testing.T) {
 	owner := appHeartbeat(t, registry, "owner", "bootstrap", registeredApp("runner"))
 	info := issueRecipientParams(t, engine, key)
 	entered, release := make(chan struct{}), make(chan struct{})
-	chain.funds = func(ctx context.Context, funds pm.PayerFunds) (pm.PayerFunds, error) {
+	chain.funds = func(_ context.Context, funds pm.PayerFunds) (pm.PayerFunds, error) {
 		close(entered)
-		select {
-		case <-release:
-			return funds, nil
-		case <-ctx.Done():
-			return funds, ctx.Err()
-		}
+		<-release
+		return funds, nil
 	}
 	done := make(chan error, 1)
 	go func() { done <- receiveRecipientPayment(t, engine, key, info, 1) }()
