@@ -746,3 +746,22 @@ func TestChainMismatchBeforeStorage(t *testing.T) {
 	require.ErrorContains(t, Serve(t.Context(), p, io.Discard), "chain ID")
 	require.NoDirExists(t, filepath.Dir(p.RedeemerDB))
 }
+
+func TestRedeemerHeadersFileResolutionAndRedaction(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "redemption-headers")
+	require.NoError(t, os.WriteFile(path, []byte("Authorization: Bearer submission-file-secret"), 0600))
+	var p Params
+	require.NoError(t, (boa.Cmd[Params]{Params: &p, RawArgs: []string{"--redeemer-headers-file", path}}).Validate())
+	require.Equal(t, "Bearer submission-file-secret", http.Header(p.RedeemerHeaders).Get("Authorization"))
+	output, err := execute(t, "--config=", "--redeemer-url", "https://redeemer.example", "--redeemer-headers-file", path, "--print-config")
+	require.NoError(t, err)
+	require.NotContains(t, output, "submission-file-secret")
+	require.NotContains(t, output, path)
+	_, err = execute(t, "--redeemer-headers", "Authorization: Bearer literal-secret", "--print-config")
+	require.Error(t, err)
+	require.NotContains(t, err.Error(), "literal-secret")
+	require.NoError(t, os.Chmod(path, 0644))
+	p.RedeemerHeadersFile = path
+	p.RedeemerURL, _ = url.Parse("https://redeemer.example")
+	require.ErrorContains(t, p.Validate(), "owner-only")
+}

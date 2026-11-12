@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"os/signal"
 	"strings"
 	"sync"
@@ -48,6 +49,8 @@ type Params struct {
 	BootstrapSecretFile       string             `basepath:"source" secretfor:"BootstrapSecret" descr:"File containing runner bootstrap credential"`
 	RunnerConfig              string             `basepath:"source" optional:"true" file:"true" descr:"Static runner TOML path"`
 	RedeemerURL               *url.URL           `name:"redeemer-url" optional:"true" descr:"Remote winning-ticket redeemer base URL"`
+	RedeemerHeaders           nodeconfig.Headers `optional:"true" secret:"true" descr:"Headers authenticating winning-ticket submission"`
+	RedeemerHeadersFile       string             `basepath:"source" secretfor:"RedeemerHeaders" descr:"Owner-only ticket submission headers file"`
 	RedeemerGrants            []string           `optional:"true" descr:"Private remote redeemer IP[:port] or CIDR grants"`
 	MaxPendingTickets         int                `default:"100000" min:"1" descr:"Maximum unsettled winning tickets"`
 	MaxTicketsPerRecipient    int                `default:"10000" min:"1" descr:"Maximum unsettled tickets per recipient"`
@@ -79,6 +82,19 @@ func (p Params) paymentsRequested() bool {
 }
 
 func (p Params) Validate() error {
+	if _, err := p.RedeemerHeaders.MarshalText(); err != nil {
+		return errors.New("invalid redemption submission headers")
+	}
+	if (len(p.RedeemerHeaders) > 0 || p.RedeemerHeadersFile != "") && p.RedeemerURL == nil {
+		return errors.New("redemption submission headers require remote redemption")
+	}
+	if p.RedeemerHeadersFile != "" {
+		info, err := os.Stat(p.RedeemerHeadersFile)
+		if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
+			return errors.New("redemption header file must be an owner-only regular file")
+		}
+	}
+
 	if p.BootstrapSecret == "" && p.RunnerConfig == "" {
 		return errors.New("bootstrap secret or static runner config is required: set LIVEPEER_ORCHESTRATOR_BOOTSTRAP_SECRET, supply --bootstrap-secret-file (or LIVEPEER_ORCHESTRATOR_BOOTSTRAP_SECRET_FILE), or supply --runner-config (or LIVEPEER_ORCHESTRATOR_RUNNER_CONFIG) with a static runner TOML file")
 	}
@@ -453,7 +469,7 @@ func Serve(parent context.Context, p Params, logOut io.Writer) (result error) {
 			if e != nil {
 				return e
 			}
-			remote, e := redemption.NewHTTPDestination(p.RedeemerURL, policy, binding)
+			remote, e := redemption.NewHTTPDestination(p.RedeemerURL, policy, binding, http.Header(p.RedeemerHeaders))
 			if e != nil {
 				return e
 			}

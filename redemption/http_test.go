@@ -361,3 +361,43 @@ func TestHTTPDestinationRejectsRedirectsAndBadAcknowledgments(t *testing.T) {
 		})
 	}
 }
+
+func TestDestinationSubmissionHeadersAndRedirectIsolation(t *testing.T) {
+	ticket, _ := winningTicket(t, 1)
+	var observed string
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		observed = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(202)
+		json.NewEncoder(w).Encode(TicketResponse{ticket.Hash()})
+	}))
+	defer target.Close()
+	u, _ := url.Parse(target.URL)
+	policy, err := destination.New("redeemer", []string{u.Host})
+	require.NoError(t, err)
+	headers := http.Header{"Authorization": []string{"Bearer submission-test"}}
+	d, err := NewHTTPDestination(u, policy, Binding{ChainID: "1", Controller: common.HexToAddress("0x1000")}, headers)
+	require.NoError(t, err)
+	defer d.Close()
+	headers.Set("Authorization", "Bearer mutated")
+	require.NoError(t, d.Submit(t.Context(), ticket))
+	require.Equal(t, "Bearer submission-test", observed)
+	empty, err := NewHTTPDestination(u, policy, Binding{}, http.Header(nil))
+	require.NoError(t, err)
+	defer empty.Close()
+	require.NoError(t, empty.Submit(t.Context(), ticket))
+	require.Empty(t, observed)
+	redirected := false
+	sink := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { redirected = true }))
+	defer sink.Close()
+	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, sink.URL, 307) }))
+	defer redirect.Close()
+	u, _ = url.Parse(redirect.URL)
+	policy, err = destination.New("redeemer", []string{u.Host})
+	require.NoError(t, err)
+	d2, err := NewHTTPDestination(u, policy, Binding{}, http.Header{"Authorization": []string{"Bearer submission-test"}})
+	require.NoError(t, err)
+	defer d2.Close()
+	require.Error(t, d2.Submit(t.Context(), ticket))
+	require.False(t, redirected)
+}

@@ -173,3 +173,9 @@ forward durable winning tickets without unlocking an orchestrator wallet. Keep
 the payment database and chain/pricing settings; remove local wallet and
 transaction settings. Local redemption remains the default. See the
 [standalone redeemer guide](redeemer.md) for setup, capacity, and recovery.
+
+Remote ticket submission may authenticate with `RedeemerHeadersFile`, an owner-only
+regular file using comma-separated `Header: value` entries, for example
+`Authorization: Bearer <submission credential>`. `RedeemerHeaders` is also accepted
+through secret configuration conventions. These headers are used only for the
+configured no-redirect redemption destination and are omitted from printed config.

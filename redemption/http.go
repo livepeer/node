@@ -170,9 +170,10 @@ type HTTPDestination struct {
 	endpoint string
 	client   *http.Client
 	binding  Binding
+	headers  http.Header
 }
 
-func NewHTTPDestination(u *url.URL, policy destination.Policy, b Binding) (*HTTPDestination, error) {
+func NewHTTPDestination(u *url.URL, policy destination.Policy, b Binding, headers ...http.Header) (*HTTPDestination, error) {
 	normalized, err := RedeemerURL(u)
 	if err != nil {
 		return nil, err
@@ -182,7 +183,11 @@ func NewHTTPDestination(u *url.URL, policy destination.Policy, b Binding) (*HTTP
 		return nil, err
 	}
 	client := &http.Client{Transport: policy.Transport(15 * time.Second), Timeout: 20 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	return &HTTPDestination{endpoint, client, b}, nil
+	h := make(http.Header)
+	if len(headers) > 0 && headers[0] != nil {
+		h = headers[0].Clone()
+	}
+	return &HTTPDestination{endpoint: endpoint, client: client, binding: b, headers: h}, nil
 }
 
 func (d *HTTPDestination) Close() { d.client.CloseIdleConnections() }
@@ -196,6 +201,7 @@ func (d *HTTPDestination) Submit(ctx context.Context, t *pm.SignedTicket) error 
 	if err != nil {
 		return errors.New("invalid redeemer request")
 	}
+	req.Header = d.headers.Clone()
 	req.Header.Set("Content-Type", "application/json")
 	res, err := d.client.Do(req)
 	if err != nil {
