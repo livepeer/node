@@ -45,6 +45,7 @@ type Params struct {
 	RunnerServiceURL          boa.Text[*url.URL] `optional:"true" descr:"Runner-facing base URL for callbacks and trickle; defaults to service-url"`
 	ProxyURLTemplate          string             `optional:"true" descr:"Generated proxy URL with {proxy} in a hostname label or final path segment"`
 	ExcludedHeaders           []string           `optional:"true" descr:"Headers to remove from app requests; a trailing * matches a prefix"`
+	ExcludedCookies           []string           `optional:"true" descr:"Cookie names to remove from app requests; matching is case-sensitive"`
 	BootstrapSecret           string             `secret:"true" optional:"true" descr:"Dynamic runner bootstrap credential"`
 	BootstrapSecretFile       string             `basepath:"source" secretfor:"BootstrapSecret" descr:"File containing runner bootstrap credential"`
 	RunnerConfig              string             `basepath:"source" optional:"true" file:"true" descr:"Static runner TOML path"`
@@ -154,6 +155,9 @@ func (p Params) Validate() error {
 	if err := validateExcludedHeaders(p.ExcludedHeaders); err != nil {
 		return err
 	}
+	if err := validateExcludedCookies(p.ExcludedCookies); err != nil {
+		return err
+	}
 	if !p.Listen.IsValid() || !p.MetricsListen.IsValid() {
 		return errors.New("--listen and --metrics-listen require IP:port addresses")
 	}
@@ -185,6 +189,15 @@ func (p Params) Validate() error {
 	}{{"--runner-grants", p.RunnerGrants}, {"--session-proxy-grants", p.SessionProxyGrants}, {"--health-grants", p.HealthGrants}} {
 		if _, err := destination.New(item.purpose, item.grants); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+func validateExcludedCookies(names []string) error {
+	for _, name := range names {
+		if err := (&http.Cookie{Name: name}).Valid(); err != nil {
+			return fmt.Errorf("invalid --excluded-cookies entry %q: %w", name, err)
 		}
 	}
 	return nil
@@ -268,8 +281,8 @@ func printConfig(ctx *boa.HookContext, p *Params, out io.Writer) error {
 	values := map[string]any{
 		"Network": &p.Network, "Account": &p.Account, "OrchestratorAddress": &p.OrchestratorAddress,
 		"Listen": &p.Listen, "MetricsListen": &p.MetricsListen,
-		"ExcludedHeaders": &p.ExcludedHeaders,
-		"RunnerGrants":    &p.RunnerGrants, "SessionProxyGrants": &p.SessionProxyGrants, "HealthGrants": &p.HealthGrants,
+		"ExcludedHeaders": &p.ExcludedHeaders, "ExcludedCookies": &p.ExcludedCookies,
+		"RunnerGrants": &p.RunnerGrants, "SessionProxyGrants": &p.SessionProxyGrants, "HealthGrants": &p.HealthGrants,
 		"HeartbeatInterval": &p.HeartbeatInterval, "HeartbeatTTL": &p.HeartbeatTTL,
 		"DrainTimeout":      &p.DrainTimeout,
 		"RedeemerTxTimeout": &p.RedeemerTxTimeout, "RedeemerMaxTxReplacements": &p.RedeemerMaxTxReplacements,
@@ -416,6 +429,7 @@ func Serve(parent context.Context, p Params, logOut io.Writer) (result error) {
 		app.apiOrigin = p.APIOriginURL.Value
 	}
 	app.setExcludedHeaders(p.ExcludedHeaders)
+	app.excludedCookies = p.ExcludedCookies
 	logger = app.logger
 	if engine != nil {
 		registry.metrics.PaymentObserver(observedChain.Observer, logger)

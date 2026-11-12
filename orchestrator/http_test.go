@@ -171,12 +171,14 @@ func TestProxyExcludedHeaders(t *testing.T) {
 	policy, err := destination.New("runner", []string{strings.TrimPrefix(upstream.URL, "http://")})
 	require.NoError(t, err)
 	for _, template := range []string{"", "https://{proxy}.apps.example", "https://orch.example/custom/{proxy}"} {
-		for _, patterns := range [][]string{
-			nil,
-			{"cF-aCCess-*", "x-ingress-token", "cOOkie", "accept-encoding", "user-agent"},
-			{"CF-Access-*", "X-Ingress-Token", "Cookie", "Accept-*", "User-*"},
+		for _, excluded := range []struct{ headers, cookies []string }{
+			{},
+			{headers: []string{"cF-aCCess-*", "x-ingress-token", "cOOkie", "accept-encoding", "user-agent"}},
+			{headers: []string{"CF-Access-*", "X-Ingress-Token", "Cookie", "Accept-*", "User-*"}},
+			{cookies: []string{"CF_Authorization", "cf_authorization"}},
 		} {
-			t.Run(fmt.Sprintf("template=%s/excluded=%v", template, patterns), func(t *testing.T) {
+			patterns := excluded.headers
+			t.Run(fmt.Sprintf("template=%s/headers=%v/cookies=%v", template, patterns, excluded.cookies), func(t *testing.T) {
 				registry := NewRegistry("secret", "https://orch.example", time.Second, time.Minute)
 				registry.proxyTemplate = template
 				for _, mode := range []string{"persistent", "single-shot"} {
@@ -185,6 +187,7 @@ func TestProxyExcludedHeaders(t *testing.T) {
 				server := NewServer(registry, policy, policy, slog.New(slog.NewTextHandler(io.Discard, nil)))
 				defer server.Close()
 				server.setExcludedHeaders(patterns)
+				server.excludedCookies = excluded.cookies
 				sid, runnerProxy, _, _, err := registry.Reserve("persistent")
 				require.NoError(t, err)
 				target, token, _, err := registry.sessionTarget("persistent", sid)
@@ -221,7 +224,15 @@ func TestProxyExcludedHeaders(t *testing.T) {
 					var received http.Header
 					require.NoError(t, json.Unmarshal(record.Body.Bytes(), &received))
 					for _, name := range []string{"Cf-Access-Jwt-Assertion", "Cf-Access-Client-Id", "X-Ingress-Token", "Cookie", "Accept-Encoding", "User-Agent"} {
-						if len(patterns) > 0 {
+						if name == "Cookie" && len(excluded.cookies) > 0 {
+							var cookies []string
+							for _, value := range received.Values("Cookie") {
+								for _, cookie := range strings.Split(value, ";") {
+									cookies = append(cookies, strings.TrimSpace(cookie))
+								}
+							}
+							require.ElementsMatch(t, []string{"app=one", "app=two", "other=three"}, cookies)
+						} else if len(patterns) > 0 {
 							require.Empty(t, received.Values(name), path+": "+name)
 						} else {
 							require.NotEmpty(t, received.Values(name), path+": "+name)
@@ -277,7 +288,8 @@ func TestSessionProxyStreamsSSEAndWebSocket(t *testing.T) {
 	_, _, err = registry.Heartbeat(registration, registered.HeartbeatSecret)
 	require.NoError(t, err)
 	app := NewServer(registry, policy, policy, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	app.setExcludedHeaders([]string{"CF-Access-*", "Cookie"})
+	app.setExcludedHeaders([]string{"CF-Access-*"})
+	app.excludedCookies = []string{"CF_Authorization"}
 	defer app.Close()
 	server := httptest.NewServer(app)
 	app.apiOrigin = mustURL(t, server.URL)

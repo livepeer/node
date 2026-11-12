@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -35,6 +36,7 @@ type Server struct {
 	runnerTransport *http.Transport
 	proxyTransport  *http.Transport
 	excludedHeaders []string
+	excludedCookies []string
 	logger          *slog.Logger
 	payment         *PaymentEngine
 	mux             *http.ServeMux
@@ -188,6 +190,37 @@ func (s *Server) setExcludedHeaders(patterns []string) {
 	disableCompression := headerExcluded("Accept-Encoding", patterns)
 	s.runnerTransport.DisableCompression = disableCompression
 	s.proxyTransport.DisableCompression = disableCompression
+}
+
+// Preserve application cookie bytes instead of parsing and reserializing values.
+func excludeCookies(header http.Header, names []string) {
+	if len(names) == 0 {
+		return
+	}
+	for field, values := range header {
+		if !strings.EqualFold(field, "Cookie") {
+			continue
+		}
+		filtered := make([]string, 0, len(values))
+		for _, value := range values {
+			parts := strings.Split(value, ";")
+			kept := parts[:0]
+			for _, part := range parts {
+				name, _, _ := strings.Cut(part, "=")
+				if strings.TrimSpace(part) != "" && !slices.Contains(names, strings.TrimSpace(name)) {
+					kept = append(kept, part)
+				}
+			}
+			if value := strings.TrimSpace(strings.Join(kept, ";")); value != "" {
+				filtered = append(filtered, value)
+			}
+		}
+		if len(filtered) == 0 {
+			delete(header, field)
+		} else {
+			header[field] = filtered
+		}
+	}
 }
 
 func headerExcluded(name string, patterns []string) bool {
@@ -540,6 +573,7 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, transport http.Ro
 			req.Out.Header.Set("Livepeer-Session-Id", sid)
 			req.Out.Header.Set("Livepeer-Session-Token", token)
 			req.Out.Header.Set("Livepeer-Session-Control", control)
+			excludeCookies(req.Out.Header, s.excludedCookies)
 			for name := range req.Out.Header {
 				if headerExcluded(name, s.excludedHeaders) {
 					delete(req.Out.Header, name)
