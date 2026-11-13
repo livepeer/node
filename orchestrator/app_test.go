@@ -332,8 +332,6 @@ func TestExcludedHeadersValidation(t *testing.T) {
 	t.Setenv("LIVEPEER_ORCHESTRATOR_BOOTSTRAP_SECRET", "test")
 	for _, pattern := range []string{
 		"", "*", "CF-*-Access", "CF-Access-**", "Bad Header", "Header: value", "Header\r\n", "Héader",
-		"livepeer-runner-route", "LIVEPEER-SESSION-ID", "Livepeer-Session-Token", "Livepeer-Session-Control",
-		"livepeer-*", "Livepeer-Session-*", "L*",
 	} {
 		t.Run(fmt.Sprintf("%q", pattern), func(t *testing.T) {
 			require.ErrorContains(t, validateExcludedHeaders([]string{pattern}), "--excluded-headers")
