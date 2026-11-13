@@ -293,15 +293,15 @@ func TestLocalOrchestratorWaitsForEconomicalRedemption(t *testing.T) {
 }
 
 func TestExcludedHeadersEnvironmentAndFlag(t *testing.T) {
-	t.Setenv("LIVEPEER_ORCHESTRATOR_EXCLUDED_HEADERS", "CF-Access-*,Cookie,Livepeer-Session-*")
-	for _, args := range [][]string{nil, {"--excluded-headers", "Livepeer-Runner-Route"}} {
+	t.Setenv("LIVEPEER_ORCHESTRATOR_EXCLUDED_HEADERS", "CF-Access-*,Cookie")
+	for _, args := range [][]string{nil, {"--excluded-headers", "X-Ingress-Token"}} {
 		output, err := execute(t, append([]string{"--config", "", "--print-config"}, args...)...)
 		require.NoError(t, err)
 		var printed Params
 		require.NoError(t, toml.Unmarshal([]byte(output), &printed))
-		want := []string{"CF-Access-*", "Cookie", "Livepeer-Session-*"}
+		want := []string{"CF-Access-*", "Cookie"}
 		if len(args) > 0 {
-			want = []string{"Livepeer-Runner-Route"}
+			want = []string{"X-Ingress-Token"}
 		}
 		require.Equal(t, want, printed.ExcludedHeaders)
 	}
@@ -328,11 +328,7 @@ func TestExcludedCookiesEnvironmentAndFlag(t *testing.T) {
 
 func TestExcludedHeadersValidation(t *testing.T) {
 	require.NoError(t, validateExcludedHeaders(nil))
-	require.NoError(t, validateExcludedHeaders([]string{
-		"CF-Access-*", "Cookie", "X-Exact", "X_Valid!#$%&'+-.^`|~",
-		"livepeer-runner-route", "LIVEPEER-SESSION-ID", "Livepeer-Session-Token", "Livepeer-Session-Control",
-		"livepeer-*", "Livepeer-Session-*", "L*",
-	}))
+	require.NoError(t, validateExcludedHeaders([]string{"CF-Access-*", "Cookie", "X-Exact", "X_Valid!#$%&'+-.^`|~"}))
 	t.Setenv("LIVEPEER_ORCHESTRATOR_BOOTSTRAP_SECRET", "test")
 	for _, pattern := range []string{
 		"", "*", "CF-*-Access", "CF-Access-**", "Bad Header", "Header: value", "Header\r\n", "Héader",
