@@ -39,6 +39,7 @@ func TestDiscoveryLocalInventory(t *testing.T) {
 			s := NewServer(registry, policy, policy, slog.New(slog.NewTextHandler(io.Discard, nil)))
 			t.Cleanup(s.Close)
 			server := httptest.NewServer(s)
+			s.apiOrigin = mustURL(t, server.URL)
 			t.Cleanup(server.Close)
 			response, err := server.Client().Get(server.URL + "/deployment/discovery")
 			require.NoError(t, err)

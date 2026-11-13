@@ -132,6 +132,7 @@ func TestReleaseCancelsActiveProxy(t *testing.T) {
 					}
 					app := NewServer(registry, policy, policy, slog.New(slog.NewTextHandler(io.Discard, nil)))
 					server := httptest.NewServer(app)
+					app.apiOrigin = mustURL(t, server.URL)
 					defer server.Close()
 					defer app.Close()
 					path := "/apps/runner/app"
@@ -363,6 +364,7 @@ func TestMultiAppRemovalKeepsStreams(t *testing.T) {
 				defer upstream.Close()
 				registry, appServer := reviewServer(t, upstream.URL)
 				server := httptest.NewServer(appServer)
+				appServer.apiOrigin = mustURL(t, server.URL)
 				defer server.Close()
 				defer appServer.Close()
 				a, b := registeredApp("a"), registeredApp("b")

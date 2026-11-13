@@ -3,7 +3,7 @@
 Listen = "127.0.0.1:8935"
 MetricsListen = "127.0.0.1:8936"
 ServiceURL = "http://127.0.0.1:8935"
-# APIOriginURL = "http://orchestrator.internal:8935" # Host sent by the reverse proxy when using ProxyURLTemplate; defaults to ServiceURL.
+# APIOriginURL = "http://orchestrator.internal:8935" # Client API Host sent by the reverse proxy; defaults to ServiceURL.
 # RunnerServiceURL = "http://127.0.0.1:8935" # Runner-facing callbacks and trickle; defaults to ServiceURL.
 BootstrapSecretFile = "/run/secrets/livepeer-runner-bootstrap"
 RunnerConfig = "/etc/livepeer/runners.toml"
@@ -17,6 +17,8 @@ SessionProxyGrants = []
 HealthGrants = []
 # ProxyURLTemplate = "https://{proxy}.apps.example" # Default: ServiceURL/run/{proxy}.
 # ExcludedHeaders = ["CF-Access-*", "Cookie"] # Remove matching headers and all cookies from app requests.
+# To retain other cookies, omit "Cookie" from ExcludedHeaders.
+# ExcludedCookies = ["CF_Authorization"] # Remove only the named cookies from app requests.
 
 # Paid operation requires an on-chain network, account password, RPC, face
 # value, winning probability, and one conversion source.

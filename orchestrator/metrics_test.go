@@ -199,6 +199,7 @@ func TestUpgradePreservesHalfClose(t *testing.T) {
 			defer app.Close()
 			require.NoError(t, registry.AddStatic(StaticRunner{ID: "runner", App: "model", Mode: "single-shot", RunnerURL: upstream.URL, Capacity: 1}))
 			server := httptest.NewServer(app)
+			app.apiOrigin = mustURL(t, server.URL)
 			defer server.Close()
 			u, err := url.Parse(server.URL)
 			require.NoError(t, err)

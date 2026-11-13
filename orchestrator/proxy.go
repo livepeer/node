@@ -38,14 +38,14 @@ func (r *Registry) proxyURL(id string) string {
 
 // The template is fixed before serving. Match the actual Host, never a
 // forwarded header supplied by a caller, and retain every application path.
-func (r *Registry) matchProxy(req *http.Request, apiOrigin *url.URL) (string, string) {
+func (r *Registry) matchProxy(req *http.Request, apiOrigin, runnerOrigin *url.URL) (string, string) {
 	if r.proxyTemplate == "" {
 		return "", ""
 	}
 	u, _ := url.Parse(strings.Replace(r.proxyTemplate, "{proxy}", proxyMarker, 1))
 	if before, after, ok := strings.Cut(strings.ToLower(u.Host), proxyMarker); ok {
-		// The API Host takes precedence over wildcard proxy Hosts.
-		if matchesOrigin(req.Host, apiOrigin) {
+		// API and runner Hosts take precedence over wildcard proxy Hosts.
+		if matchesOrigin(req.Host, apiOrigin) || r.runnerService != "" && matchesOrigin(req.Host, runnerOrigin) {
 			return "", ""
 		}
 		host := strings.ToLower(req.Host)

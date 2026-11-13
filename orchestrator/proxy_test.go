@@ -178,7 +178,7 @@ func TestProxyHostCannotReachAPI(t *testing.T) {
 					policy, err := destination.New("runner", []string{strings.TrimPrefix(upstream.URL, "http://")})
 					require.NoError(t, err)
 					registry := NewRegistry("bootstrap", "https://api-aaaaaaa.machine.example", time.Second, time.Minute)
-					registry.runnerService = "http://runner.internal:8935"
+					registry.runnerService = "http://runner.internal:8935/internal"
 					registry.proxyTemplate = template
 					require.NoError(t, registry.AddStatic(StaticRunner{ID: "app-fixture", RunnerURL: upstream.URL, App: "fixture", Mode: "persistent", Capacity: 4}))
 					require.NoError(t, registry.AddStatic(StaticRunner{ID: "app-echo", RunnerURL: upstream.URL, App: "echo", Mode: "single-shot", Proxy: true, Capacity: 4}))
@@ -191,28 +191,30 @@ func TestProxyHostCannotReachAPI(t *testing.T) {
 					request := func(method, target string) *httptest.ResponseRecorder {
 						t.Helper()
 						req := httptest.NewRequest(method, target, nil)
-						req.Header.Set("X-Forwarded-Host", "api-aaaaaaa.machine.example")
+						req.Header.Set("X-Forwarded-Host", server.apiOrigin.Host)
+						req.Header.Set("Forwarded", "host="+server.apiOrigin.Host)
 						w := httptest.NewRecorder()
 						server.ServeHTTP(w, req)
 						return w
 					}
-					if template != "" {
-						for _, host := range []string{
-							"app-echo.machine.example:8443",
-							"app-echo.machine.example:443",
-							"app-echo.machine.example.",
-							"nested.app-echo.machine.example",
-							"other.example",
-						} {
-							w := request(http.MethodPost, "http://"+host+"/apps/app-fixture/session")
-							require.Equal(t, http.StatusNotFound, w.Code, host+": "+w.Body.String())
-						}
+					if apiOrigin != "runner.internal:8935" {
+						require.Equal(t, http.StatusNotFound, request(http.MethodPost, "http://runner.internal:8935/runners/heartbeat").Code)
+					}
+					for _, host := range []string{
+						"app-echo.machine.example:8443",
+						"app-echo.machine.example:443",
+						"app-echo.machine.example.",
+						"nested.app-echo.machine.example",
+						"other.example",
+					} {
+						w := request(http.MethodPost, "http://"+host+"/apps/app-fixture/session")
+						require.Equal(t, http.StatusNotFound, w.Code, host+": "+w.Body.String())
 					}
 					for _, origin := range []string{registry.service, registry.runnerService, "http://api-private.machine.example"} {
 						status := http.StatusNotFound
 						u, err := url.Parse(origin)
 						require.NoError(t, err)
-						if template == "" || u.Host == server.apiOrigin.Host {
+						if u.Host == server.apiOrigin.Host {
 							status = http.StatusOK
 						}
 						w := request(http.MethodPost, origin+"/apps/app-fixture/session")
@@ -220,6 +222,10 @@ func TestProxyHostCannotReachAPI(t *testing.T) {
 						require.Equal(t, status, request(http.MethodGet, origin+"/discovery").Code)
 					}
 					w := request(http.MethodGet, registry.proxyURL("app-echo")+"/probe")
+					if template == "" && apiOrigin != "" {
+						require.Equal(t, http.StatusNotFound, w.Code, w.Body.String())
+						w = request(http.MethodGet, server.apiOrigin.String()+"/run/app-echo/probe")
+					}
 					require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 					require.Equal(t, "application response", w.Body.String())
 				})

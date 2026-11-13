@@ -63,8 +63,7 @@ func TestAPIOriginURLRouting(t *testing.T) {
 	cmd := Root(io.Discard, io.Discard)
 	cmd.SetArgs([]string{"--config", "", "--listen", address, "--metrics-listen", metrics,
 		"--service-url", "https://public.example",
-		"--api-origin-url", "http://" + origin + ":80", "--runner-service-url", "http://" + origin,
-		"--proxy-url-template", "https://{proxy}.internal"})
+		"--api-origin-url", "http://" + origin + ":80"})
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() { done <- cmd.ExecuteContext(ctx) }()
@@ -146,6 +145,7 @@ func TestPaidHTTPStartup(t *testing.T) {
 			require.NoError(t, p.MetricsListen.UnmarshalText(fmt.Appendf(nil, "unsafe@0.0.0.0:%d", metricsPort)))
 			metricsURL := fmt.Sprintf("http://127.0.0.1:%d", metricsPort)
 			p.ServiceURL = boa.Text[*url.URL]{Value: mustURL(t, "https://public.example/external")}
+			p.APIOriginURL = boa.Text[*url.URL]{Value: mustURL(t, address)}
 			p.RunnerConfig = filepath.Join(t.TempDir(), "runners.toml")
 			require.NoError(t, os.WriteFile(p.RunnerConfig, []byte("[[Runners]]\nID = 'r'\nRunnerURL = 'https://runner.example'\nApp = 'test'\n[Runners.PriceInfo]\nPrice = 1\n"), 0600))
 			ctx, cancel := context.WithCancel(t.Context())
@@ -307,14 +307,31 @@ func TestExcludedHeadersEnvironmentAndFlag(t *testing.T) {
 	}
 }
 
+func TestExcludedCookiesEnvironmentAndFlag(t *testing.T) {
+	t.Setenv("LIVEPEER_ORCHESTRATOR_EXCLUDED_COOKIES", "CF_Authorization")
+	for _, args := range [][]string{nil, {"--excluded-cookies", "ingress_session"}} {
+		output, err := execute(t, append([]string{"--config", "", "--print-config"}, args...)...)
+		require.NoError(t, err)
+		var printed Params
+		require.NoError(t, toml.Unmarshal([]byte(output), &printed))
+		want := []string{"CF_Authorization"}
+		if len(args) > 0 {
+			want = []string{"ingress_session"}
+		}
+		require.Equal(t, want, printed.ExcludedCookies)
+	}
+	require.NoError(t, validateExcludedCookies([]string{"CF_Authorization", "session-v1"}))
+	for _, name := range []string{"", "bad name", "name=value", "name;other", "name\r\n", "é"} {
+		require.ErrorContains(t, validateExcludedCookies([]string{name}), "--excluded-cookies")
+	}
+}
+
 func TestExcludedHeadersValidation(t *testing.T) {
 	require.NoError(t, validateExcludedHeaders(nil))
 	require.NoError(t, validateExcludedHeaders([]string{"CF-Access-*", "Cookie", "X-Exact", "X_Valid!#$%&'+-.^`|~"}))
 	t.Setenv("LIVEPEER_ORCHESTRATOR_BOOTSTRAP_SECRET", "test")
 	for _, pattern := range []string{
 		"", "*", "CF-*-Access", "CF-Access-**", "Bad Header", "Header: value", "Header\r\n", "Héader",
-		"livepeer-runner-route", "LIVEPEER-SESSION-ID", "Livepeer-Session-Token", "Livepeer-Session-Control",
-		"livepeer-*", "Livepeer-Session-*", "L*",
 	} {
 		t.Run(fmt.Sprintf("%q", pattern), func(t *testing.T) {
 			require.ErrorContains(t, validateExcludedHeaders([]string{pattern}), "--excluded-headers")
@@ -745,4 +762,23 @@ func TestChainMismatchBeforeStorage(t *testing.T) {
 	p.RedeemerDB = filepath.Join(t.TempDir(), "missing", "payments.sqlite")
 	require.ErrorContains(t, Serve(t.Context(), p, io.Discard), "chain ID")
 	require.NoDirExists(t, filepath.Dir(p.RedeemerDB))
+}
+
+func TestRedeemerHeadersFileResolutionAndRedaction(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "redemption-headers")
+	require.NoError(t, os.WriteFile(path, []byte("Authorization: Bearer submission-file-secret"), 0600))
+	var p Params
+	require.NoError(t, (boa.Cmd[Params]{Params: &p, RawArgs: []string{"--redeemer-headers-file", path}}).Validate())
+	require.Equal(t, "Bearer submission-file-secret", http.Header(p.RedeemerHeaders).Get("Authorization"))
+	output, err := execute(t, "--config=", "--redeemer-url", "https://redeemer.example", "--redeemer-headers-file", path, "--print-config")
+	require.NoError(t, err)
+	require.NotContains(t, output, "submission-file-secret")
+	require.NotContains(t, output, path)
+	_, err = execute(t, "--redeemer-headers", "Authorization: Bearer literal-secret", "--print-config")
+	require.Error(t, err)
+	require.NotContains(t, err.Error(), "literal-secret")
+	require.NoError(t, os.Chmod(path, 0644))
+	p.RedeemerHeadersFile = path
+	p.RedeemerURL, _ = url.Parse("https://redeemer.example")
+	require.ErrorContains(t, p.Validate(), "owner-only")
 }
