@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"os/signal"
 	"sync"
 	"syscall"
@@ -33,23 +34,27 @@ import (
 type Params struct {
 	ConfigFile string `name:"config" configfile:"optional-default" basepath:"source" default:"config.toml" boa:"noconfig" descr:"Configuration file; empty disables discovery"`
 	nodeconfig.Settings
-	Listen                    boa.HTTPBind    `default:"127.0.0.1:8941" descr:"Ticket submission listener"`
-	MetricsListen             boa.HTTPBind    `default:"127.0.0.1:8942" descr:"Metrics and probe listener"`
-	Account                   *common.Address `descr:"Dedicated redemption wallet; must not be an orchestrator"`
-	RedeemerDB                string          `file:"optional" descr:"Winning-ticket SQLite database"`
-	KeystoreFile              string          `basepath:"source" optional:"true" descr:"Encrypted geth redemption account JSON file"`
-	KeystorePassword          *string         `secret:"true" optional:"true" descr:"Keystore decryption password"`
-	KeystorePasswordFile      string          `basepath:"source" secretfor:"KeystorePassword" descr:"Owner-only file containing exact password bytes"`
-	RPCURL                    *url.URL        `name:"rpc-url" secret:"true" optional:"true"`
-	RPCURLFile                string          `basepath:"source" name:"rpc-url-file" secretfor:"RPCURL"`
-	ChainID                   *uint64         `min:"1"`
-	Controller                *common.Address `name:"controller-address"`
-	RedeemerTxTimeout         time.Duration   `default:"5m" descr:"Transaction inclusion timeout"`
-	RedeemerMaxTxReplacements int             `default:"1" min:"0" descr:"Maximum fee replacements per transaction"`
-	RedeemerMaxFeePerGas      *uint256.Int    `descr:"Optional maximum fee in wei per gas"`
-	MaxPendingTickets         int             `default:"100000" min:"1" descr:"Maximum unsettled winning tickets"`
-	MaxTicketsPerRecipient    int             `default:"10000" min:"1" descr:"Maximum unsettled tickets per recipient"`
-	PrintConfig               bool            `optional:"true" boa:"noconfig,noenv" descr:"Print audited redacted TOML configuration"`
+	Listen                    boa.HTTPBind       `default:"127.0.0.1:8941" descr:"Ticket submission listener"`
+	MetricsListen             boa.HTTPBind       `default:"127.0.0.1:8942" descr:"Metrics and probe listener"`
+	Account                   *common.Address    `descr:"Dedicated redemption wallet; must not be an orchestrator"`
+	RedeemerDB                string             `file:"optional" descr:"Winning-ticket SQLite database"`
+	KeystoreFile              string             `basepath:"source" optional:"true" descr:"Encrypted geth redemption account JSON file"`
+	KeystorePassword          *string            `secret:"true" optional:"true" descr:"Keystore decryption password"`
+	KeystorePasswordFile      string             `basepath:"source" secretfor:"KeystorePassword" descr:"Owner-only file containing exact password bytes"`
+	RPCURL                    *url.URL           `name:"rpc-url" secret:"true" optional:"true"`
+	RPCURLFile                string             `basepath:"source" name:"rpc-url-file" secretfor:"RPCURL"`
+	AuthWebhook               *url.URL           `name:"auth-webhook" optional:"true" secret:"true"`
+	AuthWebhookFile           string             `basepath:"source" name:"auth-webhook-file" secretfor:"AuthWebhook"`
+	AuthWebhookHeaders        nodeconfig.Headers `name:"auth-webhook-headers" optional:"true" secret:"true"`
+	AuthWebhookHeadersFile    string             `basepath:"source" name:"auth-webhook-headers-file" secretfor:"AuthWebhookHeaders"`
+	ChainID                   *uint64            `min:"1"`
+	Controller                *common.Address    `name:"controller-address"`
+	RedeemerTxTimeout         time.Duration      `default:"5m" descr:"Transaction inclusion timeout"`
+	RedeemerMaxTxReplacements int                `default:"1" min:"0" descr:"Maximum fee replacements per transaction"`
+	RedeemerMaxFeePerGas      *uint256.Int       `descr:"Optional maximum fee in wei per gas"`
+	MaxPendingTickets         int                `default:"100000" min:"1" descr:"Maximum unsettled winning tickets"`
+	MaxTicketsPerRecipient    int                `default:"10000" min:"1" descr:"Maximum unsettled tickets per recipient"`
+	PrintConfig               bool               `optional:"true" boa:"noconfig,noenv" descr:"Print audited redacted TOML configuration"`
 }
 
 func (p Params) Validate() error {
@@ -67,6 +72,23 @@ func (p Params) Validate() error {
 	}
 	if err := destination.ValidateURL(p.RPCURL); err != nil {
 		return errors.New("redeemer requires a valid RPC URL")
+	}
+	if p.AuthWebhook != nil || p.AuthWebhookFile != "" || len(p.AuthWebhookHeaders) > 0 || p.AuthWebhookHeadersFile != "" {
+		if err := destination.ValidateURL(p.AuthWebhook); err != nil || p.AuthWebhook.User != nil || p.AuthWebhook.Fragment != "" {
+			return errors.New("auth webhook must be an absolute HTTP or HTTPS URL without credentials or fragment")
+		}
+	}
+	if _, err := p.AuthWebhookHeaders.MarshalText(); err != nil {
+		return fmt.Errorf("invalid auth webhook headers: %w", err)
+	}
+	for _, path := range []string{p.AuthWebhookFile, p.AuthWebhookHeadersFile} {
+		if path == "" {
+			continue
+		}
+		info, err := os.Stat(path)
+		if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
+			return errors.New("auth webhook secret files must be owner-only regular files")
+		}
 	}
 	if p.RedeemerTxTimeout <= 0 || p.RedeemerMaxTxReplacements < 0 || p.MaxPendingTickets <= 0 || p.MaxTicketsPerRecipient <= 0 {
 		return errors.New("invalid redemption timeout, replacement count or queue capacity")
@@ -198,6 +220,11 @@ func Serve(parent context.Context, p Params, logOut io.Writer) (result error) {
 	})
 	probe.Handle("GET /metrics", metrics.Handler())
 	handler := redemption.Handler(store)
+	if p.AuthWebhook != nil {
+		auth := newAuthWebhook(p.AuthWebhook, p.AuthWebhookHeaders, logger, metrics)
+		defer auth.client.CloseIdleConnections()
+		handler = redemption.HandlerWithAuthorization(store, auth.authorize)
+	}
 	servers := []*http.Server{
 		{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { metrics.HTTP(w, r, handler.ServeHTTP) }), BaseContext: func(net.Listener) context.Context { return ctx }, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 1 << 16, MaxHeaderValueCount: 128},
 		{Handler: probe, ReadHeaderTimeout: 5 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 1 << 16, MaxHeaderValueCount: 128},

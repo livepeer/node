@@ -96,6 +96,10 @@ func TestRealBinaryOffchainFlow(t *testing.T) {
 
 	runner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.NotEmpty(t, r.Header.Get("Livepeer-Session-Token"))
+		require.Empty(t, r.Header.Get("Cf-Access-Jwt-Assertion"))
+		require.Empty(t, r.Header.Get("Cookie"))
+		require.Empty(t, r.Header.Get("Accept-Encoding"))
+		require.Empty(t, r.Header.Get("User-Agent"))
 		if r.URL.Path == "/credentials" {
 			write := map[string]string{"token": r.Header.Get("Livepeer-Session-Token")}
 			w.Header().Set("Content-Type", "application/json")
@@ -112,6 +116,7 @@ func TestRealBinaryOffchainFlow(t *testing.T) {
 	secretPath := filepath.Join(t.TempDir(), "bootstrap")
 	require.NoError(t, os.WriteFile(secretPath, []byte("exact-bootstrap"), 0600))
 	cmd := exec.Command(dispatcher, "orchestrator", "--listen", fmt.Sprintf("127.0.0.1:%d", mainPort), "--metrics-listen", fmt.Sprintf("127.0.0.1:%d", metricsPort), "--bootstrap-secret-file", secretPath, "--runner-grants", "127.0.0.0/8", "--session-proxy-grants", strings.TrimPrefix(runner.URL, "http://"), "--drain-timeout", "0")
+	cmd.Args = append(cmd.Args, "--excluded-headers", "CF-Access-*,Cookie,Accept-Encoding,User-Agent")
 	var log bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &log, &log
 	require.NoError(t, cmd.Start())
@@ -168,7 +173,13 @@ func TestRealBinaryOffchainFlow(t *testing.T) {
 	}
 	require.NoError(t, json.NewDecoder(response.Body).Decode(&reserved))
 	require.NoError(t, response.Body.Close())
-	response, err = http.Get(serviceURL + "/apps/" + registered.RunnerID + "/session/" + reserved.SessionID + "/app/hello")
+	request, err = http.NewRequest(http.MethodGet, serviceURL+"/apps/"+registered.RunnerID+"/session/"+reserved.SessionID+"/app/hello", nil)
+	require.NoError(t, err)
+	request.Header.Set("Cf-Access-Jwt-Assertion", "ingress-secret")
+	request.Header.Set("Cookie", "CF_Authorization=ingress-cookie")
+	request.Header.Set("Accept-Encoding", "identity")
+	request.Header.Set("User-Agent", "app-agent")
+	response, err = http.DefaultClient.Do(request)
 	require.NoError(t, err)
 	data, err := io.ReadAll(response.Body)
 	require.NoError(t, err)

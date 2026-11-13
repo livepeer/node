@@ -3,12 +3,14 @@ package discovery
 import (
 	"context"
 	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -196,10 +198,71 @@ type discoveryRunner struct {
 	data       json.RawMessage
 }
 
+// Validate known fields without changing forwarded records or extensions.
+func validRunnerFields(data []byte, prefix string) bool {
+	var fields map[string]json.RawMessage
+	if jsonv2.Unmarshal(data, &fields) != nil || fields == nil {
+		return false
+	}
+	for name, value := range fields {
+		key := ""
+		match := func(canonical string) bool {
+			if !strings.EqualFold(name, canonical) {
+				return false
+			}
+			key = canonical
+			return true
+		}
+		switch {
+		case prefix == "" && match("observed_at"):
+			var stamp time.Time
+			if value[0] != '"' || jsonv2.Unmarshal(value, &stamp) != nil {
+				return false
+			}
+		case prefix == "" && (match("url") || match("app") || match("version") || match("metadata") || match("mode")) ||
+			prefix == "gpu" && (match("id") || match("name")) ||
+			prefix == "price_info" && (match("currency") || match("unit")):
+			if value[0] != '"' {
+				return false
+			}
+		case prefix == "" && (match("capacity") || match("capacity_used") || match("capacity_available")) || prefix == "gpu" && match("vram_mb"):
+			if value[0] != '-' && (value[0] < '0' || value[0] > '9') {
+				return false
+			}
+			mantissa, power, _ := strings.Cut(strings.ToLower(string(value)), "e")
+			// An absent exponent defaults to zero; Atoi saturates on overflow.
+			exponent, _ := strconv.Atoi(power)
+			whole, fraction, _ := strings.Cut(mantissa, ".")
+			digits := whole + fraction
+			zeros := len(digits) - len(strings.TrimRight(digits, "0"))
+			if strings.Trim(digits, "-0") != "" && exponent < len(fraction)-zeros {
+				return false
+			}
+		case prefix == "price_info" && (match("price") || match("price_usd")):
+			if value[0] != '-' && (value[0] < '0' || value[0] > '9') {
+				return false
+			}
+		case prefix == "" && (match("gpu") || match("price_info")):
+			if !validRunnerFields(value, key) {
+				return false
+			}
+		default:
+			continue
+		}
+		if name != key {
+			return false
+		}
+	}
+	return true
+}
+
 func (r *discoveryRunner) UnmarshalJSON(data []byte) error {
+	if !validRunnerFields(data, "") {
+		return errors.New("invalid discovery runner fields")
+	}
 	type identity discoveryRunner
 	var value identity
-	if err := json.Unmarshal(data, &value); err != nil {
+	if err := jsonv2.Unmarshal(data, &value); err != nil {
 		return err
 	}
 	*r = discoveryRunner(value)

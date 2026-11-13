@@ -17,6 +17,20 @@ through your deployment or a proxy. Use a separate persistent database for each
 redeemer; see [configuration](configuration.md) and [recovery](payment-recovery.md).
 `--config` takes a local TOML or JSON file path, as with other components.
 
+## Authorization webhook
+
+To authorize ticket submissions:
+
+```toml
+AuthWebhookFile = "/run/secrets/livepeer-redeemer-auth-url"
+# AuthWebhookHeadersFile = "/run/secrets/livepeer-redeemer-auth-headers"
+```
+
+The URL must be absolute HTTP or HTTPS without a username, password, or fragment.
+The optional headers file contains comma-separated `Header: value` entries. See
+[credential files](configuration.md#credential-files) and the
+[HTTP contract](http-api.md#redeemer-authorization-webhook).
+
 ## Connect an orchestrator
 
 Add these settings to an onchain orchestrator's configuration, using its

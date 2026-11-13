@@ -359,9 +359,9 @@ func (p ClaimParams) actions() ([]action, error) {
 	}), nil
 }
 func (p FundParams) actions() ([]action, error) {
-	deposit, err := parseAmount(p.Amount, p.BaseUnits, false, false)
+	deposit, err := parseAmount(p.Deposit, p.BaseUnits, false, false)
 	if err != nil {
-		return nil, fmt.Errorf("invalid --amount (interpreted as wei when --base-units is set): %w", err)
+		return nil, fmt.Errorf("invalid --deposit (interpreted as wei when --base-units is set): %w", err)
 	}
 	reserve, err := parseAmount(p.Reserve, p.BaseUnits, false, false)
 	if err != nil {
@@ -369,12 +369,20 @@ func (p FundParams) actions() ([]action, error) {
 	}
 	value := new(big.Int).Add(deposit, reserve)
 	if value.BitLen() > 256 {
-		return nil, errors.New("--amount and --reserve total exceeds uint256")
+		return nil, errors.New("--deposit and --reserve total exceeds uint256")
 	}
 	if value.Sign() == 0 {
-		return nil, errors.New("--amount and --reserve cannot both be zero")
+		return nil, errors.New("--deposit and --reserve cannot both be zero")
 	}
-	return []action{{Contract: "ticketBroker", Method: "fundDepositAndReserve", Args: []any{deposit, reserve}, Value: value}}, nil
+	fund := action{Contract: "ticketBroker", Method: "fundDepositAndReserve", Args: []any{deposit, reserve}, Value: value}
+	if p.Recipient != nil {
+		if *p.Recipient == (common.Address{}) {
+			return nil, errors.New("recipient must be nonempty")
+		}
+		fund.Method = "fundDepositAndReserveFor"
+		fund.Args = []any{*p.Recipient, deposit, reserve}
+	}
+	return []action{fund}, nil
 }
 func (p RewardParams) actions() ([]action, error) {
 	return resolvedActions(func(ctx context.Context, c *eth.Contracts, from common.Address) ([]action, error) {

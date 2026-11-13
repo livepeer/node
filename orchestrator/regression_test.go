@@ -74,7 +74,7 @@ func reviewServer(t *testing.T, upstream string) (*Registry, *Server) {
 	t.Helper()
 	p, err := destination.New("runner", []string{strings.TrimPrefix(upstream, "http://")})
 	require.NoError(t, err)
-	reg := NewRegistry("bootstrap", "https://orch.example", time.Second, time.Minute)
+	reg := NewRegistry("bootstrap", "https://example.com", time.Second, time.Minute)
 	return reg, NewServer(reg, p, p, slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
@@ -88,6 +88,7 @@ func TestRegressionProxySendsContinueBeforeBody(t *testing.T) {
 	defer server.Close()
 	require.NoError(t, registry.AddStatic(StaticRunner{ID: "one", RunnerURL: upstream.URL, App: "one", Mode: "single-shot", Capacity: 1}))
 	orch := httptest.NewServer(server)
+	server.apiOrigin = mustURL(t, orch.URL)
 	defer orch.Close()
 	address := orch.Listener.Addr().String()
 	conn, err := net.DialTimeout("tcp", address, time.Second)
