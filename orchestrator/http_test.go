@@ -173,8 +173,8 @@ func TestProxyExcludedHeaders(t *testing.T) {
 	for _, template := range []string{"", "https://{proxy}.apps.example", "https://orch.example/custom/{proxy}"} {
 		for _, excluded := range []struct{ headers, cookies []string }{
 			{},
-			{headers: []string{"cF-aCCess-*", "x-ingress-token", "cOOkie", "accept-encoding", "user-agent"}},
-			{headers: []string{"CF-Access-*", "X-Ingress-Token", "Cookie", "Accept-*", "User-*"}},
+			{headers: []string{"cF-aCCess-*", "x-ingress-token", "cOOkie", "accept-encoding", "user-agent", "livepeer-session-*"}},
+			{headers: []string{"CF-Access-*", "X-Ingress-Token", "Cookie", "Accept-*", "User-*", "Livepeer-Session-Id", "Livepeer-Session-Token", "Livepeer-Session-Control"}},
 			{cookies: []string{"CF_Authorization"}},
 		} {
 			patterns := excluded.headers
@@ -242,8 +242,13 @@ func TestProxyExcludedHeaders(t *testing.T) {
 					require.Equal(t, "payment", received.Get("Livepeer-Payment"))
 					require.Equal(t, "keep", received.Get("X-Ingress-Token-Extra"))
 					require.Equal(t, "keep", received.Get("Cf-Access"))
-					for _, name := range []string{"Livepeer-Runner-Route", "Livepeer-Session-Id", "Livepeer-Session-Token", "Livepeer-Session-Control"} {
-						require.NotEmpty(t, received.Get(name))
+					require.NotEmpty(t, received.Get("Livepeer-Runner-Route"))
+					for _, name := range []string{"Livepeer-Session-Id", "Livepeer-Session-Token", "Livepeer-Session-Control"} {
+						if len(patterns) > 0 {
+							require.Empty(t, received.Get(name))
+						} else {
+							require.NotEmpty(t, received.Get(name))
+						}
 					}
 				}
 			})

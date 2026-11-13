@@ -215,11 +215,6 @@ func validateExcludedHeaders(patterns []string) error {
 			}
 		}
 	}
-	for _, name := range []string{"Livepeer-Runner-Route", "Livepeer-Session-Id", "Livepeer-Session-Token", "Livepeer-Session-Control"} {
-		if headerExcluded(name, patterns) {
-			return fmt.Errorf("--excluded-headers must not remove required header %s", name)
-		}
-	}
 	return nil
 }
 
