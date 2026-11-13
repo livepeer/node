@@ -307,6 +307,25 @@ func TestExcludedHeadersEnvironmentAndFlag(t *testing.T) {
 	}
 }
 
+func TestExcludedCookiesEnvironmentAndFlag(t *testing.T) {
+	t.Setenv("LIVEPEER_ORCHESTRATOR_EXCLUDED_COOKIES", "CF_Authorization")
+	for _, args := range [][]string{nil, {"--excluded-cookies", "ingress_session"}} {
+		output, err := execute(t, append([]string{"--config", "", "--print-config"}, args...)...)
+		require.NoError(t, err)
+		var printed Params
+		require.NoError(t, toml.Unmarshal([]byte(output), &printed))
+		want := []string{"CF_Authorization"}
+		if len(args) > 0 {
+			want = []string{"ingress_session"}
+		}
+		require.Equal(t, want, printed.ExcludedCookies)
+	}
+	require.NoError(t, validateExcludedCookies([]string{"CF_Authorization", "session-v1"}))
+	for _, name := range []string{"", "bad name", "name=value", "name;other", "name\r\n", "é"} {
+		require.ErrorContains(t, validateExcludedCookies([]string{name}), "--excluded-cookies")
+	}
+}
+
 func TestExcludedHeadersValidation(t *testing.T) {
 	require.NoError(t, validateExcludedHeaders(nil))
 	require.NoError(t, validateExcludedHeaders([]string{"CF-Access-*", "Cookie", "X-Exact", "X_Valid!#$%&'+-.^`|~"}))
