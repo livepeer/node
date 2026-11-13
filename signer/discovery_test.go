@@ -31,6 +31,12 @@ func TestSignerDiscovery(t *testing.T) {
 	const advertised = `[{"address":"http://localhost:9000","runners":[{"url":"http://localhost:9000/app","observed_at":"2026-01-01T00:00:00Z","app":"retained","version":"v1","metadata":"model-x","mode":"single-shot","gpu":{"id":"0","name":" H100 ","vram_mb":80000},"capacity":3,"capacity_used":1,"capacity_available":2,"price_info":{"price":10,"price_usd":0.1,"currency":"wei","unit":"fixed"}},{"url":"http://localhost:9000/cpu","observed_at":"2026-01-01T00:00:00Z","app":"cpu","mode":"single-shot","capacity":1,"price_info":{"price":1,"currency":"wei","unit":"fixed"}}]}]`
 	bodies := map[string]string{
 		"empty": "[]", "good": advertised, "failed": "", "malformed": "not JSON",
+		"lenient": strings.NewReplacer(
+			`"price":10,`, `"price":"10",`,
+			`"price_usd":0.1,`, `"price_usd":"0.1",`,
+			`"price":1,`, `"price":"1","price_usd":null,`,
+			`"app":"cpu",`, `"app":"cpu","version":null,"metadata":null,"gpu":null,"capacity_used":null,"capacity_available":null,`,
+		).Replace(advertised),
 		"metadata":  `[{"nodes":[]}]`,
 		"truncated": `[{"address":`, "oversized": `[{"address":"` + strings.Repeat("a", 1<<20) + `"}]`,
 		"invalid": `[{"address":"file:///invalid","runners":[{"url":"http://localhost/app","app":"example"}]},{"address":"https://orch.example","runners":[{"url":"http://localhost/app"},{"app":"example"}]}]`,
@@ -98,6 +104,7 @@ func TestSignerDiscovery(t *testing.T) {
 		{[]string{"truncated"}, "", 503, nil}, {[]string{"oversized"}, "", 503, nil},
 		{[]string{"denied", "failed", "malformed", "good"}, "", 200, []string{"retained", "cpu"}},
 		{[]string{"collected"}, "", 200, []string{"retained", "cpu"}},
+		{[]string{"lenient"}, "", 200, []string{"retained", "cpu"}},
 		{[]string{"good"}, "app=missing&app=retained&gpu=L40S&gpu=H100", 200, []string{"retained"}},
 		{[]string{"good"}, "app=cpu", 200, []string{"cpu"}},
 		{[]string{"good"}, "app=retained&gpu=L40S", 200, nil},

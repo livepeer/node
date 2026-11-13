@@ -405,7 +405,14 @@ func TestResolvedAmountsAndCalldata(t *testing.T) {
 		{"governance poll vote 0x0000000000000000000000000000000000000009 no", "vote(uint256)", []string{uintWord(1)}},
 		{"governance proposal vote 42 abstain", "castVote(uint256,uint8)", []string{uintWord(42), uintWord(2)}},
 		{"stake withdraw --lock-id 0", "withdrawStake(uint256)", []string{uintWord(0)}},
+		{"ticketbroker fund --deposit 0.000000000000000001 --reserve 0.000000000000000002", "fundDepositAndReserve(uint256,uint256)", []string{uintWord(1), uintWord(2)}},
 		{"ticketbroker fund --amount 0.000000000000000001 --reserve 0.000000000000000002", "fundDepositAndReserve(uint256,uint256)", []string{uintWord(1), uintWord(2)}},
+		{"ticketbroker fund --amount 1 --deposit 2 --base-units", "fundDepositAndReserve(uint256,uint256)", []string{uintWord(2), uintWord(0)}},
+		{"ticketbroker fund --deposit 1 --amount 2 --base-units --recipient " + testAccount, "fundDepositAndReserveFor(address,uint256,uint256)", []string{addressWord(testAccount), uintWord(2), uintWord(0)}},
+		{"ticketbroker fund --deposit 1 --base-units", "fundDepositAndReserve(uint256,uint256)", []string{uintWord(1), uintWord(0)}},
+		{"ticketbroker fund --reserve 2 --base-units", "fundDepositAndReserve(uint256,uint256)", []string{uintWord(0), uintWord(2)}},
+		{"ticketbroker fund --deposit 1 --base-units --recipient " + testAccount, "fundDepositAndReserveFor(address,uint256,uint256)", []string{addressWord(testAccount), uintWord(1), uintWord(0)}},
+		{"ticketbroker fund --reserve 2 --base-units --recipient " + testAccount, "fundDepositAndReserveFor(address,uint256,uint256)", []string{addressWord(testAccount), uintWord(0), uintWord(2)}},
 	} {
 		t.Run(tc.command, func(t *testing.T) {
 			f := newManagementFixture(t)

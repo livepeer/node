@@ -37,7 +37,9 @@ func TestDynamicRunnerSessionProxyAndCapacity(t *testing.T) {
 	policy, err := destination.New("runner", []string{"127.0.0.0/8"})
 	require.NoError(t, err)
 	registry := NewRegistry("bootstrap", "http://orchestrator.example", 10*time.Millisecond, 50*time.Millisecond)
-	srv := httptest.NewServer(NewServer(registry, policy, policy, slog.New(slog.NewTextHandler(io.Discard, nil))))
+	app := NewServer(registry, policy, policy, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	srv := httptest.NewServer(app)
+	app.apiOrigin = mustURL(t, srv.URL)
 	defer srv.Close()
 
 	body := `{"runner_url":"` + upstream.URL + `/api","app":"test","mode":"persistent","capacity":1,"price_info":{"price":0,"currency":"usd","unit":"hour"}}`
@@ -161,9 +163,99 @@ func TestRunnerRegistryHasBoundedCapacity(t *testing.T) {
 	require.Equal(t, http.StatusServiceUnavailable, status)
 }
 
+func TestProxyExcludedHeaders(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(r.Header)
+	}))
+	defer upstream.Close()
+	policy, err := destination.New("runner", []string{strings.TrimPrefix(upstream.URL, "http://")})
+	require.NoError(t, err)
+	for _, template := range []string{"", "https://{proxy}.apps.example", "https://orch.example/custom/{proxy}"} {
+		for _, excluded := range []struct{ headers, cookies []string }{
+			{},
+			{headers: []string{"cF-aCCess-*", "x-ingress-token", "cOOkie", "accept-encoding", "user-agent"}},
+			{headers: []string{"CF-Access-*", "X-Ingress-Token", "Cookie", "Accept-*", "User-*"}},
+			{cookies: []string{"CF_Authorization"}},
+		} {
+			patterns := excluded.headers
+			t.Run(fmt.Sprintf("template=%s/headers=%v/cookies=%v", template, patterns, excluded.cookies), func(t *testing.T) {
+				registry := NewRegistry("secret", "https://orch.example", time.Second, time.Minute)
+				registry.proxyTemplate = template
+				for _, mode := range []string{"persistent", "single-shot"} {
+					require.NoError(t, registry.AddStatic(StaticRunner{ID: mode, RunnerURL: upstream.URL, App: "test", Mode: mode, Proxy: true}))
+				}
+				server := NewServer(registry, policy, policy, slog.New(slog.NewTextHandler(io.Discard, nil)))
+				defer server.Close()
+				server.setExcludedHeaders(patterns)
+				server.excludedCookies = excluded.cookies
+				sid, runnerProxy, _, _, err := registry.Reserve("persistent")
+				require.NoError(t, err)
+				target, token, _, err := registry.sessionTarget("persistent", sid)
+				require.NoError(t, err)
+				proxyID, err := registry.addProxy("persistent", sid, token, target)
+				require.NoError(t, err)
+				for _, path := range []string{
+					registry.service + "/apps/persistent/session/" + sid + "/app",
+					registry.service + "/apps/single-shot/app",
+					runnerProxy,
+					registry.proxyURL("single-shot"),
+					registry.proxyURL(proxyID),
+					registry.service + "/proxy/" + proxyID,
+				} {
+					request := httptest.NewRequest(http.MethodGet, path+"/check", nil)
+					request.Header = http.Header{
+						"cF-aCcEsS-jWt-AsSeRtIoN": {"ingress-jwt"},
+						"CF-ACCESS-CLIENT-ID":     {"ingress-id"},
+						"X-InGrEsS-ToKeN":         {"ingress-token"},
+						"Cookie":                  {"CF_Authorization=secret; app=one", "app=two"},
+						"cOoKiE":                  {"cf_authorization=another; other=three"},
+						"Authorization":           {"Bearer app-token"},
+						"Accept-Encoding":         {"identity"},
+						"User-Agent":              {"app-agent"},
+						"Livepeer-Payment":        {"payment"},
+						"X-Ingress-Token-Extra":   {"keep"},
+						"Cf-Access":               {"keep"},
+					}
+					original := request.Header.Clone()
+					record := httptest.NewRecorder()
+					server.ServeHTTP(record, request)
+					require.Equal(t, http.StatusOK, record.Code, path+": "+record.Body.String())
+					require.Equal(t, original, request.Header)
+					var received http.Header
+					require.NoError(t, json.Unmarshal(record.Body.Bytes(), &received))
+					for _, name := range []string{"Cf-Access-Jwt-Assertion", "Cf-Access-Client-Id", "X-Ingress-Token", "Cookie", "Accept-Encoding", "User-Agent"} {
+						if name == "Cookie" && len(excluded.cookies) > 0 {
+							var cookies []string
+							for _, value := range received.Values("Cookie") {
+								for _, cookie := range strings.Split(value, ";") {
+									cookies = append(cookies, strings.TrimSpace(cookie))
+								}
+							}
+							require.ElementsMatch(t, []string{"app=one", "app=two", "cf_authorization=another", "other=three"}, cookies)
+						} else if len(patterns) > 0 {
+							require.Empty(t, received.Values(name), path+": "+name)
+						} else {
+							require.NotEmpty(t, received.Values(name), path+": "+name)
+						}
+					}
+					require.Equal(t, "Bearer app-token", received.Get("Authorization"))
+					require.Equal(t, "payment", received.Get("Livepeer-Payment"))
+					require.Equal(t, "keep", received.Get("X-Ingress-Token-Extra"))
+					require.Equal(t, "keep", received.Get("Cf-Access"))
+					for _, name := range []string{"Livepeer-Runner-Route", "Livepeer-Session-Id", "Livepeer-Session-Token", "Livepeer-Session-Control"} {
+						require.NotEmpty(t, received.Get(name))
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestSessionProxyStreamsSSEAndWebSocket(t *testing.T) {
 	upgrader := websocket.Upgrader{}
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Empty(t, r.Header.Get("Cf-Access-Jwt-Assertion"))
+		require.Empty(t, r.Header.Get("Cookie"))
 		switch r.URL.Path {
 		case "/events":
 			w.Header().Set("Content-Type", "text/event-stream")
@@ -195,12 +287,21 @@ func TestSessionProxyStreamsSSEAndWebSocket(t *testing.T) {
 	registration.RunnerID = registered.RunnerID
 	_, _, err = registry.Heartbeat(registration, registered.HeartbeatSecret)
 	require.NoError(t, err)
-	server := httptest.NewServer(NewServer(registry, policy, policy, slog.New(slog.NewTextHandler(io.Discard, nil))))
+	app := NewServer(registry, policy, policy, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	app.setExcludedHeaders([]string{"CF-Access-*"})
+	app.excludedCookies = []string{"CF_Authorization"}
+	defer app.Close()
+	server := httptest.NewServer(app)
+	app.apiOrigin = mustURL(t, server.URL)
 	defer server.Close()
 	sid, _, _, _, err := registry.Reserve(registered.RunnerID)
 	require.NoError(t, err)
 	base := server.URL + "/apps/" + registered.RunnerID + "/session/" + sid + "/app"
-	response, err := http.Get(base + "/events")
+	headers := http.Header{"Cf-Access-Jwt-Assertion": {"secret"}, "Cookie": {"CF_Authorization=secret"}}
+	request, err := http.NewRequest(http.MethodGet, base+"/events", nil)
+	require.NoError(t, err)
+	request.Header = headers.Clone()
+	response, err := http.DefaultClient.Do(request)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, response.StatusCode)
 	require.Equal(t, "text/event-stream", response.Header.Get("Content-Type"))
@@ -209,7 +310,7 @@ func TestSessionProxyStreamsSSEAndWebSocket(t *testing.T) {
 	require.Equal(t, "data: hello\n", line)
 	require.NoError(t, response.Body.Close())
 	wsURL := "ws" + strings.TrimPrefix(base, "http") + "/ws"
-	conn, handshake, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	conn, handshake, err := websocket.DefaultDialer.Dial(wsURL, headers)
 	require.NoError(t, err)
 	if handshake != nil {
 		require.NoError(t, handshake.Body.Close())
@@ -234,7 +335,9 @@ func TestRunnerDestinationDeniedWithoutGrant(t *testing.T) {
 	policy, err := destination.New("runner", nil)
 	require.NoError(t, err)
 	registry := NewRegistry("bootstrap", "http://orchestrator.example", time.Second, time.Minute)
-	server := httptest.NewServer(NewServer(registry, policy, policy, slog.New(slog.NewTextHandler(io.Discard, nil))))
+	app := NewServer(registry, policy, policy, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	server := httptest.NewServer(app)
+	app.apiOrigin = mustURL(t, server.URL)
 	defer server.Close()
 	body := `{"runner_url":"` + upstream.URL + `","app":"test","mode":"single-shot","capacity":1,"price_info":{"price":0}}`
 	request, err := http.NewRequest(http.MethodPost, server.URL+"/runners/heartbeat", bytes.NewBufferString(body))
@@ -261,7 +364,7 @@ func TestGeneratedProxyHasSeparateDestinationGrant(t *testing.T) {
 	require.NoError(t, err)
 	proxyPolicy, err := destination.New("session-proxy", nil)
 	require.NoError(t, err)
-	registry := NewRegistry("bootstrap", "http://orchestrator.example", time.Second, time.Minute)
+	registry := NewRegistry("bootstrap", "http://example.com", time.Second, time.Minute)
 	registration := heartbeatRequest{RunnerURL: upstream.URL, App: "test", Mode: "persistent", Capacity: 1}
 	registered, status, err := registry.Heartbeat(registration, "bootstrap")
 	require.NoError(t, err)
@@ -293,7 +396,7 @@ func TestGeneratedProxyHasSeparateDestinationGrant(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(record.Body.Bytes(), &created))
 	require.NotEmpty(t, created.ProxyID)
-	require.Equal(t, "http://orchestrator.example/run/"+created.ProxyID, created.URL)
+	require.Equal(t, "http://example.com/run/"+created.ProxyID, created.URL)
 	record = httptest.NewRecorder()
 	srv.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/run/"+created.ProxyID, nil))
 	require.Equal(t, http.StatusBadGateway, record.Code)
@@ -335,7 +438,7 @@ func TestRunnerExpires(t *testing.T) {
 func TestTrickleChannelsScopedToSession(t *testing.T) {
 	policy, err := destination.New("runner", nil)
 	require.NoError(t, err)
-	registry := NewRegistry("bootstrap", "http://orchestrator.example", time.Second, time.Minute)
+	registry := NewRegistry("bootstrap", "http://example.com", time.Second, time.Minute)
 	registration := heartbeatRequest{RunnerURL: "https://runner.example", App: "test", Mode: "persistent", Capacity: 2}
 	registered, _, err := registry.Heartbeat(registration, "bootstrap")
 	require.NoError(t, err)
@@ -423,6 +526,7 @@ func heartbeatHTTP(t *testing.T, server *Server, body any, credential string) *h
 	data, err := json.Marshal(body)
 	require.NoError(t, err)
 	req := httptest.NewRequest(http.MethodPost, "/runners/heartbeat", bytes.NewReader(data))
+	req.Host = server.apiOrigin.Host
 	req.Header.Set("Authorization", credential)
 	response := httptest.NewRecorder()
 	server.ServeHTTP(response, req)
@@ -497,6 +601,7 @@ func TestMultiAppHeartbeatRoutingAndVersions(t *testing.T) {
 	require.Equal(t, sid, event["session"])
 	// Callback authorization and generated channels use app IDs, not owner IDs.
 	req := httptest.NewRequest(http.MethodPost, "/runner/persistent/session/"+sid+"/channels", strings.NewReader(`{"channels":[{"name":"data"}]}`))
+	req.Host = server.apiOrigin.Host
 	req.Header.Set("Livepeer-Session-Token", event["session_token"])
 	w = httptest.NewRecorder()
 	server.ServeHTTP(w, req)

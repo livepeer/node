@@ -103,6 +103,16 @@ DNS, TLS, and forwarding to this listener for those URLs. Hostname routing uses
 the actual Host header. Single-shot domain proxies require an app registration ID
 that is a lowercase DNS label of at most 63 characters.
 
+Client API requests use the Host from `APIOriginURL`, which defaults to
+`ServiceURL`. If a reverse proxy rewrites Host, set `APIOriginURL` to an
+HTTP(S) URL with the Host it sends, without a path.
+
+To remove headers from app requests, set `ExcludedHeaders`, for example:
+`["CF-Access-*"]`. Matching is case-insensitive. To remove selected cookies while
+preserving other cookies, set `ExcludedCookies`, for example
+`["CF_Authorization"]`. Cookie names match exactly and are case-sensitive.
+Excluding the entire `Cookie` header still removes all cookies.
+
 ## Enable payments
 
 For paid operation, select an on-chain `Network` and supply:
@@ -164,3 +174,9 @@ forward durable winning tickets without unlocking an orchestrator wallet. Keep
 the payment database and chain/pricing settings; remove local wallet and
 transaction settings. Local redemption remains the default. See the
 [standalone redeemer guide](redeemer.md) for setup, capacity, and recovery.
+
+Remote ticket submission may authenticate with `RedeemerHeadersFile`, an owner-only
+regular file using comma-separated `Header: value` entries, for example
+`Authorization: Bearer <submission credential>`. `RedeemerHeaders` is also accepted
+through secret configuration conventions. These headers are used only for the
+configured no-redirect redemption destination and are omitted from printed config.
