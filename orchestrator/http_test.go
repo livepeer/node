@@ -175,7 +175,7 @@ func TestProxyExcludedHeaders(t *testing.T) {
 			{},
 			{headers: []string{"cF-aCCess-*", "x-ingress-token", "cOOkie", "accept-encoding", "user-agent"}},
 			{headers: []string{"CF-Access-*", "X-Ingress-Token", "Cookie", "Accept-*", "User-*"}},
-			{cookies: []string{"CF_Authorization", "cf_authorization"}},
+			{cookies: []string{"CF_Authorization"}},
 		} {
 			patterns := excluded.headers
 			t.Run(fmt.Sprintf("template=%s/headers=%v/cookies=%v", template, patterns, excluded.cookies), func(t *testing.T) {
@@ -231,7 +231,7 @@ func TestProxyExcludedHeaders(t *testing.T) {
 									cookies = append(cookies, strings.TrimSpace(cookie))
 								}
 							}
-							require.ElementsMatch(t, []string{"app=one", "app=two", "other=three"}, cookies)
+							require.ElementsMatch(t, []string{"app=one", "app=two", "cf_authorization=another", "other=three"}, cookies)
 						} else if len(patterns) > 0 {
 							require.Empty(t, received.Values(name), path+": "+name)
 						} else {

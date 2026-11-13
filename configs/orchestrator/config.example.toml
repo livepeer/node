@@ -17,6 +17,8 @@ SessionProxyGrants = []
 HealthGrants = []
 # ProxyURLTemplate = "https://{proxy}.apps.example" # Default: ServiceURL/run/{proxy}.
 # ExcludedHeaders = ["CF-Access-*", "Cookie"] # Remove matching headers and all cookies from app requests.
+# To retain other cookies, omit "Cookie" from ExcludedHeaders.
+# ExcludedCookies = ["CF_Authorization"] # Remove only the named cookies from app requests.
 
 # Paid operation requires an on-chain network, account password, RPC, face
 # value, winning probability, and one conversion source.

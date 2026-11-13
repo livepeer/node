@@ -109,7 +109,7 @@ HTTP(S) URL with the Host it sends, without a path.
 
 To remove headers from app requests, set `ExcludedHeaders`, for example:
 `["CF-Access-*"]`. Matching is case-insensitive. To remove selected cookies while
-preserving application cookies, set `ExcludedCookies`, for example
+preserving other cookies, set `ExcludedCookies`, for example
 `["CF_Authorization"]`. Cookie names match exactly and are case-sensitive.
 Excluding the entire `Cookie` header still removes all cookies.
 
