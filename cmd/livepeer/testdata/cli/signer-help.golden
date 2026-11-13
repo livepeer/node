@@ -45,8 +45,8 @@ Flags:
       --orchestrator-webhook-file string                  (env: LIVEPEER_SIGNER_ORCHESTRATOR_WEBHOOK_FILE)
       --orchestrator-webhook-headers-file string          (env: LIVEPEER_SIGNER_ORCHESTRATOR_WEBHOOK_HEADERS_FILE)
       --orchestrator-webhook-refresh-interval duration   Orchestrator webhook refresh interval; must be positive when enabled (env: LIVEPEER_SIGNER_ORCHESTRATOR_WEBHOOK_REFRESH_INTERVAL) (default 5m0s)
-  -h, --help                                             help for livepeer-signer
-  -v, --version                                          version for livepeer-signer
+  -h, --help[=true|false]                                help for livepeer-signer
+  -v, --version[=true|false]                             version for livepeer-signer
 
 Use "livepeer-signer [command] --help" for more information about a command.
 

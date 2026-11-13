@@ -30,9 +30,9 @@ Flags:
       --redeemer-max-fee-per-gas string    Optional maximum fee in wei per gas (env: LIVEPEER_REDEEMER_REDEEMER_MAX_FEE_PER_GAS)
       --max-pending-tickets int            Maximum unsettled winning tickets (env: LIVEPEER_REDEEMER_MAX_PENDING_TICKETS) (default 100000)
       --max-tickets-per-recipient int      Maximum unsettled tickets per recipient (env: LIVEPEER_REDEEMER_MAX_TICKETS_PER_RECIPIENT) (default 10000)
-  -p, --print-config                       Print audited redacted TOML configuration
-  -h, --help                               help for livepeer-redeemer
-  -v, --version                            version for livepeer-redeemer
+  -p, --print-config[=true|false]          Print audited redacted TOML configuration
+  -h, --help[=true|false]                  help for livepeer-redeemer
+  -v, --version[=true|false]               version for livepeer-redeemer
 
 Use "livepeer-redeemer [command] --help" for more information about a command.
 
