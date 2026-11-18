@@ -156,7 +156,9 @@ func (p *paidReadiness) ready(registry *Registry) bool {
 		reason = "payment_storage_unavailable"
 	case time.Since(p.completed) > limit:
 		reason = "payment_check_stale"
-	case p.workerCompleted.IsZero() || time.Since(p.workerCompleted) > limit:
+	case p.workerCompleted.IsZero():
+		reason = "redemption_worker_pending"
+	case time.Since(p.workerCompleted) > limit:
 		reason = "redemption_worker_stale"
 	}
 	p.mu.Unlock()

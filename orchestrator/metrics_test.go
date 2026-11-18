@@ -123,12 +123,14 @@ func TestPaidReadinessUsesCurrentPublication(t *testing.T) {
 func TestPaidReadinessLogsRejectionTransitions(t *testing.T) {
 	var logs bytes.Buffer
 	p := &paidReadiness{
-		chain: true, active: true, workerCompleted: time.Now(),
+		chain: true, active: true,
 		logger: slog.New(slog.NewJSONHandler(&logs, nil)),
 	}
 	registry := NewRegistry("", "http://localhost", time.Second, time.Minute)
 	require.False(t, p.ready(registry))
-	p.completed = time.Now()
+	p.completed, p.storage = time.Now(), true
+	require.False(t, p.ready(registry))
+	p.workerCompleted = time.Now()
 	for _, check := range []struct{ active, storage bool }{
 		{false, true}, // Reject, then suppress the repeat.
 		{false, true},
@@ -140,7 +142,7 @@ func TestPaidReadinessLogsRejectionTransitions(t *testing.T) {
 		require.Equal(t, check.active && check.storage, p.ready(registry))
 	}
 	dec := json.NewDecoder(&logs)
-	for _, expected := range []string{"payment_check_pending", "recipient_inactive", "recipient_inactive", "payment_storage_unavailable"} {
+	for _, expected := range []string{"payment_check_pending", "redemption_worker_pending", "recipient_inactive", "recipient_inactive", "payment_storage_unavailable"} {
 		var event struct{ Reason string }
 		require.NoError(t, dec.Decode(&event))
 		require.Equal(t, expected, event.Reason)
