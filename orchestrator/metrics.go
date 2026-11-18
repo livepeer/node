@@ -128,10 +128,14 @@ type paidReadiness struct {
 	interval               time.Duration
 	observer               *eth.PaymentObserver
 	logger                 *slog.Logger
+	probeMu                sync.Mutex
 	lastRejection          string
 }
 
 func (p *paidReadiness) ready(registry *Registry) bool {
+	p.probeMu.Lock()
+	defer p.probeMu.Unlock()
+
 	p.mu.Lock()
 	limit := max(time.Minute, 3*p.interval)
 	var reason string
@@ -146,9 +150,11 @@ func (p *paidReadiness) ready(registry *Registry) bool {
 
 	switch {
 	case reason != "":
+	case p.completed.IsZero():
+		reason = "payment_check_pending"
 	case !p.storage:
 		reason = "payment_storage_unavailable"
-	case p.completed.IsZero() || time.Since(p.completed) > limit:
+	case time.Since(p.completed) > limit:
 		reason = "payment_check_stale"
 	case p.workerCompleted.IsZero() || time.Since(p.workerCompleted) > limit:
 		reason = "redemption_worker_stale"
@@ -163,15 +169,10 @@ func (p *paidReadiness) ready(registry *Registry) bool {
 		registry.mu.Unlock()
 	}
 
-	if p.logger != nil {
-		p.mu.Lock()
-		changed := reason != p.lastRejection
-		p.lastRejection = reason
-		p.mu.Unlock()
-		if changed && reason != "" {
-			p.logger.Warn("payment readiness rejected", "event", "payment_readiness", "operation", "readyz", "outcome", "unavailable", "reason", reason)
-		}
+	if reason != "" && reason != p.lastRejection && p.logger != nil {
+		p.logger.Warn("payment readiness rejected", "event", "payment_readiness", "operation", "readyz", "outcome", "unavailable", "reason", reason)
 	}
+	p.lastRejection = reason
 	return reason == ""
 }
 

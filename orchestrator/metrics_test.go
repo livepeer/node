@@ -120,6 +120,34 @@ func TestPaidReadinessUsesCurrentPublication(t *testing.T) {
 	require.Equal(t, 1, bytes.Count(logs.Bytes(), []byte("reason=chain_observer_stopped")))
 }
 
+func TestPaidReadinessLogsRejectionTransitions(t *testing.T) {
+	var logs bytes.Buffer
+	p := &paidReadiness{
+		chain: true, active: true, workerCompleted: time.Now(),
+		logger: slog.New(slog.NewJSONHandler(&logs, nil)),
+	}
+	registry := NewRegistry("", "http://localhost", time.Second, time.Minute)
+	require.False(t, p.ready(registry))
+	p.completed = time.Now()
+	for _, check := range []struct{ active, storage bool }{
+		{false, true}, // Reject, then suppress the repeat.
+		{false, true},
+		{true, true},  // Recovery clears suppression.
+		{false, true}, // The same failure is logged again.
+		{true, false}, // A different failure is logged without recovery.
+	} {
+		p.active, p.storage = check.active, check.storage
+		require.Equal(t, check.active && check.storage, p.ready(registry))
+	}
+	dec := json.NewDecoder(&logs)
+	for _, expected := range []string{"payment_check_pending", "recipient_inactive", "recipient_inactive", "payment_storage_unavailable"} {
+		var event struct{ Reason string }
+		require.NoError(t, dec.Decode(&event))
+		require.Equal(t, expected, event.Reason)
+	}
+	require.ErrorIs(t, dec.Decode(new(any)), io.EOF)
+}
+
 func TestRunnerCapacityOutcomes(t *testing.T) {
 	for _, paid := range []bool{false, true} {
 		name := "unpaid"
