@@ -127,21 +127,52 @@ type paidReadiness struct {
 	snapshot               eth.ChainSnapshot
 	interval               time.Duration
 	observer               *eth.PaymentObserver
+	logger                 *slog.Logger
+	lastRejection          string
 }
 
 func (p *paidReadiness) ready(registry *Registry) bool {
 	p.mu.Lock()
 	limit := max(time.Minute, 3*p.interval)
-	chainReady := p.chain && p.active
-	if p.observer != nil {
-		chainReady = p.observer.Status().RecipientActive
+	var reason string
+	switch {
+	case p.observer != nil:
+		reason = p.observer.Status().RecipientRejection
+	case !p.chain:
+		reason = "chain_check_failed"
+	case !p.active:
+		reason = "recipient_inactive"
 	}
-	ok := chainReady && p.storage && !p.completed.IsZero() && time.Since(p.completed) <= limit && !p.workerCompleted.IsZero() && time.Since(p.workerCompleted) <= limit
+
+	switch {
+	case reason != "":
+	case !p.storage:
+		reason = "payment_storage_unavailable"
+	case p.completed.IsZero() || time.Since(p.completed) > limit:
+		reason = "payment_check_stale"
+	case p.workerCompleted.IsZero() || time.Since(p.workerCompleted) > limit:
+		reason = "redemption_worker_stale"
+	}
 	p.mu.Unlock()
-	registry.mu.Lock()
-	fresh := registry.rateUntil.IsZero() || time.Now().Before(registry.rateUntil)
-	registry.mu.Unlock()
-	return ok && fresh
+
+	if reason == "" {
+		registry.mu.Lock()
+		if !registry.rateUntil.IsZero() && !time.Now().Before(registry.rateUntil) {
+			reason = "price_feed_stale"
+		}
+		registry.mu.Unlock()
+	}
+
+	if p.logger != nil {
+		p.mu.Lock()
+		changed := reason != p.lastRejection
+		p.lastRejection = reason
+		p.mu.Unlock()
+		if changed && reason != "" {
+			p.logger.Warn("payment readiness rejected", "event", "payment_readiness", "operation", "readyz", "outcome", "unavailable", "reason", reason)
+		}
+	}
+	return reason == ""
 }
 
 func (p *paidReadiness) check(ctx context.Context, store *RedeemerDB, chain eth.PaymentChain, engine *PaymentEngine, metrics *observability.Metrics, logger *slog.Logger) {

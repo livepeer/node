@@ -65,7 +65,8 @@ func TestPaidReadinessUsesCurrentPublication(t *testing.T) {
 	o := chain.Observer
 	snapshot, err := chain.Snapshot(t.Context())
 	require.NoError(t, err)
-	p := &paidReadiness{chain: true, active: true, storage: true, completed: time.Now(), workerCompleted: time.Now(), observer: o, snapshot: snapshot}
+	var logs bytes.Buffer
+	p := &paidReadiness{chain: true, active: true, storage: true, completed: time.Now(), workerCompleted: time.Now(), observer: o, snapshot: snapshot, logger: slog.New(slog.NewTextHandler(&logs, nil))}
 	registry := NewRegistry("", "http://localhost", time.Second, time.Minute)
 	f.Update(func(s *test.ChainState) {
 		s.L1Block++
@@ -115,6 +116,8 @@ func TestPaidReadinessUsesCurrentPublication(t *testing.T) {
 	p.check(t.Context(), store, direct, &PaymentEngine{recipient: ticket.Recipient}, observability.New("orchestrator"), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	require.True(t, p.storage, "chain unavailability must not mark healthy storage unavailable")
 	require.False(t, p.ready(registry))
+	require.False(t, p.ready(registry))
+	require.Equal(t, 1, bytes.Count(logs.Bytes(), []byte("reason=chain_observer_stopped")))
 }
 
 func TestRunnerCapacityOutcomes(t *testing.T) {

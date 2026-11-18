@@ -83,16 +83,30 @@ type ObserverStatus struct {
 	ObservedAt, ContactAt, HeadProgressAt, L1ProgressAt time.Time
 	Healthy, RecipientActive                            bool
 	RecipientTracked, RecipientFailed                   bool
+	RecipientRejection                                  string
 	PayerEntries, PayerReads, PayerFailures             int
 }
 
 func (o *PaymentObserver) Status() ObserverStatus {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
-	healthy := o.validate(o.current) == nil
+	reason := o.viewRejection(o.current, o.l1Progress)
+	healthy := reason == ""
+	tracked, failed := o.recipient != (common.Address{}), o.current.recipientErr != nil
+	if healthy {
+		switch {
+		case !tracked:
+			reason = "recipient_untracked"
+		case failed:
+			reason = "recipient_activity_check_failed"
+		case !o.current.recipientActive:
+			reason = "recipient_inactive"
+		}
+	}
 	status := ObserverStatus{
 		ObservedAt: o.current.observedAt, ContactAt: o.contact, HeadProgressAt: o.progress, L1ProgressAt: o.l1Progress,
-		RecipientActive: healthy && o.recipient != (common.Address{}) && o.current.recipientErr == nil && o.current.recipientActive, PayerEntries: len(o.payers), PayerReads: o.activeReads, Healthy: healthy, RecipientTracked: o.recipient != (common.Address{}), RecipientFailed: o.current.recipientErr != nil,
+		RecipientActive: reason == "", RecipientTracked: tracked, RecipientFailed: failed, RecipientRejection: reason,
+		PayerEntries: len(o.payers), PayerReads: o.activeReads, Healthy: healthy,
 	}
 	for _, entry := range o.payers {
 		if !entry.valid && entry.failure != nil && entry.failedAt == o.current.BlockHash && entry.failedGeneration == o.current.generation {
@@ -140,15 +154,30 @@ func (s ChainSnapshot) Validate() error {
 }
 
 func (o *PaymentObserver) validate(s ChainSnapshot) error {
-	if (o.lifecycle != nil && o.lifecycle.Err() != nil) || s.generation != o.generation || o.expired(s, o.l1Progress) {
+	if o.viewRejection(s, o.l1Progress) != "" {
 		return ErrObservationUnavailable
 	}
 	return nil
 }
 
-func (o *PaymentObserver) expired(s ChainSnapshot, l1Progress time.Time) bool {
+func (o *PaymentObserver) viewRejection(s ChainSnapshot, l1Progress time.Time) string {
 	now := o.now()
-	return s.observedAt.IsZero() || now.Sub(s.observedAt) >= o.maxAge || now.Sub(s.blockTime) >= o.maxAge || now.Sub(l1Progress) >= o.maxAge
+	switch {
+	case o.lifecycle != nil && o.lifecycle.Err() != nil:
+		return "chain_observer_stopped"
+	case s.generation != o.generation:
+		return "chain_view_invalidated"
+	case s.observedAt.IsZero():
+		return "chain_view_missing"
+	case now.Sub(s.observedAt) >= o.maxAge:
+		return "chain_view_stale"
+	case now.Sub(s.blockTime) >= o.maxAge:
+		return "chain_head_stale"
+	case now.Sub(l1Progress) >= o.maxAge:
+		return "chain_l1_progress_stale"
+	default:
+		return ""
+	}
 }
 
 // Only Run calls refresh.
@@ -246,7 +275,7 @@ func (o *PaymentObserver) refresh(ctx context.Context) error {
 		l1Progress, highWater = at, s.Block
 	}
 	s.observer, s.generation, s.observedAt, s.blockTime = o, o.generation, at, blockTime
-	if (o.lifecycle != nil && o.lifecycle.Err() != nil) || o.expired(s, l1Progress) {
+	if o.viewRejection(s, l1Progress) != "" {
 		return ErrObservationUnavailable
 	}
 	for key, entry := range o.payers {

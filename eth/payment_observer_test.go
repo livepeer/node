@@ -44,6 +44,7 @@ func TestObserverLocalImmutableSnapshot(t *testing.T) {
 	f, o, _ := newTestObserver(t)
 	_, err := o.Snapshot(t.Context())
 	require.ErrorIs(t, err, ErrObservationUnavailable)
+	require.Equal(t, "chain_view_missing", o.Status().RecipientRejection)
 	f.Update(func(s *test.ChainState) { s.CurrentRound = 6 })
 	require.NoError(t, o.refresh(t.Context()))
 	before := f.Stats()
@@ -95,6 +96,7 @@ func TestObserverContactDoesNotRenewOldHead(t *testing.T) {
 	original := f.State()
 	f.Update(func(s *test.ChainState) { s.Number-- })
 	require.Error(t, o.refresh(t.Context()))
+	require.Equal(t, "chain_view_invalidated", o.Status().RecipientRejection)
 	f.Update(func(s *test.ChainState) { *s = original })
 	require.NoError(t, o.refresh(t.Context()))
 	require.True(t, o.Status().Healthy)
@@ -102,6 +104,7 @@ func TestObserverContactDoesNotRenewOldHead(t *testing.T) {
 	require.Equal(t, initial.ObservedAt, o.Status().ObservedAt)
 	*now = now.Add(20 * time.Second)
 	require.Error(t, o.refresh(t.Context()))
+	require.Equal(t, "chain_view_stale", o.Status().RecipientRejection)
 	_, err = o.Snapshot(t.Context())
 	require.ErrorIs(t, err, ErrObservationUnavailable)
 	advanceObserver(f, *now)
@@ -185,6 +188,7 @@ func TestObserverL1ProgressDeadline(t *testing.T) {
 			require.Equal(t, progress, o.Status().L1ProgressAt)
 		}
 		require.False(t, o.Status().Healthy)
+		require.Equal(t, "chain_l1_progress_stale", o.Status().RecipientRejection)
 		advanceObserver(f, *now)
 		f.Update(func(s *test.ChainState) { s.L1Block = 51 })
 		require.NoError(t, o.refresh(t.Context()))
@@ -345,6 +349,11 @@ func TestObserverRecipientActivity(t *testing.T) {
 		active, err := c.IsActiveAt(t.Context(), o.recipient, snapshot)
 		require.NoError(t, err)
 		require.Equal(t, step.active, active)
+		if step.active {
+			require.Empty(t, o.Status().RecipientRejection)
+		} else {
+			require.Equal(t, "recipient_inactive", o.Status().RecipientRejection)
+		}
 		_, err = c.IsActiveAt(t.Context(), common.HexToAddress("0x9999"), snapshot)
 		require.ErrorIs(t, err, ErrObservationUnavailable)
 		unowned := snapshot
@@ -369,6 +378,7 @@ func TestObserverRecipientActivity(t *testing.T) {
 	f.Update(func(s *test.ChainState) { s.Fail = "BondingManager.isActiveTranscoder" })
 	require.NoError(t, o.refresh(t.Context()), "a recipient failure must not reject unrelated chain state")
 	require.True(t, o.Status().Healthy)
+	require.Equal(t, "recipient_activity_check_failed", o.Status().RecipientRejection)
 	_, err = c.PayerFunds(t.Context(), common.HexToAddress("0x2000"), o.recipient)
 	require.NoError(t, err)
 	_, err = c.IsActive(t.Context(), o.recipient)
