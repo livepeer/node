@@ -127,7 +127,6 @@ type paidReadiness struct {
 	snapshot               eth.ChainSnapshot
 	interval               time.Duration
 	observer               *eth.PaymentObserver
-	logger                 *slog.Logger
 	probeMu                sync.Mutex
 	lastRejection          string
 }
@@ -171,8 +170,8 @@ func (p *paidReadiness) ready(registry *Registry) bool {
 		registry.mu.Unlock()
 	}
 
-	if reason != "" && reason != p.lastRejection && p.logger != nil {
-		p.logger.Warn("payment readiness rejected", "event", "payment_readiness", "operation", "readyz", "outcome", "unavailable", "reason", reason)
+	if reason != "" && reason != p.lastRejection && registry.logger != nil {
+		registry.logger.Warn("payment readiness rejected", "event", "payment_readiness", "operation", "readyz", "outcome", "unavailable", "reason", reason)
 	}
 	p.lastRejection = reason
 	return reason == ""

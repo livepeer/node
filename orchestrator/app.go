@@ -431,7 +431,7 @@ func Serve(parent context.Context, p Params, logOut io.Writer) (result error) {
 	}
 	defer app.Close()
 	app.SetPayment(engine)
-	readiness := &paidReadiness{interval: p.HeartbeatInterval, logger: logger}
+	readiness := &paidReadiness{interval: p.HeartbeatInterval}
 	if engine != nil {
 		registry.metrics.Gauge("redemption_last_success_timestamp_seconds", nil).Set(0)
 		registry.metrics.Gauge("redemption_worker_last_completed_timestamp_seconds", nil).Set(0)

@@ -66,8 +66,9 @@ func TestPaidReadinessUsesCurrentPublication(t *testing.T) {
 	snapshot, err := chain.Snapshot(t.Context())
 	require.NoError(t, err)
 	var logs bytes.Buffer
-	p := &paidReadiness{chain: true, active: true, storage: true, completed: time.Now(), workerCompleted: time.Now(), observer: o, snapshot: snapshot, logger: slog.New(slog.NewTextHandler(&logs, nil))}
+	p := &paidReadiness{chain: true, active: true, storage: true, completed: time.Now(), workerCompleted: time.Now(), observer: o, snapshot: snapshot}
 	registry := NewRegistry("", "http://localhost", time.Second, time.Minute)
+	registry.logger = slog.New(slog.NewTextHandler(&logs, nil))
 	f.Update(func(s *test.ChainState) {
 		s.L1Block++
 		s.Hash = common.HexToHash("0xeeee")
@@ -116,17 +117,14 @@ func TestPaidReadinessUsesCurrentPublication(t *testing.T) {
 	p.check(t.Context(), store, direct, &PaymentEngine{recipient: ticket.Recipient}, observability.New("orchestrator"), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	require.True(t, p.storage, "chain unavailability must not mark healthy storage unavailable")
 	require.False(t, p.ready(registry))
-	require.False(t, p.ready(registry))
-	require.Equal(t, 1, bytes.Count(logs.Bytes(), []byte("reason=chain_observer_stopped")))
+	require.Contains(t, logs.String(), "reason=chain_observer_stopped")
 }
 
 func TestPaidReadinessLogsRejectionTransitions(t *testing.T) {
 	var logs bytes.Buffer
-	p := &paidReadiness{
-		chain: true, active: true,
-		logger: slog.New(slog.NewJSONHandler(&logs, nil)),
-	}
+	p := &paidReadiness{chain: true, active: true}
 	registry := NewRegistry("", "http://localhost", time.Second, time.Minute)
+	registry.logger = slog.New(slog.NewJSONHandler(&logs, nil))
 	require.False(t, p.ready(registry))
 	p.completed, p.storage = time.Now(), true
 	require.False(t, p.ready(registry))
