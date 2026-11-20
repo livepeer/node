@@ -12,6 +12,7 @@ RunnerConfig = "/etc/livepeer/runners.toml"
 HeartbeatInterval = "5s"
 HeartbeatTTL = "30s"
 DrainTimeout = "12h"
+SessionIdleTimeout = "30s" # Set to 0 to disable persistent session idle expiry.
 RunnerGrants = []
 SessionProxyGrants = []
 HealthGrants = []

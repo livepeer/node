@@ -404,28 +404,39 @@ func TestLocalExampleConfig(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestDrainTimeoutConfig(t *testing.T) {
+func TestLifecycleTimeoutConfig(t *testing.T) {
 	t.Setenv("LIVEPEER_ORCHESTRATOR_BOOTSTRAP_SECRET", "test")
 	path := filepath.Join(t.TempDir(), "config.toml")
-	test.WriteConfig(t, path, `DrainTimeout = "2h"`)
+	test.WriteConfig(t, path, "DrainTimeout = \"2h\"\nSessionIdleTimeout = \"2m\"")
 	for _, tc := range []struct {
-		name, env, want string
-		args            []string
+		name, drainEnv, idleEnv string
+		wantDrain, wantIdle     string
+		args                    []string
 	}{
-		{name: "default", want: "12h0m0s", args: []string{"--config", ""}},
-		{name: "file", want: "2h0m0s", args: []string{"--config", path}},
-		{name: "environment", env: "1h", want: "1h0m0s", args: []string{"--config", path}},
-		{name: "flag", env: "1h", want: "30m0s", args: []string{"--config", path, "--drain-timeout", "30m"}},
-		{name: "zero", want: "0s", args: []string{"--config", "", "--drain-timeout", "0"}},
+		{name: "default", wantDrain: "12h0m0s", wantIdle: "30s", args: []string{"--config", ""}},
+		{name: "file", wantDrain: "2h0m0s", wantIdle: "2m0s", args: []string{"--config", path}},
+		{name: "environment", drainEnv: "1h", idleEnv: "1m", wantDrain: "1h0m0s", wantIdle: "1m0s", args: []string{"--config", path}},
+		{name: "flag", drainEnv: "1h", idleEnv: "1m", wantDrain: "30m0s", wantIdle: "10s",
+			args: []string{"--config", path, "--drain-timeout", "30m", "--session-idle-timeout", "10s"}},
+		{name: "zero", drainEnv: "1h", idleEnv: "1m", wantDrain: "0s", wantIdle: "0s",
+			args: []string{"--config", path, "--drain-timeout", "0", "--session-idle-timeout", "0"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("LIVEPEER_ORCHESTRATOR_DRAIN_TIMEOUT", tc.env)
+			t.Setenv("LIVEPEER_ORCHESTRATOR_DRAIN_TIMEOUT", tc.drainEnv)
+			t.Setenv("LIVEPEER_ORCHESTRATOR_SESSION_IDLE_TIMEOUT", tc.idleEnv)
 			output, err := execute(t, append(tc.args, "--print-config")...)
 			require.NoError(t, err)
 			var printed map[string]any
 			require.NoError(t, toml.Unmarshal([]byte(output), &printed))
-			require.Equal(t, tc.want, printed["DrainTimeout"])
+			require.Equal(t, tc.wantDrain, printed["DrainTimeout"])
+			require.Equal(t, tc.wantIdle, printed["SessionIdleTimeout"])
 		})
+	}
+	idleArgs := []string{"--config", "", "--session-idle-timeout", "-1ns"}
+	for _, args := range [][]string{idleArgs, append(idleArgs, "--print-config")} {
+		_, err := execute(t, args...)
+		require.ErrorContains(t, err, "--session-idle-timeout must be nonnegative")
+		require.True(t, boa.IsUserInputError(err))
 	}
 	for _, value := range []string{"-1ns", "12h1ns"} {
 		_, err := execute(t, "--config", "", "--drain-timeout", value)
