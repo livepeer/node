@@ -20,10 +20,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type roundTripFunc func(*http.Request) (*http.Response, error)
-
-func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
-
 func TestRunnerStopDrainsProxy(t *testing.T) {
 	for _, scenario := range []struct {
 		name   string

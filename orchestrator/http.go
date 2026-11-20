@@ -10,11 +10,13 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
+	"net/http/httptrace"
 	"net/http/httputil"
 	"net/url"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/livepeer/node/destination"
@@ -50,7 +52,6 @@ type Server struct {
 
 func NewServer(registry *Registry, runnerPolicy, proxyPolicy destination.Policy, logger *slog.Logger) *Server {
 	logger = logger.With("component", "orchestrator")
-	registry.logger = logger
 	s := &Server{registry: registry, logger: logger, mux: http.NewServeMux(), channels: map[string]*channel{}, o2r: map[string]string{}}
 	serviceURL, _ := url.Parse(registry.service)
 	s.basePath = strings.TrimRight(serviceURL.Path, "/")
@@ -62,7 +63,6 @@ func NewServer(registry *Registry, runnerPolicy, proxyPolicy destination.Policy,
 	// A stalled stream must not take the slot needed to stop or fund it.
 	s.controlSlots = make(chan struct{}, 64)
 	s.streamSlots = make(chan struct{}, 256)
-	registry.onEvent = s.emitSessionEvent
 	s.mux.HandleFunc("POST /runners/heartbeat", s.heartbeat)
 	s.mux.HandleFunc("POST /runners/{runner_id}/unregister", s.unregister)
 	s.mux.HandleFunc("GET /discovery", s.discovery)
@@ -86,6 +86,8 @@ func NewServer(registry *Registry, runnerPolicy, proxyPolicy destination.Policy,
 		BasePath: "/ai/trickle/", Mux: s.mux, BeforeDelete: s.beforeDeleteChannel,
 	})
 	registry.mu.Lock()
+	registry.logger = logger
+	registry.onEvent = s.emitSessionEvent
 	registry.server = s
 	registry.mu.Unlock()
 	return s
@@ -511,48 +513,80 @@ func (s *Server) proxyGenerated(w http.ResponseWriter, r *http.Request) {
 	s.proxy(w, r, transport, target.target, r.PathValue("app_path"), appID, sid, token, control)
 }
 
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+var errSessionNotFound = errors.New("session not found")
+
 func (s *Server) proxy(w http.ResponseWriter, r *http.Request, transport http.RoundTripper, target *url.URL, appPath, appID, sid, token, control string) {
 	kind := "runner"
 	if transport == s.proxyTransport {
 		kind = "session_proxy"
 	}
-	identity := s.registry.identity(appID, sid)
-	transport = upstreamObserver{transport, s.registry.metrics, identity, kind}
-	sessionCtx, ok := s.registry.sessionContext(appID, sid)
-	if !ok || sessionCtx.Err() != nil {
-		fail(w, http.StatusNotFound, "session not found")
-		return
+	logger := s.logger.With("app_id", appID, "session_id", sid)
+	if state := observability.State(r); state != nil {
+		logger = logger.With("runner_id", state.Identity.Runner)
 	}
 	ctx, cancel := context.WithCancel(r.Context())
-	stop := context.AfterFunc(sessionCtx, func() {
-		if stopped, ok := context.Cause(sessionCtx).(runnerStopped); ok {
-			// The runner may be awaiting its stop callback before sending its
-			// final response. Revoke the session now, but let that response finish.
-			timer := time.NewTimer(time.Until(stopped.deadline))
-			defer timer.Stop()
-			select {
-			case <-timer.C:
-			case <-ctx.Done():
-			}
-		}
-		cancel()
-	})
-	defer stop()
 	defer cancel()
+	var finish func()
 	defer func() {
-		if errors.Is(context.Cause(sessionCtx), errRunnerUnavailable) {
-			observability.Outcome(r, "transport_error")
-		} else if sessionCtx.Err() != nil {
-			observability.Outcome(r, "session_stopped")
+		if finish != nil {
+			finish()
 		}
 	}()
 	proxy := &httputil.ReverseProxy{
-		ErrorLog:      log.New(proxyLog{s.logger.With("runner_id", identity.Runner, "app_id", appID, "session_id", sid)}, "", 0),
-		Transport:     transport,
+		ErrorLog: log.New(proxyLog{logger}, "", 0),
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			// ReverseProxy can reject a request before forwarding it. Start
+			// accounting here and keep it in flight through the response.
+			sess, counted := s.registry.beginProxyRequest(appID, sid, token)
+			if sess == nil || sess.ctx.Err() != nil {
+				return nil, errSessionNotFound
+			}
+			stop := context.AfterFunc(sess.ctx, func() {
+				if stopped, ok := context.Cause(sess.ctx).(runnerStopped); ok {
+					// Let the runner finish sending its stop response.
+					timer := time.NewTimer(time.Until(stopped.deadline))
+					defer timer.Stop()
+					select {
+					case <-timer.C:
+					case <-ctx.Done():
+					}
+				}
+				cancel()
+			})
+			var forwarded atomic.Bool
+			if counted {
+				trace := &httptrace.ClientTrace{WroteHeaders: func() { forwarded.Store(true) }}
+				req = req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
+			}
+			finish = func() {
+				if errors.Is(context.Cause(sess.ctx), errRunnerUnavailable) {
+					observability.Outcome(r, "transport_error")
+				} else if sess.ctx.Err() != nil {
+					observability.Outcome(r, "session_stopped")
+				}
+				stop()
+				if counted {
+					s.registry.endProxyRequest(appID, sess, forwarded.Load())
+				}
+			}
+			resp, err := (upstreamObserver{transport, s.registry.metrics, sess.identity, kind}).RoundTrip(req)
+			if counted && resp != nil {
+				forwarded.Store(true)
+			}
+			return resp, err
+		}),
 		FlushInterval: -1,
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
+			if errors.Is(err, errSessionNotFound) {
+				fail(w, http.StatusNotFound, err)
+				return
+			}
 			observability.Outcome(r, "transport_error")
-			s.logger.Warn("runner proxy failed", "event", "proxy_failed", "operation", "proxy", "outcome", "error", "runner_id", identity.Runner, "app_id", appID, "session_id", sid, "error_kind", "upstream_failure")
+			logger.Warn("runner proxy failed", "event", "proxy_failed", "operation", "proxy", "outcome", "error", "error_kind", "upstream_failure")
 			fail(w, http.StatusBadGateway, "runner destination unavailable")
 		},
 		Rewrite: func(req *httputil.ProxyRequest) {

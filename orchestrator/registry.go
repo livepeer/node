@@ -190,6 +190,10 @@ type session struct {
 	PriceInfo priceInfo
 	ctx       context.Context
 	cancel    context.CancelCauseFunc
+
+	idleDeadline time.Time
+	idleTimer    *time.Timer // nil for sessions without idle tracking
+	inFlight     int
 }
 
 var errInvalidSessionToken = errors.New("invalid session token")
@@ -229,6 +233,7 @@ type Registry struct {
 	interval      time.Duration
 	ttl           time.Duration
 	drainTimeout  time.Duration
+	idleTimeout   time.Duration
 	onEvent       func(runnerID, appID, event, sessionID, sessionToken string)
 	weiPerUSD     *big.Rat
 	rateUntil     time.Time
@@ -727,17 +732,21 @@ func (r *Registry) reserveWithPrice(id, requestedID string, agreed *appQuote, mo
 	}
 	target, _ := destination.ParseURL(item.RunnerURL)
 	ctx, cancel := context.WithCancelCause(context.Background())
-	item.Sessions[sessionID] = &session{target: target, identity: appIdentity(id, item), pending: agreed != nil, ID: sessionID, Token: token, Created: time.Now(), Proxies: map[string]sessionProxy{}, PriceInfo: price, ctx: ctx, cancel: cancel}
+	sess := &session{target: target, identity: appIdentity(id, item), pending: agreed != nil, ID: sessionID, Token: token, Created: time.Now(), Proxies: map[string]sessionProxy{}, PriceInfo: price, ctx: ctx, cancel: cancel}
+	item.Sessions[sessionID] = sess
 	r.sessions[sessionID] = item
 	appURL := r.appURL(id, item.Mode, sessionID)
 	if item.Proxy && item.Mode == "persistent" {
 		proxyID := r.newID("", 10, nil)
-		item.Sessions[sessionID].Proxies[proxyID] = sessionProxy{target: target, runner: true}
-		r.proxies[proxyID] = item.Sessions[sessionID]
+		sess.Proxies[proxyID] = sessionProxy{target: target, runner: true}
+		r.proxies[proxyID] = sess
 		appURL = r.proxyURL(proxyID)
 	}
-	if agreed == nil && r.onEvent != nil {
-		r.onEvent(item.owner.ID, id, "reserved", sessionID, token)
+	if !sess.pending {
+		r.startIdleTimerLocked(id, sess)
+		if r.onEvent != nil {
+			r.onEvent(item.owner.ID, id, "reserved", sessionID, token)
+		}
 	}
 	return sessionID, appURL, r.service + "/apps/" + url.PathEscape(id) + "/session/" + url.PathEscape(sessionID), http.StatusOK, nil
 }
@@ -846,6 +855,9 @@ func (r *Registry) releaseLocked(id, sid string, cause error, reasons ...string)
 		return
 	}
 	sess := item.Sessions[sid]
+	if sess.idleTimer != nil {
+		sess.idleTimer.Stop()
+	}
 	reason := "released"
 	if len(reasons) != 0 {
 		reason = reasons[0]
@@ -871,6 +883,69 @@ func (r *Registry) releaseLocked(id, sid string, cause error, reasons ...string)
 	}
 	if item.Removing && len(item.Sessions) == 0 {
 		r.removeApp(item)
+	}
+}
+
+func (r *Registry) startIdleTimerLocked(id string, sess *session) {
+	if r.idleTimeout == 0 || sess.identity.Mode != "persistent" {
+		return
+	}
+	sess.idleDeadline = time.Now().Add(r.idleTimeout)
+	sess.idleTimer = time.AfterFunc(time.Until(sess.idleDeadline), func() {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		if item := r.apps[id]; item != nil && item.Sessions[sess.ID] == sess {
+			// A queued callback observes the current deadline after a reset.
+			r.expireIdleLocked(id, sess)
+		}
+	})
+}
+
+func (r *Registry) expireIdleLocked(id string, sess *session) bool {
+	if sess.inFlight != 0 || time.Now().Before(sess.idleDeadline) {
+		return false
+	}
+	r.releaseLocked(id, sess.ID, nil, "idle_timeout")
+	return true
+}
+
+// beginProxyRequest uses the resolved token to bind the request to the same
+// session instance as the proxy target, even if a session ID has been reused.
+func (r *Registry) beginProxyRequest(id, sid, token string) (sess *session, counted bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	item := r.apps[id]
+	if item == nil {
+		return nil, false
+	}
+	sess = item.Sessions[sid]
+	if sess == nil || sess.pending || sess.Token != token {
+		return nil, false
+	}
+	if sess.idleTimer == nil {
+		return sess, false
+	}
+	if sess.inFlight == 0 {
+		if r.expireIdleLocked(id, sess) {
+			return nil, false
+		}
+		sess.idleTimer.Stop()
+	}
+	sess.inFlight++
+	return sess, true
+}
+
+func (r *Registry) endProxyRequest(id string, sess *session, forwarded bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if item := r.apps[id]; item != nil && item.Sessions[sess.ID] == sess {
+		sess.inFlight--
+		if forwarded {
+			sess.idleDeadline = time.Now().Add(r.idleTimeout)
+		}
+		if sess.inFlight == 0 && !r.expireIdleLocked(id, sess) {
+			sess.idleTimer.Reset(time.Until(sess.idleDeadline))
+		}
 	}
 }
 
@@ -1110,6 +1185,7 @@ func (r *Registry) activateSession(id, sid string) bool {
 	sess := item.Sessions[sid]
 	if sess.pending {
 		sess.pending = false
+		r.startIdleTimerLocked(id, sess)
 		if r.onEvent != nil {
 			r.onEvent(item.owner.ID, id, "reserved", sid, sess.Token)
 		}

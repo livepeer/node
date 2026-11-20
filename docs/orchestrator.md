@@ -82,6 +82,12 @@ A runner stop gives in-flight HTTP, SSE, and WebSocket requests up to one second
 to finish; all other releases cancel them immediately. This applies to both
 persistent and single-shot sessions.
 
+Persistent sessions expire after 30 seconds of inactivity by default. The idle
+timer starts at admission and restarts when the last forwarded application
+request finishes. Long-running requests such as SSE or WebSockets keep the session
+active, as will periodic requests.
+Set `SessionIdleTimeout` to 0 to disable, or a positive duration value such as "1m".
+
 When a runner heartbeat omits an app, the orchestrator removes it from discovery
 and stops new sessions while existing sessions drain. The first omission sets the
 deadline; repeated omissions do not extend it. A newer snapshot listing the app

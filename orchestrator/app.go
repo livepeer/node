@@ -75,6 +75,7 @@ type Params struct {
 	HeartbeatInterval         time.Duration `default:"5s" descr:"Runner heartbeat interval"`
 	HeartbeatTTL              time.Duration `default:"30s" descr:"Runner heartbeat expiry"`
 	DrainTimeout              time.Duration `default:"12h" descr:"Maximum app drain time after withdrawal, from 0 to 12h; zero ends work immediately"`
+	SessionIdleTimeout        time.Duration `default:"30s" descr:"Idle time before releasing a persistent session (0 disables expiry)"`
 	PrintConfig               bool          `optional:"true" boa:"noconfig,noenv" descr:"Print audited redacted TOML configuration"`
 }
 
@@ -183,6 +184,9 @@ func (p Params) Validate() error {
 	if p.DrainTimeout < 0 || p.DrainTimeout > maxDrainTimeout {
 		return errors.New("--drain-timeout must be between 0 and 12h")
 	}
+	if err := validateSessionIdleTimeout(p.SessionIdleTimeout); err != nil {
+		return err
+	}
 	for _, item := range []struct {
 		purpose string
 		grants  []string
@@ -190,6 +194,13 @@ func (p Params) Validate() error {
 		if _, err := destination.New(item.purpose, item.grants); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func validateSessionIdleTimeout(timeout time.Duration) error {
+	if timeout < 0 {
+		return errors.New("--session-idle-timeout must be nonnegative")
 	}
 	return nil
 }
@@ -247,6 +258,9 @@ func Root(out, errOut io.Writer) *cobra.Command {
 		Args: cobra.NoArgs,
 		RunFuncCtxE: func(ctx *boa.HookContext, p *Params, cmd *cobra.Command, _ []string) error {
 			if p.PrintConfig {
+				if err := validateSessionIdleTimeout(p.SessionIdleTimeout); err != nil {
+					return boa.NewUserInputError(err)
+				}
 				return printConfig(ctx, p, cmd.OutOrStdout())
 			}
 			if err := p.Validate(); err != nil {
@@ -279,7 +293,7 @@ func printConfig(ctx *boa.HookContext, p *Params, out io.Writer) error {
 		"ExcludedHeaders": &p.ExcludedHeaders, "ExcludedCookies": &p.ExcludedCookies,
 		"RunnerGrants": &p.RunnerGrants, "SessionProxyGrants": &p.SessionProxyGrants, "HealthGrants": &p.HealthGrants,
 		"HeartbeatInterval": &p.HeartbeatInterval, "HeartbeatTTL": &p.HeartbeatTTL,
-		"DrainTimeout":      &p.DrainTimeout,
+		"DrainTimeout": &p.DrainTimeout, "SessionIdleTimeout": &p.SessionIdleTimeout,
 		"RedeemerTxTimeout": &p.RedeemerTxTimeout, "RedeemerMaxTxReplacements": &p.RedeemerMaxTxReplacements,
 		"RedeemerURL": &p.RedeemerURL, "RedeemerGrants": &p.RedeemerGrants, "MaxPendingTickets": &p.MaxPendingTickets, "MaxTicketsPerRecipient": &p.MaxTicketsPerRecipient, "RedeemerDB": &p.RedeemerDB, "ChainID": &p.ChainID, "RedeemerMaxFeePerGas": &p.RedeemerMaxFeePerGas,
 		"Controller": &p.Controller, "WeiPerUSD": &p.WeiPerUSD, "ETHUSDFeed": &p.ETHUSDFeed,
@@ -339,6 +353,7 @@ func Serve(parent context.Context, p Params, logOut io.Writer) (result error) {
 	}
 	registry := NewRegistry(p.BootstrapSecret, p.ServiceURL.String(), p.HeartbeatInterval, p.HeartbeatTTL)
 	registry.drainTimeout = p.DrainTimeout
+	registry.idleTimeout = p.SessionIdleTimeout
 	registry.runnerService = strings.TrimRight(p.RunnerServiceURL.String(), "/")
 	var engine *PaymentEngine
 	var redeemerDB *RedeemerDB

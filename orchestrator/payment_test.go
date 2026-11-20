@@ -65,6 +65,7 @@ func TestPaidFixedSessionWithRemoteSigner(t *testing.T) {
 	engine, err := NewPaymentEngine(store, paymentTestChain{}, recipient.Address(), big.NewInt(11), new(big.Int).Sub(max, big.NewInt(1)))
 	require.NoError(t, err)
 	registry := NewRegistry("bootstrap", "http://example.com", time.Second, 30*time.Second)
+	registry.idleTimeout = 30 * time.Second
 	registry.SetWeiPerUSD(big.NewRat(10, 1))
 	registration := heartbeatRequest{RunnerID: "runner1", RunnerURL: "http://127.0.0.1:9000", App: "demo", Mode: "persistent", Capacity: 1, PriceInfo: priceInfo{Price: "1", Currency: "usd", Unit: "fixed"}}
 	resp, status, err := registry.Heartbeat(registration, "bootstrap")
@@ -77,6 +78,7 @@ func TestPaidFixedSessionWithRemoteSigner(t *testing.T) {
 	policy, err := destination.New("runner", []string{"127.0.0.1:9000"})
 	require.NoError(t, err)
 	server := NewServer(registry, policy, policy, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	defer server.Close()
 	server.SetPayment(engine)
 	signerService, err := signer.NewService(payer)
 	require.NoError(t, err)
@@ -139,9 +141,18 @@ func TestPaidFixedSessionWithRemoteSigner(t *testing.T) {
 	require.Equal(t, 409, w.Code)
 	require.EqualValues(t, 1, test.MetricSum(t, registry.metrics.Registry, "payment_tickets_total", map[string]string{"kind": "accepted"}))
 	require.EqualValues(t, 1, test.MetricSum(t, registry.metrics.Registry, "payment_fixed_charges_total", map[string]string{"app": "demo"}))
+	registry.mu.Lock()
+	session := registry.apps["runner1"].Sessions[challenge.ManifestID]
+	deadline := session.idleDeadline
+	registry.mu.Unlock()
+	require.False(t, deadline.IsZero())
 	for range 3 {
 		server.ChargePaidSessions(t.Context())
 	}
+	registry.mu.Lock()
+	afterBilling := session.idleDeadline
+	registry.mu.Unlock()
+	require.Equal(t, deadline, afterBilling)
 	require.EqualValues(t, 1, test.MetricSum(t, registry.metrics.Registry, "payment_operations_total", map[string]string{"operation": "charge"}), "scheduler ticks must not count another fixed-price debit")
 	require.EqualValues(t, 1, test.MetricSum(t, registry.metrics.Registry, "payment_operations_total", map[string]string{"operation": "receive", "outcome": "success"}))
 }
