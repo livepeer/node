@@ -1,4 +1,4 @@
-FROM --platform=$BUILDPLATFORM golang:1.27.4@sha256:08bcb99a38f85a265f9a93d1d3323e2440eec333380f3ea26ee0dec9264bb41c AS build
+FROM --platform=$BUILDPLATFORM golang:1.27.4@sha256:205c7636d74e0ffbe3d007162df7d74f859f5a8c8322dfb9f907977686c126cf AS build
 ENV CGO_ENABLED=0 GOTOOLCHAIN=local GOENV=off GOWORK=off \
     GOFLAGS=-mod=readonly GOAMD64=v1 GOARM64=v8.0
 WORKDIR /src
@@ -25,7 +25,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 FROM scratch AS binaries
 COPY --from=build /out/ /
 
-FROM ubuntu:26.04@sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c
+FROM ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=binaries / /usr/local/bin/
 COPY LICENSE /usr/share/doc/livepeer/LICENSE
