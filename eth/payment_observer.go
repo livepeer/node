@@ -19,6 +19,9 @@ import (
 
 var ErrObservationUnavailable = errors.New("chain observation unavailable")
 
+// Arbitrum's L1 height can stay flat across many fresh L2 heads.
+const l1ProgressMaxAge = 60 * time.Second
+
 // PaymentObserver publishes complete canonical observations. Gaps and reorgs
 // rebuild state at the new hash instead of replaying uncertain event history.
 type PaymentObserver struct {
@@ -31,6 +34,7 @@ type PaymentObserver struct {
 	header            *miniHeader
 	generation        uint64
 	requireL1         bool
+	startedOnL1       bool
 	contact, progress time.Time
 	l1Progress        time.Time
 	l1HighWater       *big.Int
@@ -162,6 +166,10 @@ func (o *PaymentObserver) validate(s ChainSnapshot) error {
 
 func (o *PaymentObserver) viewRejection(s ChainSnapshot, l1Progress time.Time) string {
 	now := o.now()
+	progressMaxAge := o.maxAge
+	if o.startedOnL1 {
+		progressMaxAge = l1ProgressMaxAge
+	}
 	switch {
 	case o.lifecycle != nil && o.lifecycle.Err() != nil:
 		return "chain_observer_stopped"
@@ -173,7 +181,7 @@ func (o *PaymentObserver) viewRejection(s ChainSnapshot, l1Progress time.Time) s
 		return "chain_view_stale"
 	case now.Sub(s.blockTime) >= o.maxAge:
 		return "chain_head_stale"
-	case now.Sub(l1Progress) >= o.maxAge:
+	case now.Sub(l1Progress) >= progressMaxAge:
 		return "chain_l1_progress_stale"
 	default:
 		return ""
@@ -277,6 +285,10 @@ func (o *PaymentObserver) refresh(ctx context.Context) error {
 	s.observer, s.generation, s.observedAt, s.blockTime = o, o.generation, at, blockTime
 	if o.viewRejection(s, l1Progress) != "" {
 		return ErrObservationUnavailable
+	}
+	if prior == nil {
+		// Tie the deadline to the clock that established the progress baseline.
+		o.startedOnL1 = head.L1BlockNumber != nil
 	}
 	for key, entry := range o.payers {
 		if _, affected := changed[key.payer]; reset || affected {

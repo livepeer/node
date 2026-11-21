@@ -169,16 +169,24 @@ func TestObserverRejectedHeadersInvalidateConflictingIdentity(t *testing.T) {
 }
 
 func TestObserverL1ProgressDeadline(t *testing.T) {
-	for _, clocks := range [][]uint64{{50, 50, 50}, {49, 50, 49}} {
+	elapsed := []time.Duration{10, 20, 30, 40, 50, 59, 60}
+	for _, tc := range []struct {
+		requireL1 bool
+		clocks    [7]uint64
+	}{
+		{true, [7]uint64{50, 50, 50, 50, 50, 50, 50}},
+		{false, [7]uint64{49, 50, 49, 50, 49, 50, 49}},
+	} {
 		f, o, now := newTestObserver(t)
+		o.requireL1 = tc.requireL1
 		require.NoError(t, o.refresh(t.Context()))
 		progress, accepted := o.Status().L1ProgressAt, o.Status().ObservedAt
-		for step, clock := range clocks {
-			*now = now.Add(10 * time.Second)
+		for step, clock := range tc.clocks {
+			*now = progress.Add(elapsed[step] * time.Second)
 			advanceObserver(f, *now)
 			f.Update(func(s *test.ChainState) { s.L1Block = clock })
 			err := o.refresh(t.Context())
-			if step < 2 {
+			if step < len(tc.clocks)-1 {
 				require.NoError(t, err)
 				accepted = o.Status().ObservedAt
 			} else {
@@ -193,6 +201,34 @@ func TestObserverL1ProgressDeadline(t *testing.T) {
 		f.Update(func(s *test.ChainState) { s.L1Block = 51 })
 		require.NoError(t, o.refresh(t.Context()))
 		require.True(t, o.Status().Healthy)
+	}
+}
+
+func TestObserverNativeProgressDeadline(t *testing.T) {
+	for _, omitL1 := range []bool{true, false} {
+		f, o, now := newTestObserver(t)
+		o.requireL1 = false
+		f.Update(func(s *test.ChainState) { s.Number, s.OmitL1 = 100, true })
+		require.NoError(t, o.refresh(t.Context()))
+
+		*now = now.Add(29 * time.Second)
+		f.Update(func(s *test.ChainState) {
+			s.Hash, s.Timestamp = common.HexToHash("0xbeef"), uint64(now.Unix())
+			s.L1Block, s.OmitL1 = 50, omitL1
+		})
+		require.NoError(t, o.refresh(t.Context()))
+		require.True(t, o.Status().Healthy)
+
+		*now = now.Add(time.Second)
+		require.ErrorIs(t, o.refresh(t.Context()), ErrObservationUnavailable)
+		require.Equal(t, "chain_l1_progress_stale", o.Status().RecipientRejection)
+
+		if omitL1 {
+			*now = now.Add(5 * time.Second)
+			advanceObserver(f, *now)
+			f.Update(func(s *test.ChainState) { s.L1Block, s.OmitL1 = 50, false })
+			require.ErrorIs(t, o.refresh(t.Context()), ErrObservationUnavailable)
+		}
 	}
 }
 
