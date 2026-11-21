@@ -171,13 +171,11 @@ Other useful starting conditions:
 storage, chain access, an active recipient, valid pricing, and worker completion.
 Checks run at heartbeat cadence even with empty queues. Payment chain metadata
 refreshes every five seconds. Observations and head timestamps expire after
-30 seconds. Block progress must occur within 60 seconds when the first accepted
-observation includes a separate L1 height, or 30 seconds when it uses the native
-height. This deadline remains fixed for the observer's lifetime. Repeated heads
-retain their original observation time. One provider cannot prove absolute L1 lag.
-Other dependency checks and
-worker completion expire after `max(60 seconds, 3 × HeartbeatInterval)`;
-queue stalls and individual ticket errors remain separate signals.
+30 seconds. Block height must advance within 30 seconds, or within 60 seconds
+if the observer starts with a separate L1 height. One provider cannot prove
+absolute L1 lag. Other dependency checks and worker completion expire after
+`max(60 seconds, 3 × HeartbeatInterval)`. Queue stalls and individual ticket
+errors remain separate signals.
 Off-chain orchestrator/discovery readiness reports listener health.
 Signer readiness requires chain access, positive deposit/total reserve, no
 withdrawal through the next round, fresh pricing, and healthy enabled outbox
