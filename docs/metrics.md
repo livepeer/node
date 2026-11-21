@@ -169,11 +169,10 @@ Other useful starting conditions:
 
 `/healthz` checks liveness. Paid orchestrator `/readyz` requires writable payment
 storage, chain access, an active recipient, valid pricing, and worker completion.
-Checks run at heartbeat cadence even with empty queues. Payment chain metadata
-refreshes every five seconds. Observations and head timestamps expire after
-30 seconds. Block height must advance within 30 seconds, or within 60 seconds
-if the observer starts with a separate L1 height. One provider cannot prove
-absolute L1 lag. Other dependency checks and worker completion expire after
+Checks run at heartbeat cadence even with empty queues. Chain data refreshes
+every five seconds. On Arbitrum, L2 observations expire after 30 seconds and L1
+height must advance within 60 seconds. One provider cannot prove absolute L1
+lag. Other dependency checks and worker completion expire after
 `max(60 seconds, 3 × HeartbeatInterval)`. Queue stalls and individual ticket
 errors remain separate signals.
 Off-chain orchestrator/discovery readiness reports listener health.
