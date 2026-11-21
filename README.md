@@ -69,8 +69,9 @@ curl -fsS http://127.0.0.1:8935/apps/local-runner/app/hello
 ```
 
 Expect `ready`, a discovery entry for `local-runner`, and
-`hello from local runner`. Readiness uses the separate metrics port. Stop the
-runner and orchestrator with Ctrl-C in their terminals.
+`hello from local runner`. The readiness check uses metrics port `8936`;
+discovery and forwarding use port `8935`. Stop the runner and orchestrator with
+Ctrl-C in their terminals.
 
 ## Configure a deployment
 
