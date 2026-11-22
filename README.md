@@ -36,7 +36,7 @@ livepeer version
 ```
 
 Keep the executables together: `livepeer` dispatches to its sibling components.
-Persist the PATH setting in your shell or use absolute executable paths in your
+Persist the PATH setting in your shell profile or use absolute executable paths in your
 service configuration. For other platforms or source builds, see
 [development](docs/development.md).
 
