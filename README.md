@@ -75,6 +75,8 @@ Ctrl-C in their terminals.
 
 ## Configure a deployment
 
+Use an image digest to select an exact container build.
+
 Start with [configuration and secrets](docs/configuration.md), then choose a
 component guide from the [documentation index](docs/README.md). Use
 [payment recovery](docs/payment-recovery.md) for backups, upgrades, rollback, and
